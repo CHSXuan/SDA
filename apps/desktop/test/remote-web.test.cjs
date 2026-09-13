@@ -62,7 +62,7 @@ test("WebSocket PCM is byte exact and shares the single slot with native clients
     ws.on("message",data=>decode(data));await new Promise(r=>ws.once("open",r));ws.send(JSON.stringify({protocol:1,token:f.host.key.toString("hex")}));
     await until(()=>audio.length===10);assert.deepEqual(audio,f.sent);await delay(80);assert.equal(audio.length,10,"no consumption credit means no more samples");
     ws.send(packet("C",{id:"next",command:{action:"next"}}));await until(()=>responses.length===1);assert.equal(f.commands[0].action,"next");assert.equal(responses[0].error,null);
-    const second=socket(f.port);second.on("error",()=>{});await new Promise(r=>second.once("open",r));second.send(JSON.stringify({protocol:1,token:f.host.key.toString("hex")}));const code=await new Promise(r=>second.once("close",r));assert.equal(code,1008);
+    const second=socket(f.port);second.on("error",()=>{});await new Promise(r=>second.once("open",r));second.send(JSON.stringify({protocol:1,token:f.host.key.toString("hex")}));const code=await new Promise(r=>second.once("close",r));assert.equal(code,1013);
     const native=new RemoteSession({status:()=>{},prepareClient:()=>{throw Error("must not start receiver");}});await assert.rejects(native.join({invite:f.host.invite("127.0.0.1")}),/已有客户端/);await native.stop();
     ws.close();await until(()=>f.host.peer===null);
   }finally{ws.terminate();await f.close();}

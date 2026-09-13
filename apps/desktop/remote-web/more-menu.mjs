@@ -41,7 +41,9 @@ export function installMoreMenu(root){
     const reveal=Math.max(0,Math.min(1,(p-.60)/.38));
     const clarity=reveal*reveal*(3-2*reveal);
     content.style.opacity=String(clarity);
-    content.style.filter=`blur(${6*(1-clarity)}px)`;
+    // Keep text on an unfiltered layer above the animated backdrop material.
+    // Nested animated blur and backdrop-filter can produce WebKit compositing artifacts.
+    content.style.filter="none";
   }
   progress.on('change',paint);
   function settle(open){

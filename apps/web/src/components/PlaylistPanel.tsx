@@ -1,16 +1,15 @@
+import SheetHeading from "./SheetHeading";
 import PlaybackModeButton from "./PlaybackModeButton";
 import { PLAYBACK_MODE_LABELS, type PlaybackMode } from "../playbackOrder";
 import {AudioLines, ListMusic, Pause, Play, Trash2, X} from "lucide-react";
 
-export default function PlaylistPanel({items,currentId,paused,onPlay,onRemove,onClear,onClose,playbackMode,onPlaybackModeChange}:{
-  playbackMode:PlaybackMode;onPlaybackModeChange:(mode:PlaybackMode)=>void;
+export default function PlaylistPanel({items,currentId,paused,onPlay,onRemove,onClear,onClose,playbackMode,onPlaybackModeChange,embedded=false}:{
+  embedded?:boolean;playbackMode:PlaybackMode;onPlaybackModeChange:(mode:PlaybackMode)=>void;
   items:readonly {id:string;title:string}[];currentId:string|null;paused:boolean;
   onPlay:(id:string)=>void;onRemove:(id:string)=>void;onClear:()=>void;onClose:()=>void;
 }){
-  return <section className="panel float-panel playlist-panel" aria-label="播放列表">
-    <header className="playlist-head">
-      <div className="playlist-heading"><ListMusic size={20} aria-hidden="true"/><h2>播放列表</h2><span className="playlist-count">{items.length} 首</span></div>
-    </header>
+  return <section className={`panel ${embedded?"mp-playlist-panel":"float-panel"} playlist-panel desktop-sheet`} aria-label="播放列表">
+    <SheetHeading title="播放列表" detail={`${items.length} 首`} onClose={onClose}/>
     {items.length===0?<div className="playlist-empty"><ListMusic size={30}/><strong>还没有歌曲</strong><p>打开音频文件或添加文件夹，即可开始收听。</p></div>:<ol className="playlist-items">
       {items.map((item,index)=>{
         const current=item.id===currentId;
@@ -25,6 +24,6 @@ export default function PlaylistPanel({items,currentId,paused,onPlay,onRemove,on
         </li>;
       })}
     </ol>}
-    <footer className="playlist-footer"><div className="playlist-playback-mode"><PlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange}/><span>{PLAYBACK_MODE_LABELS[playbackMode]}</span></div>{items.length>0&&<button onClick={onClear} className="playlist-clear"><Trash2 size={14}/>清空列表</button>}</footer>
+    <footer className="playlist-footer"><div className="playlist-playback-mode"><PlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange}/><span>{PLAYBACK_MODE_LABELS[playbackMode]}</span></div>{items.length>0&&<button onClick={onClear} className="playlist-clear"><Trash2 size={14}/><span>清空列表</span></button>}</footer>
   </section>;
 }

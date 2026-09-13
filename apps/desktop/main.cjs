@@ -691,9 +691,17 @@ function publishRemoteStatus(value) {
   remoteBroadcast("sda:remote-status", value);
 }
 const remoteMedia = require("./remote-media.cjs").createRemoteMedia({readSettings,isMediaFile});
+let remotePlaybackOrigin="local";
+function effectiveRemoteLocalMute(preference=readSettings().remoteLocalMuted!==false){return preference&&remotePlaybackOrigin==="remote";}
+async function setRemotePlaybackOrigin(origin){
+  if(origin!=="local"&&origin!=="remote")throw Error("无效播放来源");
+  if(nativeRenderer&&!await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:(readSettings().remoteLocalMuted!==false)&&origin==="remote"},"setRemoteLocalMute"))throw Error("无法更新电脑输出静音状态");
+  remotePlaybackOrigin=origin;
+  remoteSession.publish();return remoteSession.status();
+}
 async function setRemoteLocalMute(muted) {
   if(typeof muted!=="boolean")throw Error("无效静音设置");
-  if(nativeRenderer)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted},"setRemoteLocalMute");
+  if(nativeRenderer)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:effectiveRemoteLocalMute(muted)},"setRemoteLocalMute");
   writeSettings({remoteLocalMuted:muted});
   if(remoteSession.state)remoteSession.publishState({...remoteSession.state,artwork:remoteSession.artwork});
   remoteSession.publish();return remoteSession.status();
@@ -702,7 +710,7 @@ const remoteSession = new RemoteSession({
   gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;startNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
   position:()=>Number(nativeRendererStatus.samplePos??0)/48000,
   diagnostic:health=>writeStartupLog(`remote-receiver ${JSON.stringify(health)}`),
-  maxPeers:2,
+  maxPeers:()=>readSettings().remoteMaxPeers??2,
   readDevices:()=>readSettings().remoteAuthorizedDevices??[],
   writeDevices:devices=>writeSettings({remoteAuthorizedDevices:devices}),
   localMuted:()=>readSettings().remoteLocalMuted!==false,
@@ -729,13 +737,14 @@ const remoteSession = new RemoteSession({
   },
   result: value => remoteBroadcast("sda:remote-result", value),
   disconnected: () => {
+    remotePlaybackOrigin="local";
     // Losing a receiver must not pause the independent local playback.
     if(nativeRenderer)return nativeRendererCommandAck({type:"setRemoteOutput",address:null,token:null},"setRemoteOutput").catch(()=>{});
   },
   route: async ({address,token}) => {
     if (!address && !nativeRenderer) return true;
     startNativeRenderer();
-    if(address)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:readSettings().remoteLocalMuted!==false},"setRemoteLocalMute");
+    if(address)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:effectiveRemoteLocalMute()},"setRemoteLocalMute");
     const changed=nativeRendererCommandAck({type:"setRemoteOutput",address,token},"setRemoteOutput",15000);
     // Ending remote output succeeds even when no physical endpoint is available.
     return address?changed:changed.then(()=>true,()=>true);
@@ -755,12 +764,17 @@ ipcMain.handle("sda:remote-session", (_event, action, value) => {
   const task = remoteOperation.then(() => {
     writeStartupLog(`[remote] requested action=${String(action).slice(0, 20)}`);
     if (["deviceApprove","deviceReject","deviceRevoke","devicePermission","deviceDisconnect"].includes(action))return remoteSession.manageDevice(action,value);
+    if (action === "maxPeers") {
+      if(!Number.isInteger(value)||value<1||value>16)throw Error("同时连接数须为 1–16 台");
+      writeSettings({remoteMaxPeers:value});remoteSession.publish();return remoteSession.status();
+    }
     if (action === "hlsAllowed") {
       if(typeof value!=="boolean")throw Error("无效 HLS 设置");
       writeSettings({remoteHlsAllowed:value});
       if(!value)remoteSession.web?.disableHls();
       remoteSession.publish();return remoteSession.status();
     }
+    if (action === "playbackOrigin") return setRemotePlaybackOrigin(value);
     if (action === "localMute") return setRemoteLocalMute(value);
     if (action === "host") return remoteSession.host(value);
     if (action === "join") return remoteSession.join(value);
@@ -1470,7 +1484,7 @@ ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id, sourc
     const roomPath = roomId ? readCinemaProfile(roomId).filePath : null;
     if (!await nativeRendererCommandAck({type:"setCinema",settings:normalized,profile:roomPath},"setCinema",30000)) return false;
     if (!await nativeRendererCommandAck({type:"setComparisonGain",gainDb:0},"setComparisonGain")) return false;
-    writeSettings({cinema:{settings:normalized,profileId:roomId}});
+    writeSettings({cinema:{...saved,settings:normalized,profileId:roomId}});
     const accepted = await nativeRendererHeadphoneFir(preamp, left, right);
     if (accepted) {exclusiveHeadphoneId = id;writeSettings({headphoneSimulationSource:source});}
     writeStartupLog(`headphoneSimulation source=${source} target=${id} preamp=${preamp} taps=${left.byteLength / 4}/${right.byteLength / 4} ACK -> ${accepted}`);
@@ -1491,12 +1505,30 @@ ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   return accepted;
 });
-ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => {
+ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => exclusiveAudioUpdate(async () => {
   if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6"]).has(layout)) return false;
+  const saved=readSettings().cinema;
+  const {roomForLayout,rememberRoom}=require("./room-layout-follow.cjs");
+  const roomId=roomForLayout(saved,layout,readCinemaProfile,builtinRooms().list());
+  const room=roomId?readCinemaProfile(roomId):null;
   const accepted = await nativeRendererCommandAck({ type: "setLayout", layout }, "setLayout");
+  if(accepted && room){
+    const settings=cinemaProfiles.validateSettings({...saved.settings,speakers:{}});
+    if(!await nativeRendererCommandAck({type:"setCinema",settings,profile:room.filePath},"setCinema",30000)) {
+      const previousLayout=readCinemaProfile(saved.profileId).profile.layout;
+      await nativeRendererCommandAck({type:"setLayout",layout:previousLayout},"setLayout");
+      writeStartupLog(`auto room layout ${layout} failed; restored ${previousLayout}`);
+      return false;
+    }
+    const previous=readCinemaProfile(saved.profileId).profile;
+    const memory=rememberRoom(saved,saved.profileId,previous.layout);
+    writeSettings({cinema:rememberRoom({...memory,settings},roomId,layout)});
+    for(const win of BrowserWindow.getAllWindows())if(!win.isDestroyed())win.webContents.send("sda:room-layout-applied",{layout,profileId:roomId});
+    writeStartupLog(`auto room layout ${layout} room=${roomId} applied`);
+  }
   writeStartupLog(`setLayout ${layout} ACK -> ${accepted}`);
   return accepted;
-});
+}));
 ipcMain.handle("sda:native-renderer-stereo-mode", async (_event, mode) => {
   if (!["original", "dry", "room"].includes(mode)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setStereoMode", mode }, "setStereoMode");
@@ -1595,7 +1627,11 @@ ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId)
   }
   const profile = profileId === null ? null : readCinemaProfile(profileId).filePath;
   const accepted = !nativeRenderer?.stdin || await nativeRendererCommandAck({ type: "setCinema", settings: normalized, profile }, "setCinema", 30000);
-  if (accepted) writeSettings({ cinema: { settings: normalized, profileId } });
+  if (accepted) {
+    const previous=readSettings().cinema;
+    const next={...previous,settings:normalized,profileId};
+    writeSettings({cinema:profileId?require("./room-layout-follow.cjs").rememberRoom(next,profileId,readCinemaProfile(profileId).profile.layout):next});
+  }
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
 }));

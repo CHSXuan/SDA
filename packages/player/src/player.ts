@@ -17,6 +17,7 @@ import { masterBalanceGainDb } from "./bs1770.js";
 
 import {
   SpatialRenderer,
+  HeadPoseTracker,
   LAYOUTS,
   getBinauralIrSet,
   headphoneProfileById,
@@ -170,6 +171,7 @@ export interface SdaPlayerOptions {
   initialOutputLatencySeconds?: number;
   /** Device-neutral head-pose filtering policy passed to the renderer. */
   headPose?: HeadPoseOptions;
+  headPoseStabilized?: boolean;
   /** 逐对象精确方向双耳渲染（实验性）：对象 VBAP 到密集球面而非床层环。 */
   denseBinauralObjects?: boolean;
   /** 密集球面 IR 集地址（hrtf-dense）；开启 denseBinauralObjects 时必填。 */
@@ -269,6 +271,10 @@ export class SdaPlayer {
   private denseBinauralObjects: boolean;
   private denseBinauralBaseUrl: string | undefined;
   private latestHeadPose: HeadPose | null = null;
+  private readonly headPoseStabilized: boolean;
+  private readonly nativeHeadTracker: HeadPoseTracker;
+  private nativeHeadTimer: ReturnType<typeof setInterval> | null = null;
+  private nativeHeadSent: HeadPose | null = null;
   private cb: PlayerCallbacks;
   private readyResolve!: () => void;
   private ready: Promise<void>;
@@ -387,6 +393,8 @@ export class SdaPlayer {
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
     this.headPoseOptions = options.headPose;
+    this.headPoseStabilized=options.headPoseStabilized===true;
+    this.nativeHeadTracker = new HeadPoseTracker({...options.headPose,fixedForward:true});
     this.outputBackend = options.outputBackend ?? "web-audio";
     this.nativeRendererSink = options.nativeRendererSink;
     if (this.outputBackend === "native-sidecar" && !this.nativeRendererSink) {
@@ -536,13 +544,36 @@ export class SdaPlayer {
    * real-time control, not codec metadata; it never recreates playback state. */
   setHeadPose(pose: HeadPose): boolean {
     this.latestHeadPose = pose;
-    try { this.nativeRendererSink?.setHeadPose(pose); } catch (error) {
-      console.warn(`[SDA] player#${this.id} native head pose mirror failed:`, error);
+    if (this.disposed) return false;
+    if(this.nativeRendererSink && this.headPoseStabilized){
+      void Promise.resolve(this.nativeRendererSink.setHeadPose(pose)).catch(error=>console.warn("[SDA] session head pose failed",error));
+    } else if (this.nativeRendererSink && this.nativeHeadTracker.set(pose, performance.now())) {
+      if (this.nativeHeadTimer === null) {
+        this.flushNativeHeadPose();
+        this.nativeHeadTimer = setInterval(()=>this.flushNativeHeadPose(),20);
+      }
     }
     return this.renderer?.setHeadPose(pose) ?? true;
   }
 
+  private flushNativeHeadPose(): void {
+    if (this.disposed || !this.nativeRendererSink) return;
+    const pose=this.nativeHeadTracker.currentPose(performance.now());
+    if (!pose) {
+      if (this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
+      this.nativeHeadTimer=null;
+      if(this.nativeHeadSent) void Promise.resolve(this.nativeRendererSink.clearHeadPose()).catch(error=>console.warn("[SDA] native stale pose clear failed",error));
+      this.nativeHeadSent=null;
+      return;
+    }
+    if(this.nativeHeadSent && Math.abs(pose.orientation.reduce((sum,v,i)=>sum+v*this.nativeHeadSent!.orientation[i]!,0))>1-1e-10)return;
+    this.nativeHeadSent=pose;
+    void Promise.resolve(this.nativeRendererSink.setHeadPose(pose)).catch(error=>console.warn("[SDA] native stabilized pose failed",error));
+  }
+
   clearHeadPose(): void {
+    if (this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
+    this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
     this.latestHeadPose = null;
     try { this.nativeRendererSink?.clearHeadPose(); } catch (error) {
       console.warn(`[SDA] player#${this.id} native clear head pose mirror failed:`, error);
@@ -551,7 +582,9 @@ export class SdaPlayer {
   }
 
   recenterHeadPose(): boolean {
-    return this.renderer?.recenterHeadPose() ?? false;
+    const native = this.nativeHeadTracker.recenter();
+    if (native) this.flushNativeHeadPose();
+    return this.renderer?.recenterHeadPose() ?? native;
   }
 
   /** 切换杜比近/中/远（播放中实时生效）。 */
@@ -1175,6 +1208,8 @@ export class SdaPlayer {
   async dispose(): Promise<void> {
     console.log(`[SDA] player#${this.id} dispose`);
     this.disposed = true;
+    if(this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
+    this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
     this.rejectPendingWorkerPushes("player disposed");
     this.stop();
     this.worker.terminate();

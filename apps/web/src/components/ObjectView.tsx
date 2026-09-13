@@ -112,6 +112,7 @@ function FlatObjectView({
 
 export const ObjectView = memo(function ObjectView({
   immersive = false,
+  showObjectNames = false,
   objects,
   layout,
   theme = "dark",
@@ -123,6 +124,7 @@ export const ObjectView = memo(function ObjectView({
   testVisual,
 }: {
   immersive?: boolean;
+  showObjectNames?:boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
@@ -142,11 +144,12 @@ export const ObjectView = memo(function ObjectView({
   return (
     <WebglErrorBoundary mode={rendererMode}>
       <Suspense fallback={<div className="flat-view" aria-label="正在加载三维视图">正在加载三维视图…</div>}>
-        <ObjectView3D immersive={immersive} objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} testVisual={testVisual} />
+        <ObjectView3D showObjectNames={showObjectNames} immersive={immersive} objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} testVisual={testVisual} />
       </Suspense>
     </WebglErrorBoundary>
   );
 }, (previous, next) => previous.objects === next.objects
+  && previous.showObjectNames === next.showObjectNames
   && previous.testVisual === next.testVisual
   && previous.immersive === next.immersive
   && previous.layout === next.layout

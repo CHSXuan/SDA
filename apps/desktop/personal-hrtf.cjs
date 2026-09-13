@@ -97,6 +97,7 @@ async function importSofa(sourcePath,store){
       source:{name:data.name,database:data.source,license:data.license,fileName:path.basename(sourcePath),sha256:sourceSha256,method:"imported-sofa",convention:"SimpleFreeFieldHRIR"},
       azimuthConvention:"positive left, degrees; elevation positive up",processing:{calibrated:false,preserveMeasurements:true,commonDelaySamples:16,delayApplied:true,normalization:false,roomResponse:false},positions};
     fs.writeFileSync(path.join(staging,"hrtf-set.json"),JSON.stringify(manifest,null,2));
+  fs.writeFileSync(path.join(staging,"profile-info.json"),JSON.stringify({createdAt:new Date().toISOString(),createdAtSource:"recorded"},null,2));
     if(!fs.existsSync(target))fs.renameSync(staging,target);
   }finally{if(fs.existsSync(staging))fs.rmSync(staging,{recursive:true,force:true});}
   return {id:`personal-${digest}`,name:data.name,directions:data.directions.length,method:"imported-sofa"};

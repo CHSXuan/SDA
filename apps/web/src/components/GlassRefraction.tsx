@@ -2,8 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 
 // Generate only when the panel changes size. Chromium refracts the live backdrop;
 // no scene readback, per-frame JS, or work on the audio thread is needed.
-export function GlassRefraction() {
-  const ref = useRef<HTMLDivElement>(null);
+export function GlassRefraction({strength=18}:{strength?:number}={}) {
+  const ref = useRef<HTMLSpanElement>(null);
   const id = "glass-" + useId().replace(/:/g, "");
   const [map, setMap] = useState<{ url: string; width: number; height: number }>();
   useEffect(() => {
@@ -51,10 +51,10 @@ export function GlassRefraction() {
       <defs>
         <filter id={id} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
           {map && <feImage href={map.url} x="0" y="0" width={map.width} height={map.height} preserveAspectRatio="none" result="lens" />}
-          <feDisplacementMap in="SourceGraphic" in2="lens" scale="18" xChannelSelector="R" yChannelSelector="G" />
+          <feDisplacementMap in="SourceGraphic" in2="lens" scale={strength} xChannelSelector="R" yChannelSelector="G" />
         </filter>
       </defs>
     </svg>
-    <div ref={ref} className="mp-refraction" aria-hidden="true" style={map ? { backdropFilter: `url("#${id}")`, WebkitBackdropFilter: `url("#${id}")` } : undefined} />
+    <span ref={ref} className="mp-refraction" aria-hidden="true" style={map ? { backdropFilter: `url("#${id}")`, WebkitBackdropFilter: `url("#${id}")` } : undefined} />
   </>;
 }

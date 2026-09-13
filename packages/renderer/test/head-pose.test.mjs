@@ -254,3 +254,41 @@ assert.ok(
 );
 
 console.log("head pose tests: OK");
+
+// Native sinks consume exactly the stabilized pose used by WebAudio.
+const nativeTracker = new HeadPoseTracker({smoothingMs:220,deadZoneDegrees:1,maxDegreesPerSecond:480});
+const webTracker = new HeadPoseTracker({smoothingMs:220,deadZoneDegrees:1,maxDegreesPerSecond:480});
+for(let frame=0;frame<1200;frame++){
+  const now=frame*20;
+  const degrees=frame<700?0.5*Math.sin(frame)+Math.min(frame*0.008,4):35;
+  const pose={orientation:yaw(degrees),timestampMs:now};
+  nativeTracker.set(pose,now);webTracker.set(pose,now);
+  const stabilized=nativeTracker.currentPose(now);
+  const nativeYaw=2*Math.atan2(stabilized.orientation[2],stabilized.orientation[3])*180/Math.PI;
+  const web=webTracker.headRelative({azimuth:0,elevation:0,distance:1},now);
+  assert.ok(Math.abs(nativeYaw+web.azimuth)<1e-6,'native and WebAudio stabilization must agree');
+  if(frame===699)assert.ok(Math.abs(nativeYaw)<1,'idle tremor and slow drift must settle near front');
+  if(frame===760)assert.ok(nativeYaw>25,'deliberate left turns must still move the source right');
+}
+assert.equal(nativeTracker.currentPose(25000),null,'stale native pose must expire');
+console.log('native stabilized head pose tests: OK');
+
+const fixedForward=new HeadPoseTracker({fixedForward:true,smoothingMs:220,deadZoneDegrees:1});
+for(let frame=0;frame<2000;frame++){
+ const now=frame*20;fixedForward.set({orientation:yaw(45),timestampMs:now},now);
+ fixedForward.currentPose(now);
+}
+const settled=fixedForward.currentPose(39980);
+assert.ok(Math.abs(2*Math.atan2(settled.orientation[2],settled.orientation[3])*180/Math.PI)<1,"a replacement player's first offset must not become its permanent forward anchor");
+
+const tremor=new HeadPoseTracker({fixedForward:true,smoothingMs:220,deadZoneDegrees:2.5});
+for(let frame=0;frame<800;frame++){
+ const now=frame*20;const angle=frame===0?0:(frame%2?1:-1);
+ tremor.set({orientation:yaw(angle),timestampMs:now},now);
+ const filtered=tremor.currentPose(now);
+ assert.ok(Math.abs(filtered.orientation[2])<1e-6,"sub-dead-zone tremor must not pan the audio");
+}
+for(let frame=0;frame<100;frame++){
+ const now=16000+frame*20;tremor.set({orientation:yaw(frame*0.3),timestampMs:now},now);tremor.currentPose(now);
+}
+assert.ok(tremor.currentPose(17980).orientation[2]>0.1,"slow deliberate turns must accumulate across the dead zone");

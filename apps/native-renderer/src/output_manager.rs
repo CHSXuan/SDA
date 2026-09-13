@@ -145,6 +145,12 @@ fn available(device: &IMMDevice) -> bool {
         device.GetState(&mut state).0 == 0 && state == DEVICE_STATE_ACTIVE.0
     }
 }
+fn endpoint_format(bytes:&[u8])->Option<(u32,u16)> {
+    if bytes.len()<8 {return None;}
+    let channels=u16::from_le_bytes(bytes[2..4].try_into().ok()?);
+    let rate=u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+    (channels>0 && channels<=32 && (8000..=768000).contains(&rate)).then_some((rate,channels))
+}
 fn list(e: &IMMDeviceEnumerator) -> Result<Vec<Endpoint>, String> {
     unsafe {
         let default = default_id(e);
@@ -156,19 +162,17 @@ fn list(e: &IMMDeviceEnumerator) -> Result<Vec<Endpoint>, String> {
             let device = collection.Item(i).map_err(|e| e.to_string())?;
             let id = endpoint_id(&device)?;
             let available = available(&device);
-            let format = if available {
-                device
-                    .Activate::<IAudioClient>(CLSCTX_ALL, None)
-                    .ok()
-                    .and_then(|c| {
-                        let ptr = c.GetMixFormat().ok()?;
-                        let f = *ptr;
-                        CoTaskMemFree(Some(ptr.cast()));
-                        Some((f.nSamplesPerSec, f.nChannels))
-                    })
-            } else {
-                None
-            };
+            // Read the endpoint's format property without activating a fresh audio
+            // client every second. Device discovery must not touch the live stream.
+            let format = device.OpenPropertyStore(STGM_READ).ok()
+                .and_then(|store| store.GetValue(&PKEY_AudioEngine_DeviceFormat).ok())
+                .and_then(|value| {
+                    let raw=value.as_raw().Anonymous.Anonymous;
+                    if raw.vt != windows::Win32::System::Variant::VT_BLOB.0 {return None;}
+                    let blob=raw.Anonymous.blob;
+                    if blob.pBlobData.is_null() || blob.cbSize < 8 {return None;}
+                    endpoint_format(std::slice::from_raw_parts(blob.pBlobData,blob.cbSize as usize))
+                });
             result.push(Endpoint {
                 is_default: default.as_ref() == Some(&id),
                 id,
@@ -435,12 +439,12 @@ impl Output {
                     return Ok(());
                 }
             }
-            let padding = self.client.GetCurrentPadding().map_err(|e| e.to_string())?;
+            let padding = self.client.GetCurrentPadding().map_err(|e| format!("GetCurrentPadding: {e}"))?;
             let count = self.size.saturating_sub(padding);
             if count == 0 {
                 return Ok(());
             }
-            let ptr = self.render.GetBuffer(count).map_err(|e| e.to_string())?;
+            let ptr = self.render.GetBuffer(count).map_err(|e| format!("GetBuffer: {e}"))?;
             let started = Instant::now();
             if fifo.apply_flush_from_consumer() {
                 self.converter.reset();
@@ -540,6 +544,14 @@ fn unavailable(requested: &Settings, detail: String) -> Status {
         state: "unavailable".into(),
         detail,
     }
+}
+// Retry the requested endpoint even when the device snapshot has not changed.
+// Bluetooth can invalidate an IAudioClient while its endpoint remains ACTIVE.
+fn recover_output<T>(output: &mut Option<T>, requested: &Settings, last_retry: &mut Instant,
+    open: impl FnOnce(&Settings) -> Result<T,String>) -> Option<Result<(),String>> {
+    if output.is_some() || last_retry.elapsed() < Duration::from_secs(1) { return None; }
+    *last_retry=Instant::now();
+    Some(open(requested).map(|next| { *output=Some(next); }))
 }
 fn publish(status: Status, devices: Vec<Endpoint>) {
     write_event(&Event::OutputDevices { status, devices });
@@ -734,7 +746,7 @@ pub fn run(
                             && devices.iter().any(|d| {
                                 d.id == o.id
                                     && d.available
-                                    && d.sample_rate.is_some_and(|r| r != o.rate)
+                                    && (d.sample_rate.is_some_and(|r| r != o.rate) || d.channels.is_some_and(|c| c as usize != o.channels))
                             })
                     });
                     if (actual != wanted && requested.device_id.is_none()) || format_changed {
@@ -755,7 +767,7 @@ pub fn run(
                         .is_some_and(|o| !devices.iter().any(|d| d.id == o.id && d.available))
                     {
                         drop(output.take());
-                        detail = "Selected output disconnected; reconnect and select Retry".into();
+                        detail = "所选输出设备不可用，等待恢复后重新打开音频输出".into();
                     }
                     publish(
                         output.as_ref().map_or_else(
@@ -784,8 +796,11 @@ pub fn run(
         if let Some(sink)=&mut remote {
             remote_telemetry.callback_output_enabled.store(telemetry.callback_output_enabled.load(Ordering::Acquire),Ordering::Release);
             let result=if output.is_some()||synchronized{
-                if remote_audio::mirror_overflow(){Err("远程接收超过 8 秒未跟上播放，请重新连接".into())}
-                else if remote_audio::mirror_ready(){sink.tick_positioned(remote_audio::mirror_fifo(),&remote_telemetry,remote_audio::mirror_origin())}else{Ok(())}
+                // A new connection must wait for the render worker to reset the
+                // mirror epoch before inspecting the previous session's overflow.
+                if !remote_audio::mirror_ready(){Ok(())}
+                else if remote_audio::mirror_overflow(){Err("远程接收超过 8 秒未跟上播放，请重新连接".into())}
+                else{sink.tick_positioned(remote_audio::mirror_fifo(),&remote_telemetry,remote_audio::mirror_origin())}
             }else{sink.tick(&fifo,&telemetry)};
             if let Err(error)=result {
                 remote=None;remote_selected=false;remote_audio::HOST_SELECTED.store(false,Ordering::Release);remote_audio::select_mirror(false);
@@ -795,29 +810,62 @@ pub fn run(
         }
         if let Some(active) = &mut output {
             if let Err(err) = active.tick(&fifo, &telemetry, false) {
-                detail = format!("Output interrupted; select Retry: {err}");
+                detail = format!("音频输出会话失效，正在重新初始化：{err}");
+                last_retry = Instant::now();
                 drop(output.take());
                 publish(unavailable(&requested, detail.clone()), devices.clone());
             }
         }
-        if output.is_none()
-            && requested.device_id.is_none()
-            && last_retry.elapsed() >= Duration::from_secs(5)
-        {
-            last_retry = Instant::now();
-            if let Ok(o) = Output::open(&e, &requested).and_then(|o| {
-                o.start()?;
-                Ok(o)
-            }) {
-                output = Some(o);
-                detail.clear();
-                publish(
-                    output.as_ref().unwrap().status(&requested, detail.clone()),
-                    devices.clone(),
-                );
+        if let Some(result) = recover_output(&mut output,&requested,&mut last_retry,|settings| {
+            Output::open(&e,settings).and_then(|o| {o.start()?;Ok(o)})
+        }) {
+            match result {
+                Ok(()) => {
+                    detail.clear();
+                    publish(output.as_ref().unwrap().status(&requested,detail.clone()),devices.clone());
+                }
+                Err(err) => {
+                    let next=format!("音频输出暂不可用，将自动重新初始化：{err}");
+                    if detail!=next {detail=next;publish(unavailable(&requested,detail.clone()),devices.clone());}
+                }
             }
         }
     }
     drop(output);
     drop(e);
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn pinned_endpoint_recovers_without_device_change_or_fallback() {
+        let settings=Settings{device_id:Some("airpods".into()),exclusive:true,remote_compatible:false};
+        let mut output:Option<String>=None;
+        let mut last=Instant::now()-Duration::from_secs(2);
+        let result=recover_output(&mut output,&settings,&mut last,|next| {
+            assert_eq!(next,&settings);Err("device invalidated".into())
+        });
+        assert!(result.unwrap().is_err());assert!(output.is_none());
+        assert!(recover_output(&mut output,&settings,&mut last,|_|panic!("retry must be bounded")).is_none());
+        last=Instant::now()-Duration::from_secs(2);
+        assert!(recover_output(&mut output,&settings,&mut last,|next|Ok(next.device_id.clone().unwrap())).unwrap().is_ok());
+        assert_eq!(output.as_deref(),Some("airpods"));
+        last=Instant::now()-Duration::from_secs(2);
+        assert!(recover_output(&mut output,&settings,&mut last,|_|panic!("healthy output must remain open")).is_none());
+    }
+    #[test]
+    fn passive_format_property_handles_short_and_invalid_data() {
+        assert_eq!(endpoint_format(&[0;7]),None);
+        let mut bytes=[0u8;18];bytes[2..4].copy_from_slice(&2u16.to_le_bytes());bytes[4..8].copy_from_slice(&48000u32.to_le_bytes());
+        assert_eq!(endpoint_format(&bytes),Some((48000,2)));
+        bytes[2..4].copy_from_slice(&0u16.to_le_bytes());assert_eq!(endpoint_format(&bytes),None);
+    }
+    #[test]
+    fn default_output_still_recovers() {
+        let mut output=None;let mut last=Instant::now()-Duration::from_secs(2);
+        assert!(recover_output(&mut output,&Settings::default(),&mut last,|next| {
+            assert!(next.device_id.is_none());Ok(())
+        }).unwrap().is_ok());
+    }
 }

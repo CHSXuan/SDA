@@ -9,21 +9,16 @@ assert.ok(playStart >= 0 && playEnd > playStart, "play callback must be present"
 const play = source.slice(playStart, playEnd);
 
 assert.match(source, /const retiringPlayerRef = useRef<SdaPlayer \| null>\(null\)/);
-assert.match(play, /previous\.setVolume\(0\)/);
-assert.doesNotMatch(play, /if \(previous\) await previous\.dispose\(\)/);
-
 const replacementReady = play.indexOf("const player = await createPlayer(");
-const outgoingDispose = play.indexOf("await outgoing.dispose()", replacementReady);
-assert.ok(replacementReady >= 0, "replacement player must be initialized");
-assert.ok(
-  outgoingDispose > replacementReady,
-  "the old AudioContext must remain connected until the replacement is ready",
-);
+const outgoingDispose = play.indexOf("await previous.dispose()");
+const invalidateSink = play.indexOf("nativeSessionEpochRef.current++");
+assert.ok(invalidateSink >= 0 && outgoingDispose > invalidateSink, "invalidate the previous native sink before disposal");
+assert.ok(replacementReady > outgoingDispose, "stop the previous decoder before resetting the native render clock");
 assert.match(play, /if \(!isCurrent\(\) \|\| playerRef\.current !== player\) return/);
 
-assert.match(source, /const headTrackingSessionRef = useRef\(new HeadTrackingSession\(\)\)/);
+assert.match(source, /const headTrackingSessionRef = useRef\(new HeadTrackingSession\(/);
 assert.match(source, /headTrackingSessionRef\.current\.update\(rendererHeadPose\(pose\)\)/);
-assert.match(source, /const latestHeadPose = headTrackingSessionRef\.current\.latestPose/);
+assert.match(source, /const latestHeadPose = headTrackingSessionRef\.current\.sample\(\)/);
 assert.match(source, /if \(latestHeadPose\) player\.setHeadPose\(latestHeadPose\)/);
 assert.match(source, /player\?\.clearHeadPose\?\.\(\);\s*player\?\.setHeadPose\?\.\(headPose\)/);
 assert.doesNotMatch(source, /player\?\.recenterHeadPose\?\.\(\)/);

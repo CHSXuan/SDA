@@ -7,6 +7,11 @@ fs.mkdirSync(path.dirname(output), { recursive: true });
 buildSync({ entryPoints: ["apps/web/src/playbackOrder.ts"], bundle: true, platform: "node", format: "cjs", outfile: output });
 const order = require(output);
 const items = [{id:"a"},{id:"b"},{id:"c"}];
+assert.equal(order.adjacentPlaylistItemId([],null,1),null);
+assert.equal(order.adjacentPlaylistItemId(items,"a",-1),"c");
+assert.equal(order.adjacentPlaylistItemId(items,"c",1),"a");
+assert.equal(order.adjacentPlaylistItemId(items,"b",-1),"a");
+assert.equal(order.adjacentPlaylistItemId(items,"b",1),"c");
 for (const mode of order.PLAYBACK_MODES) {
   assert.equal(order.nextPlaylistItemId([], "a", mode), null);
   assert.equal(order.nextPlaylistItemId(items, "removed", mode), null);
@@ -33,6 +38,11 @@ function session(mode="sequence", id="c") {
   const end=new Function("env", `const {${Object.keys(env).join(",")}}=env; let endedHandled=false; return ${callback};`)(env);
   return {env,calls,end,stale:()=>current=false};
 }
+assert.equal(order.adjacentPlaylistItemId([],null,1),null);
+assert.equal(order.adjacentPlaylistItemId(items,"a",-1),"c");
+assert.equal(order.adjacentPlaylistItemId(items,"c",1),"a");
+assert.equal(order.adjacentPlaylistItemId(items,"b",-1),"a");
+assert.equal(order.adjacentPlaylistItemId(items,"b",1),"c");
 for (const mode of order.PLAYBACK_MODES) {
   const s=session(mode);s.end();s.end();assert.deepEqual(s.calls,[mode==="repeat-one"?"c":mode==="repeat-all"?"a":false]);
 }

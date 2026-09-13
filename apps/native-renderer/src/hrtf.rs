@@ -548,6 +548,27 @@ mod raw_tests {
             assert!(energy>1e-8&&delta/energy>0.1,"personal response must change final PCM, object={object}");
             eprintln!("personal HRTF offline output object={object} difference/energy={:.4}",delta/energy);
         }
+        // Replace a personal response after rendering has started: keep the clock,
+        // source PCM and play state, and observe the new response in subsequent PCM.
+        for object in [false,true] {
+            let live=|swap:bool| {
+                let mut e=crate::Engine::new(48000,2);e.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
+                e.cinema=settings.clone();e.room_profile=Some(room.clone());e.replace_hrtf(a.clone(),0.04).unwrap();
+                e.paused=false;e.output_active=true;
+                let mut source=crate::Source{kind:if object{crate::SourceKind::Object}else{crate::SourceKind::Bed},gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default()};
+                crate::Engine::set_source_route(&mut source,crate::bed_route("FrontLeft",&e.vbap),0);
+                let pcm:Vec<f32>=(0..16384).map(|i|0.01*(i as f32*0.173).sin()).collect();
+                source.samples.write(0,0,&pcm);e.sources.insert("live".into(),source);e.set_direct_objects(object).unwrap();
+                e.render_into(&mut vec![0.0;8192],2);let clock=e.sample_pos;assert!(clock>0);
+                if swap {e.replace_hrtf(b.clone(),0.04).unwrap();}
+                assert_eq!(e.sample_pos,clock);assert!(!e.paused);assert!(e.sources.contains_key("live"));
+                let mut out=vec![0.0;16384];e.render_into(&mut out,2);assert!(e.sample_pos>clock);assert!(out.iter().all(|v|v.is_finite()));out
+            };
+            let unchanged=live(false);let switched=live(true);
+            let energy:f32=unchanged[8192..].iter().map(|v|v*v).sum();
+            let delta:f32=unchanged[8192..].iter().zip(&switched[8192..]).map(|(a,b)|(a-b)*(a-b)).sum();
+            assert!(energy>1e-8&&delta/energy>0.1,"live personal switch must affect PCM, object={object}");
+        }
         let mut engine=crate::Engine::new(48000,2);engine.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
         engine.replace_hrtf(a.clone(),0.04).unwrap();let previous=engine.active_hrtf_set.as_ref().unwrap().subject_id.clone();
         engine.cinema=settings;let mut invalid=(*room).clone();invalid.speakers.clear();engine.room_profile=Some(std::sync::Arc::new(invalid));

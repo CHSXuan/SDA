@@ -1,3 +1,4 @@
+import {ConnectionWatchdog} from "./connection-watchdog.mjs";
 import {hlsAllowedByHost} from "/playback-policy.mjs";
 import {createScene} from "./scene.mjs";
 import {createPages} from "./pages.mjs";
@@ -83,7 +84,7 @@ const time = seconds => `${Math.floor(Math.max(0, seconds || 0) / 60)}:${String(
 function message(text, error = false) { $("message").textContent = text; $("message").classList.toggle("error", error); }
 function setControls(enabled) {
   sceneView.connected(enabled);
-  for (const el of document.querySelectorAll(".transport button,#player-settings button:not([data-tool]):not(#theme),#local-mute,#volume,#queue button,#media-open")) el.disabled = !enabled || session?.canControl===false&&!el.matches("#play,#media-open");
+  for (const el of document.querySelectorAll(".transport button,#player-settings button:not([data-tool]):not(#theme),#local-mute,#volume-balance,#volume,#queue button,#media-open")) el.disabled = !enabled || session?.canControl===false&&!el.matches("#play,#media-open");
 }
 function wire(kind, value) {
   const bytes = encoder.encode(JSON.stringify(value));
@@ -92,7 +93,7 @@ function wire(kind, value) {
 }
 function send(kind, value, owner = session) {
   if (!owner || owner.closed || owner.socket?.readyState !== WebSocket.OPEN) return false;
-  if (owner.socket.bufferedAmount > 65536) { if(owner.audio){owner.socket.close();return false;} stop("网络持续阻塞，请重新连接", true); return false; }
+  if (owner.socket.bufferedAmount > 65536) { if(owner.audio){owner.socket.close();return false;} recoverPcm(owner); return false; }
   owner.socket.send(wire(kind, value)); return true;
 }
 function command(action, value) {
@@ -155,6 +156,7 @@ function updateCover(state,owner){
   }).catch(()=>{if(session===owner&&owner.coverId===id)owner.coverId=undefined;});
 }
 $("cover").addEventListener("error",()=>{$("cover").hidden=true;$("cover-placeholder").style.display="";});
+$("volume-balance").addEventListener("change",()=>command("volumeBalance",$("volume-balance").checked));
 $("local-mute").addEventListener("change",()=>command("localMute",$("local-mute").checked));
 function renderState(state) {
   if(Number.isSafeInteger(state?.revision)&&session){if(state.revision<(session.stateRevision??-1))return;session.stateRevision=state.revision;}
@@ -177,6 +179,7 @@ function renderState(state) {
   if(source?.objects>0)fields.push(`${source.objects} 对象`);
   $("format-badge").textContent=fields.join(" · ")||"等待歌曲信息";
   $("local-mute").checked=state.localMuted!==false;
+  $("volume-balance").checked=state.volumeBalanceEnabled===true;
   syncHostPlayback(session,state,resumeAudio,()=>{if(session)stats(session);});
   if(session?.pcmOutput){
     const owner=session,running=!!state.playing&&!state.paused;
@@ -200,6 +203,8 @@ function renderState(state) {
     $("volume").value = Math.round(state.volume * 100); $("volume-label").textContent = `${$("volume").value}%`;
   }
   updatePlayButton();
+  $("render-setting").hidden=state.stereoAvailable!==true;
+  if(state.stereoAvailable!==true){$("render-menu").hidden=true;$("render").setAttribute("aria-expanded","false");}
   menuValue("loop", loopModes, state.playbackMode); menuValue("render", renderModes, state.stereoMode);
   const signature = JSON.stringify([state.playlist, state.currentId]);
   if (signature !== playlistSignature) {
@@ -289,6 +294,7 @@ function receive(kind, body, owner) {
       syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));
     }
     owner.canControl=value.canControl!==false;
+    clearTimeout(owner.connectDeadline);
     owner.ready = true; if(!owner.audio)send("H", {protocol:1}, owner);
     $("pairing").hidden = true; pages.show();
     setControls(true); message(""); stats(owner);
@@ -300,7 +306,7 @@ function receive(kind, body, owner) {
     soundTools.acknowledged(value.id,value.error,value);
     clearTimeout(owner.pending.get(value.id)); owner.pending.delete(value.id);
     if (value.error) {if(value.id===owner.switchCommand){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));}owner.pendingStart=false;stats(owner);message(value.error, true);}
-  } else if (kind === "E") throw Error(value.error || "主机连接失败");
+  } else if (kind === "E") {if(value.retryable===true&&!owner.audio){recoverPcm(owner);return;}throw Error(value.error || "主机连接失败");}
   else if(kind==="T"&&owner.audio&&value.clipped>0)$("format-note").textContent=`float32 转 24-bit PCM 后无损编码；已有 ${value.clipped} 个超满幅采样截断，请检查主机输出电平。`;
   else if (kind !== "T") throw Error("无法识别主机消息");
 }
@@ -345,14 +351,37 @@ function openHlsControl(owner) {
   socket.onerror=()=>{};
   socket.onclose=event=>{
     if(owner.closed||session!==owner)return;
-    if(owner.synchronized){clearTimeout(owner.syncTimer);owner.syncPhase='holding';owner.syncWaiting=true;owner.audio.pause();}
+    if(owner.synchronized){clearTimeout(owner.syncTimer);clearTimeout(owner.connectDeadline);owner.syncPhase='holding';owner.syncWaiting=true;owner.audio.pause();}
     setControls(false);
     if(event.code===1008){stop(event.reason||"收听会话失效",true);return;}
     stats(owner);owner.reconnect=setTimeout(()=>openHlsControl(owner),2000);
   };
 }
+function showRememberedDevice(status){
+  const remembered=status?.status==="authorized"&&!status.legacy;
+  for(const id of ["invite","device-name"]){
+    $(id).hidden=remembered;
+    document.querySelector(`label[for="${id}"]`).hidden=remembered;
+  }
+  $("remembered-device").hidden=!remembered;
+  $("remembered-device").textContent=remembered?`已记住此设备${status.name?` · ${status.name}`:""}，无需再次输入密钥。`:"";
+  $("connect").textContent=remembered?"重新连接并收听":"连接并收听";
+  if(remembered){$("invite").value="";try{sessionStorage.removeItem("sda-web-pairing");}catch{}}
+}
+let autoConnectAttempted=false,explicitlyDisconnected=false;
+try{explicitlyDisconnected=localStorage.getItem("sda-web-disconnected")==="1";}catch{}
+async function checkRememberedDevice(auto=false){
+  try{
+    const response=await fetch("/pair/status",{cache:"no-store"});
+    if(!response.ok)return;
+    const status=await response.json();if(!session&&!explicitlyDisconnected)showRememberedDevice(status);
+    if(auto&&!session&&!autoConnectAttempted&&!explicitlyDisconnected&&status.status==="authorized"&&!status.legacy){autoConnectAttempted=true;void connect();}
+  }catch{/* Keep manual pairing available when the host cannot be reached. */}
+}
 async function authorizeDevice(owner,enteredKey){
   const status=await fetch("/pair/status").then(r=>{if(!r.ok)throw Error("无法检查设备授权");return r.json();});
+  showRememberedDevice(status);
+  try{localStorage.setItem("sda-web-device-name",$("device-name").value);}catch{}
   if(status.status==="authorized")return status.legacy?await tokenFrom(enteredKey):"";
   const token=await tokenFrom(enteredKey);
   const response=await fetch("/pair/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token,name:$("device-name").value})});
@@ -376,7 +405,7 @@ async function connectHls(enteredKey){
     if(owner.closed||session!==owner)return;
     await disconnecting;
     const response=await fetch("/hls/session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:owner.key})});
-    if(!response.ok)throw Error(response.status===403?"主机未允许 HLS 或配对已失效，请刷新网页重新连接":response.status===409?"已达到两台设备上限，或此设备已在其他页面收听":"无法建立无损媒体流，请检查配对密钥和主机");
+    if(!response.ok)throw Error(response.status===403?"主机未允许 HLS 或配对已失效，请刷新网页重新连接":response.status===409?"已达到主机设置的连接上限，或此设备已在其他页面收听":"无法建立无损媒体流，请检查配对密钥和主机");
     const info=await response.json();owner.hls=info.id;
     if(owner.closed||session!==owner){void fetch(`/hls/${info.id}/stop`,{method:"POST",keepalive:true});return;}
     try{sessionStorage.setItem("sda-web-pairing",owner.key);}catch{}
@@ -394,6 +423,57 @@ async function connectHls(enteredKey){
     owner.timer=setInterval(()=>{if(owner.audio.paused&&!owner.synchronized)send("K",{},owner);stats(owner);},250);
   }catch(error){if(session===owner)stop(error.message,true);}
 }
+function recoverPcm(owner){
+  if(session!==owner||owner.closed||owner.reconnect)return;
+  if((owner.reconnectAttempts??0)>=5){stop("网络多次重连失败，请检查连接后重试",true);return;}
+  owner.ready=false;owner.buffering=true;owner.pcmHostRunning=undefined;
+  owner.pcmOutput?.pause();owner.node.port.postMessage({type:"hold",enabled:true});
+  clearTimeout(owner.connectDeadline);
+  const old=owner.socket;owner.socket=null;old?.close();
+  for(const [id,timer]of owner.pending){clearTimeout(timer);controlResults.get(id)?.reject(Error("连接中断，请确认操作结果后重试"));controlResults.delete(id);}
+  owner.pending.clear();soundTools.disconnected();setControls(false);updateSystemPlayback();
+  $("connection").textContent="正在重连";message("连接中断，正在重新连接主机…");
+  const delay=Math.min(8000,1000*2**(owner.reconnectAttempts??0));owner.reconnectAttempts=(owner.reconnectAttempts??0)+1;
+  owner.reconnect=setTimeout(()=>{owner.reconnect=null;if(session===owner&&!owner.closed)openPcmSocket(owner);},delay);
+}
+function openPcmSocket(owner){
+  if(session!==owner||owner.closed)return;
+  owner.ready=false;owner.consumed=0;owner.queued=0;owner.lastHost=Date.now();
+  owner.pcmEpoch=(owner.pcmEpoch??0)+1;
+  owner.node.port.postMessage({type:"new-session",epoch:owner.pcmEpoch});
+    const socket = owner.socket = new WebSocket(`wss://${location.host}/stream`); socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      if (owner.closed || session!==owner || owner.socket!==socket) { socket.close(); return; }
+      socket.send(JSON.stringify({protocol:1, token:owner.key,pcmPipeline:true}));
+      try { sessionStorage.setItem("sda-web-pairing", owner.key); } catch { /* Private browsing can disable storage. */ }
+    };
+    let pending = new Uint8Array(0);
+    socket.onmessage = event => {
+      if (owner.closed || session !== owner || owner.socket!==socket) return;
+      try {
+        if (!(event.data instanceof ArrayBuffer)) throw Error("主机未发送二进制 PCM 数据");
+        const chunk = new Uint8Array(event.data), joined = new Uint8Array(pending.length + chunk.length);
+        joined.set(pending); joined.set(chunk, pending.length); pending = joined;
+        while (pending.length >= 5) {
+          const length = new DataView(pending.buffer, pending.byteOffset + 1, 4).getUint32(0, true);
+          if (length > MAX_PACKET) throw Error("主机数据包超过上限");
+          if (pending.length < length + 5) break;
+          const kind = String.fromCharCode(pending[0]), body = pending.subarray(5, 5 + length);
+          pending = pending.subarray(5 + length); receive(kind, body, owner);
+          if(session!==owner||owner.socket!==socket||owner.closed)return;
+        }
+        if (pending.length > MAX_PACKET + 5) throw Error("网络缓冲超过上限");
+      } catch (error) { stop(error.message, true); }
+    };
+    socket.onerror = () => { if (session === owner) message("无法连接主机，请检查 HTTPS 证书、主机状态及网络", true); };
+    socket.onclose = event => {
+      if(session!==owner||owner.socket!==socket||owner.closed)return;
+      clearTimeout(owner.connectDeadline);
+      if(event.code===1008){stop(event.reason||"设备授权已失效，请重新连接",true);return;}
+      recoverPcm(owner);
+    };
+    owner.connectDeadline=setTimeout(()=>{if(session===owner&&owner.socket===socket&&!owner.ready)recoverPcm(owner);},12000);
+}
 async function connect() {
   if (session) return;
   const enteredKey = $("invite").value;
@@ -410,59 +490,41 @@ async function connect() {
     owner.pcmOutput=createPcmMediaOutput(context,()=>{if(session===owner)stats(owner);});
     $("disconnect").hidden = false;
     // Called within the click gesture, before asynchronous module/network work.
-    const resumed = context.resume();
+    void context.resume().catch(()=>{});
     // Connecting is not playback. The primary play gesture or an already
     // playing host starts the media element; idle connections stay out of Now Playing.
     const key = await authorizeDevice(owner,enteredKey);
     if (context.sampleRate !== 48000) throw Error("当前浏览器无法创建 48 kHz 音频输出，请换用新版 Chrome 或 Edge");
-    await context.audioWorklet.addModule("/pcm-worklet.mjs"); await resumed;
+    await context.audioWorklet.addModule("/pcm-worklet.mjs");
     if (session !== owner || owner.closed) return;
     const node = owner.node = new AudioWorkletNode(context, "sda-remote-pcm", {numberOfInputs:0, numberOfOutputs:1, outputChannelCount:[2], channelCount:2, channelCountMode:"explicit", channelInterpretation:"discrete"});
     node.connect(owner.pcmOutput.destination);
     node.onprocessorerror = () => { if (session === owner) stop("浏览器音频处理已中断，请重新连接", true); };
     node.port.onmessage = ({data}) => {
-      if (owner.closed || session !== owner) return;
+      if (owner.closed || session !== owner || data.epoch!==owner.pcmEpoch) return;
       if (data.type === "error") { stop(data.detail || "音频缓冲异常", true); return; }
       if (data.type === "progress") {
         const changed=owner.buffering!==data.buffering;
+        if(data.consumed>0&&!data.buffering)owner.reconnectAttempts=0;
         owner.consumed = data.consumed; owner.queued = data.queued; owner.buffering = data.buffering;
         if(changed)updateSystemPlayback();
         if (owner.ready){
           const report=changed||Date.now()-(owner.mediaReportAt??0)>5000;
           if(report)owner.mediaReportAt=Date.now();
-          send("K", {consumed:owner.consumed,...(report?{mediaState:{hidden:document.hidden,context:context.state,playback:navigator.mediaSession?.playbackState??'unavailable',buffering:owner.buffering,mediaElement:true,mediaPaused:owner.pcmOutput.audio.paused,mediaReadyState:owner.pcmOutput.audio.readyState}}:{})}, owner);
+          send("K", {consumed:owner.consumed,...(report?{mediaState:{hidden:document.hidden,context:context.state,playback:navigator.mediaSession?.playbackState??'unavailable',buffering:owner.buffering,queuedMs:Math.round(owner.queued/48),receivedFrames:owner.bytes/8,mediaElement:true,mediaPaused:owner.pcmOutput.audio.paused,mediaReadyState:owner.pcmOutput.audio.readyState}}:{})}, owner);
         }
       }
     };
     context.onstatechange = () => stats(owner);
-    const socket = owner.socket = new WebSocket(`wss://${location.host}/stream`); socket.binaryType = "arraybuffer";
-    socket.onopen = () => {
-      if (owner.closed) { socket.close(); return; }
-      socket.send(JSON.stringify({protocol:1, token:key}));
-      try { sessionStorage.setItem("sda-web-pairing", key); } catch { /* Private browsing can disable storage. */ }
-    };
-    let pending = new Uint8Array(0);
-    socket.onmessage = event => {
-      if (owner.closed || session !== owner) return;
-      try {
-        if (!(event.data instanceof ArrayBuffer)) throw Error("主机未发送二进制 PCM 数据");
-        const chunk = new Uint8Array(event.data), joined = new Uint8Array(pending.length + chunk.length);
-        joined.set(pending); joined.set(chunk, pending.length); pending = joined;
-        while (pending.length >= 5) {
-          const length = new DataView(pending.buffer, pending.byteOffset + 1, 4).getUint32(0, true);
-          if (length > MAX_PACKET) throw Error("主机数据包超过上限");
-          if (pending.length < length + 5) break;
-          const kind = String.fromCharCode(pending[0]), body = pending.subarray(5, 5 + length);
-          pending = pending.subarray(5 + length); receive(kind, body, owner);
-        }
-        if (pending.length > MAX_PACKET + 5) throw Error("网络缓冲超过上限");
-      } catch (error) { stop(error.message, true); }
-    };
-    socket.onerror = () => { if (session === owner) message("无法连接主机，请检查 HTTPS 证书、主机状态及网络", true); };
-    socket.onclose = event => { if (session === owner) stop(event.reason || "连接已断开，请重新连接", event.code !== 1000); };
+    owner.key=key;openPcmSocket(owner);
+    const watchdog=new ConnectionWatchdog();
     owner.timer = setInterval(() => {
       if (session !== owner) return;
-      if (Date.now() - owner.lastHost > 15000) { stop("主机超过 15 秒没有响应，请检查网络", true); return; }
+      const health=watchdog.check(Date.now(),owner.lastHost,document.hidden);
+      if(owner.reconnect||!owner.ready)return;
+      if(health==="expired"){recoverPcm(owner);return;}
+      if(health==="probing"){owner.connectionProbing=true;message("正在确认主机连接…");}
+      else if(health==="alive"&&owner.connectionProbing){owner.connectionProbing=false;message("");}
       if (owner.ready) send("K", {consumed:owner.consumed}, owner); stats(owner);
     }, 1000);
   } catch (error) { if (!owner || session === owner) stop(error.message || "无法启动浏览器音频", true); }
@@ -473,7 +535,7 @@ function stop(reason = "已断开连接", error = false) {
   const owner = session; session = null;pages.hide();$("cover").hidden=true;$("cover").removeAttribute("src");$("cover-placeholder").hidden=false;
   if (owner) {
     endSystemPlayback(owner);
-    owner.closed = true; owner.startupProbe?.cancel(); clearInterval(owner.timer);clearTimeout(owner.syncTimer);
+    owner.closed = true; owner.startupProbe?.cancel(); clearInterval(owner.timer);clearTimeout(owner.syncTimer);clearTimeout(owner.connectDeadline);
     owner.prefetch?.cancel();
     owner.pcmOutput?.close();
     for (const timer of owner.pending.values()) clearTimeout(timer);
@@ -487,9 +549,25 @@ function stop(reason = "已断开连接", error = false) {
   }
   $("connect").disabled = false; $("pairing").hidden = false; $("disconnect").hidden = true;
   $("connection").textContent = "未连接"; setControls(false); message(reason, error);
+  void checkRememberedDevice();
 }
-$("connect").addEventListener("click", () => void connect());
-$("disconnect").addEventListener("click", () => stop());
+async function disconnectDevice(){
+  explicitlyDisconnected=true;autoConnectAttempted=true;
+  try{localStorage.setItem("sda-web-disconnected","1");sessionStorage.removeItem("sda-web-pairing");}catch{}
+  $("invite").value="";stop();showRememberedDevice({status:"unpaired"});
+  try{const response=await fetch("/pair/logout",{method:"POST",keepalive:true});if(!response.ok)throw Error();}
+  catch{message("已断开；主机未确认清除授权，重新连接时会先清除旧授权。",true);}
+}
+$("connect").addEventListener("click", async () => {
+  if(explicitlyDisconnected){
+    if(!$("invite").value.trim()){message("请输入配对密钥重新连接",true);return;}
+    try{const response=await fetch("/pair/logout",{method:"POST"});if(!response.ok)throw Error();}
+    catch{message("无法清除旧授权，请确认主机在线后重试",true);return;}
+    explicitlyDisconnected=false;try{localStorage.removeItem("sda-web-disconnected");}catch{}
+  }
+  void connect();
+});
+$("disconnect").addEventListener("click", () => void disconnectDevice());
 $("play").addEventListener("click", () => {
   const pause=playback?.playing&&!playback.paused&&!browserNeedsPlay();
   if(session&&!pause&&session.canControl!==false){session.pendingStart=true;updateReceiverView();}
@@ -499,7 +577,9 @@ $("play").addEventListener("click", () => {
 for (const button of document.querySelectorAll("[data-action]")) button.addEventListener("click", () => command(button.dataset.action));
 $("volume").addEventListener("input", () => { lastVolumeEdit = Date.now(); $("volume-label").textContent = `${$("volume").value}%`; });
 $("volume").addEventListener("change", () => command("volume", Number($("volume").value) / 100));
-window.addEventListener("pagehide", () => stop());
+window.addEventListener("pagehide", event => {if(!event.persisted)stop();});
+window.addEventListener("pageshow", event=>{if(event.persisted&&session&&!session.audio)recoverPcm(session);});
+window.addEventListener("online",()=>{if(session&&!session.audio&&!session.ready&&!session.reconnect)recoverPcm(session);});
 document.addEventListener("visibilitychange", () => {
   const owner = session;
   // Hiding/locking is not a request to disconnect. On return, allow queued
@@ -509,6 +589,7 @@ document.addEventListener("visibilitychange", () => {
   if(document.hidden)return;
   owner.lastHost = Date.now();
   if(owner.audio){openHlsControl(owner);stats(owner);return;}
+  if(!owner.ready&&!owner.reconnect){recoverPcm(owner);return;}
   if (owner.ready) send("K", {consumed:owner.consumed}, owner);
   if (playback?.playing && !playback.paused && owner.context.state !== "running") {
     void owner.context.resume().catch(() => stats(owner));
@@ -521,17 +602,28 @@ document.documentElement.dataset.theme = theme;$("theme-value").textContent=them
 $("theme").addEventListener("click", () => { theme = theme === "light" ? "dark" : "light"; document.documentElement.dataset.theme = theme;$("theme-value").textContent=theme==="light"?"浅色":"深色"; try { localStorage.setItem("sda-web-theme", theme); } catch {} });
 try {
   const key = /^#[a-f0-9]{64}$/.test(location.hash) ? location.hash.slice(1) : sessionStorage.getItem("sda-web-pairing") || "";
-  $("invite").value = key;
+  $("invite").value = explicitlyDisconnected ? "" : key;
   if (location.hash) history.replaceState(null, "", location.pathname);
 } catch { /* User can paste the full link into the pairing field. */ }
 setControls(false);
+try{$("device-name").value=localStorage.getItem("sda-web-device-name")||"";}catch{}
+void checkRememberedDevice(true);
+window.addEventListener("pageshow",()=>{if(!session)void checkRememberedDevice(true);});
 
 initGlass();
+for(const panel of document.querySelectorAll("#sound-tools,#media-picker")){
+  let frame=0;
+  const update=()=>{frame=0;panel.style.setProperty("--header-scroll",String(Math.min(1,Math.max(0,panel.scrollTop+(panel.querySelector('.media-page[aria-hidden="false"]')?.scrollTop??0))/32)));};
+  panel.addEventListener("scroll",()=>{if(!frame)frame=requestAnimationFrame(update);},{passive:true,capture:true});
+  if(panel.id==="media-picker"){const heading=panel.querySelector(".tools-heading");new ResizeObserver(()=>{if(heading.offsetHeight)panel.style.setProperty("--media-header-height",`${heading.offsetHeight}px`);}).observe(heading);}
+  new MutationObserver(update).observe(panel,{attributes:true,attributeFilter:["open"]});
+  update();
+}
 
 // Same rounded lens displacement as desktop GlassRefraction, generated only on resize.
 // WebKit uses the CSS material: SVG backdrop filters are not portable there.
 function initGlass(){
- const elements=[...document.querySelectorAll('#player-settings>summary,.player-settings-menu,.transport>button,.transport-loop>button')];
+ const elements=[...document.querySelectorAll('#player-settings>summary,.player-settings-menu,.transport>button,.transport-loop>button,.dialog-close,.dialog-back')];
  for(const element of elements)element.classList.add('liquid-control');
  if(!/Chrome|Chromium|Edg\//.test(navigator.userAgent)||/CriOS|EdgiOS/.test(navigator.userAgent)||matchMedia('(prefers-reduced-transparency: reduce)').matches)return;
  const ns='http://www.w3.org/2000/svg';const svg=document.createElementNS(ns,'svg');svg.setAttribute('width','0');svg.setAttribute('height','0');svg.classList.add('glass-definitions');svg.setAttribute('aria-hidden','true');const defs=document.createElementNS(ns,'defs');svg.append(defs);document.body.append(svg);

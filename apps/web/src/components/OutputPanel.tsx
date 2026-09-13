@@ -55,7 +55,7 @@ export default function OutputPanel() {
     <div className="output-manager-status" aria-live="polite">
       <strong>{data?.status.state==="ready"?data.status.actualName:"输出不可用"}</strong>
       {data?.status.state==="ready"&&<span>{data.status.mode==="exclusive"?"实际独占":"实际共享"} · {(data.status.sampleRate??0)/1000} kHz · {data.status.channels} 声道 · 缓冲 {data.status.bufferMs?.toFixed(1)} ms</span>}
-      <small>内部渲染 48 kHz / 双耳双声道，按设备采样率转换。指定设备断开后不会自动切到外放。</small>
+      <small>内部渲染 48 kHz / 双耳双声道，按设备采样率转换。输出会话失效时自动重新初始化，不重连蓝牙；指定耳机断开后不会切到外放。</small>
       {(error||data?.status.detail)&&<p role="status">{error||data?.status.detail}</p>}
     </div>
   </fieldset>;

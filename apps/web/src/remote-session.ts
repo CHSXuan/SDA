@@ -14,6 +14,8 @@ export interface RemotePlayback {
   artist?:string; album?:string;
   tools?:RemoteTools|null;
   loading?:boolean;
+  stereoAvailable?:boolean;
+  volumeBalanceEnabled?:boolean;
   title:string; playing:boolean; paused:boolean; position:number; duration:number; volume:number;
   currentId:string; playbackMode:string; stereoMode:string; playlist:{id:string;title:string}[];
 }

@@ -37,7 +37,7 @@ export default function NearFieldPanel(){
       if(status?.running && !await api.nativeRendererNearField(next))throw Error("近场设置未被接受");
       if(!status?.running)setBlocked("已保存 · 等待音频输出启动");
       else if(status.hrtfReady===false)setBlocked("已保存 · 等待 HRTF 就绪");
-      localStorage.setItem("sda-near-field-v1",JSON.stringify(next));setValue(next);setScale(next.metresPerUnit);
+      localStorage.setItem("sda-near-field-v1",JSON.stringify(next));setValue(next);setScale(next.metresPerUnit);window.dispatchEvent(new Event("sda-object-rendering-change"));
     }catch(e){setError(String(e));}finally{setBusy(false);}
   };
   return <fieldset className="settings-group settings-section" disabled={busy}>

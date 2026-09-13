@@ -32,7 +32,7 @@ pub fn prepare_mirror_with_seed(observed:&mut u64,reset:bool,origin:u64,local:&s
 pub fn mirror_origin()->u64{MIRROR_ORIGIN.load(Ordering::Acquire)}
 pub fn publish_mirror(block:&[f32]){if MIRROR_SELECTED.load(Ordering::Acquire)&&mirror_fifo().push(block)!=block.len()/2{MIRROR_OVERFLOW.store(true,Ordering::Release);}}
 pub fn mirror_ready()->bool{MIRROR_READY.load(Ordering::Acquire)==MIRROR_EPOCH.load(Ordering::Acquire)}
-pub fn mirror_overflow()->bool{MIRROR_OVERFLOW.load(Ordering::Acquire)}
+pub fn mirror_overflow()->bool{mirror_ready()&&MIRROR_OVERFLOW.load(Ordering::Acquire)}
 pub fn receiver() -> bool { std::env::var_os("SDA_REMOTE_RECEIVER").is_some() }
 
 pub struct HostOutput {
@@ -297,5 +297,23 @@ mod tests {
     fn only_local_broker_addresses_are_allowed() {
         assert!(HostOutput::connect("192.0.2.1:1234",&"ab".repeat(32)).is_err());
         assert!(HostOutput::connect("127.0.0.1:1234","short").is_err());
+    }
+}
+
+#[cfg(test)]
+mod reconnect_regression {
+    use super::*;
+    #[test]
+    fn new_mirror_epoch_does_not_inherit_previous_overflow() {
+        MIRROR_EPOCH.store(100,Ordering::Release);
+        MIRROR_READY.store(100,Ordering::Release);
+        MIRROR_OVERFLOW.store(true,Ordering::Release);
+        assert!(mirror_overflow());
+        MIRROR_EPOCH.store(101,Ordering::Release);
+        assert!(!mirror_ready());
+        assert!(!mirror_overflow(),"old overflow must not reject a new connection before producer reset");
+        let mut observed=100;
+        prepare_mirror(&mut observed,false);
+        assert!(mirror_ready());assert!(!mirror_overflow());
     }
 }

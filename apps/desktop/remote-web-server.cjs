@@ -17,6 +17,10 @@ function createRemoteWeb(session, {packet,decodePackets}) {
   async function pairRequest(req,res){
     if(session.role!=="host"){res.writeHead(404);res.end();return;}
     if(req.url==="/pair/status"&&req.method==="GET"){res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify(session.devices?.status(req)??{status:"authorized",legacy:true}));return;}
+    if(req.url==="/pair/logout"&&req.method==="POST"&&req.headers.origin===`https://${req.headers.host}`){
+      session.devices?.logout(req);
+      res.writeHead(200,{"Cache-Control":"no-store","Set-Cookie":["sda_device=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0","sda_hls=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"]});res.end();return;
+    }
     if(req.url!=="/pair/request"||req.method!=="POST"||req.headers.origin!==`https://${req.headers.host}`){res.writeHead(403);res.end();return;}
     let body=Buffer.alloc(0);for await(const chunk of req){body=Buffer.concat([body,chunk]);if(body.length>2048){res.writeHead(413);res.end();return;}}
     try{const value=JSON.parse(body),result=session.devices?.request(req,session.key,value.token,value.name)??{status:"authorized"};if(result.cookie)res.setHeader("Set-Cookie",result.cookie);res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify({status:result.status}));}
@@ -127,6 +131,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
   ]);
   files.set("/startup-calibration.mjs",["startup-calibration.mjs","text/javascript; charset=utf-8"]);
   files.set("/pcm-media-output.mjs",["pcm-media-output.mjs","text/javascript; charset=utf-8"]);
+  files.set("/connection-watchdog.mjs",["connection-watchdog.mjs","text/javascript; charset=utf-8"]);
   const cache = new Map();
   const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -160,7 +165,11 @@ function createRemoteWeb(session, {packet,decodePackets}) {
     wsServer.handleUpgrade(req, socket, head, ws => {
       const generation = session.generation;
       const timer = setTimeout(() => ws.close(1008, "配对超时"), 5000).unref();
-      ws.once("close", () => clearTimeout(timer)); ws.on("error", () => {});
+      ws.once("close", (code,reason) => {
+        clearTimeout(timer);
+        session.hooks.diagnostic?.({transport:"websocket",event:"close",code,reason:reason.toString("utf8").replace(/[\x00-\x1f]/g," ").slice(0,160)});
+      });
+      ws.on("error", error => session.hooks.diagnostic?.({transport:"websocket",event:"error",code:typeof error.code==="string"?error.code:"unknown"}));
       ws.once("message", (data, binary) => {
         clearTimeout(timer);
         let auth;
@@ -176,8 +185,15 @@ function createRemoteWeb(session, {packet,decodePackets}) {
           const stream=createWebSocketStream(ws,{highWaterMark:64*1024});stream.setNoDelay=()=>stream;session.track(stream);
           try{hls.attachControl(stream,decodePackets);}catch{ws.close(1008,"此收听会话已有控制页面");}return;
         }
-        if (!session.canAccept()||device.id&&[...session.hostPeers].some(p=>p.deviceId===device.id&&!p.destroyed)) { ws.close(1008, "设备连接数量已达上限，或该设备已在收听"); return; }
+        if (!session.canAccept()||device.id&&[...session.hostPeers].some(p=>p.deviceId===device.id&&!p.destroyed)) { ws.close(1013, "设备连接尚未释放或已达上限，请稍后重试"); return; }
         const stream = createWebSocketStream(ws, { highWaterMark: 64 * 1024 });
+        // WebSocket pong is handled by the browser networking stack, even when
+        // page JavaScript / audio feedback is suspended in the background.
+        let lastPong=Date.now();
+        ws.on("pong",()=>{lastPong=Date.now();});
+        stream.pcmPipeline=auth.pcmPipeline===true;
+        stream.transportLastSeen=()=>lastPong;
+        stream.probeTransport=()=>{if(ws.readyState===1)ws.ping();};
         stream.remoteAddress = socket.remoteAddress;
         stream.setNoDelay = () => stream;
         identify(stream,device);session.track(stream);session.reservePeer(stream);session.phase = "connecting";

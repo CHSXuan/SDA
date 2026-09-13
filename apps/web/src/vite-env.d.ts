@@ -110,7 +110,7 @@ declare global {
     sdaDesktop?: {
       getRemotePairingKey?:()=>Promise<string>;
       getRemoteStatus?:()=>Promise<import("./remote-session").RemoteStatus>;
-      remoteSession?:(action:"host"|"join"|"stop"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
+      remoteSession?:(action:"host"|"join"|"stop"|"playbackOrigin"|"maxPeers"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
       nativeRendererEnd?:(sample:number)=>Promise<boolean>;
       remoteCommand?:(command:import("./remote-session").RemoteCommand)=>Promise<string>;
       publishRemoteScene?:(scene:import("./remote-session").RemoteScene|undefined)=>void;
@@ -122,11 +122,11 @@ declare global {
       onRemoteResult?:(callback:(result:{id:string;error:string|null})=>void)=>()=>void;
       electron3D: boolean;
       browsePersonalHrtf?: NonNullable<Window["sdaDesktop"]>["browseMedia"];
-      listPersonalHrtf?: () => Promise<{id:string;name:string;directions:number;method:string}[]>;
-      renamePersonalHrtf?: (id:string,name:string)=>Promise<{id:string;name:string;directions:number;method:string}>;
+      listPersonalHrtf?: () => Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}[]>;
+      renamePersonalHrtf?: (id:string,name:string)=>Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}>;
       personalHrtfArchive?: (action:"copy"|"export",id:string,value:string)=>Promise<{id?:string;path?:string}>;
       generatePersonalHrtf?: (parameters:import("../../desktop/parametric-hrtf.mjs").PhrtfParameters,assessment?:unknown) => Promise<{id:string;name:string;method:string}>;
-      importPersonalHrtf?: (sourcePath:string) => Promise<{id:string;name:string;directions:number;method:string}>;
+      importPersonalHrtf?: (sourcePath:string) => Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}>;
       browseMedia?: {
         (action:"places"):Promise<MediaBrowserPlaces>;
         (action:"list",value:string):Promise<MediaBrowserDirectory>;
@@ -152,6 +152,7 @@ declare global {
       getNativeRendererStatus?: () => Promise<NativeRendererStatus>;
       getOutputDevices?: () => Promise<import("./components/OutputPanel").OutputDevices>;
       setOutputDevice?: (settings: import("./components/OutputPanel").OutputSettings) => Promise<import("./components/OutputPanel").OutputDevices & {accepted:boolean}>;
+      onRoomLayoutApplied?: (callback:(value:{layout:string;profileId:string})=>void)=>()=>void;
       onOutputDevices?: (callback:(value:import("./components/OutputPanel").OutputDevices)=>void) => () => void;
       startNativeRenderer?: () => Promise<NativeRendererStatus>;
       stopNativeRenderer?: () => Promise<NativeRendererStatus>;

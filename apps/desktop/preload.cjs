@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   getNativeRendererStatus: () => ipcRenderer.invoke("sda:native-renderer-status"),
   getOutputDevices: () => ipcRenderer.invoke("sda:output-devices"),
   setOutputDevice: value => ipcRenderer.invoke("sda:set-output-device", value),
+  onRoomLayoutApplied: callback => subscribe("sda:room-layout-applied", callback),
   onOutputDevices: callback => subscribe("sda:output-devices", callback),
   startNativeRenderer: () => ipcRenderer.invoke("sda:native-renderer-start"),
   stopNativeRenderer: () => ipcRenderer.invoke("sda:native-renderer-stop"),

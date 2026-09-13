@@ -1,6 +1,9 @@
+import ObjectRenderingStatus from "./components/ObjectRenderingStatus";
+import {GlassRefraction} from "./components/GlassRefraction";
+import SheetHeading from "./components/SheetHeading";
 import { readAhead } from "./read-ahead";
 import { Slider } from "./components/Slider";
-import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, type PlaybackMode } from "./playbackOrder";
+import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, adjacentPlaylistItemId, type PlaybackMode } from "./playbackOrder";
 import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
 import NearFieldPanel, {readNearField} from "./components/NearFieldPanel";
 import SourceExtentPanel, {readSourceExtent} from "./components/SourceExtentPanel";
@@ -213,7 +216,7 @@ function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
   }).join(" ");
 }
 
-function HeadTrackingTelemetryPanel({ samples, onClose }: { onClose?:()=>void; samples: readonly HeadTrackingTelemetrySample[] }) {
+function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { renderedPose: HeadPose | null; onClose?:()=>void; samples: readonly HeadTrackingTelemetrySample[] }) {
   const latest = samples[samples.length - 1];
   const scale = Math.max(90, Math.min(1080, Math.ceil(Math.max(
     ...samples.flatMap((sample) => [Math.abs(sample.x), Math.abs(sample.y), Math.abs(sample.z)]),
@@ -221,9 +224,9 @@ function HeadTrackingTelemetryPanel({ samples, onClose }: { onClose?:()=>void; s
   ) / 30) * 30));
 
   return (
-    <div className="panel float-panel head-tracking-panel" aria-label="头部追踪实时数据">
+    <div className="panel float-panel head-tracking-panel desktop-sheet" aria-label="头部追踪实时数据">
+      <SheetHeading title="头部追踪" onClose={onClose}/>
       <div className="telemetry-heading">
-        <h2>头部追踪</h2>
         <span className={latest ? "telemetry-live" : ""}>{latest ? "实时" : "等待数据"}</span>
       </div>
       <p className="telemetry-note">角速度由连续姿态差分计算，并非 AirPods 未公开的原始 IMU 字段。</p>
@@ -247,9 +250,10 @@ function HeadTrackingTelemetryPanel({ samples, onClose }: { onClose?:()=>void; s
       </svg>
       <div className="telemetry-scale"><span>±{scale} °/s</span><span>最近 6 秒</span></div>
       <dl className="telemetry-orientation">
-        <dt>Yaw</dt><dd>{latest ? `${latest.yaw.toFixed(1)}°` : "--"}</dd>
-        <dt>Pitch</dt><dd>{latest ? `${latest.pitch.toFixed(1)}°` : "--"}</dd>
-        <dt>Roll</dt><dd>{latest ? `${latest.roll.toFixed(1)}°` : "--"}</dd>
+        <dt>渲染角度</dt><dd>{renderedPose ? `${(2*Math.atan2(renderedPose.orientation[2],renderedPose.orientation[3])*180/Math.PI).toFixed(1)}°` : "未应用"}</dd>
+        <dt>原始 Yaw</dt><dd>{latest ? `${latest.yaw.toFixed(1)}°` : "--"}</dd>
+        <dt>原始 Pitch</dt><dd>{latest ? `${latest.pitch.toFixed(1)}°` : "--"}</dd>
+        <dt>原始 Roll</dt><dd>{latest ? `${latest.roll.toFixed(1)}°` : "--"}</dd>
       </dl>
     </div>
   );
@@ -431,7 +435,7 @@ export function App() {
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
   const [headTrackingTelemetry, setHeadTrackingTelemetry] = useState<HeadTrackingTelemetrySample[]>([]);
-  const headTrackingSessionRef = useRef(new HeadTrackingSession());
+  const headTrackingSessionRef = useRef(new HeadTrackingSession({yawMode:"yaw",sensitivity:1,smoothingMs:220,deadZoneDegrees:2.5,maxDegreesPerSecond:480}));
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
   const [floatPanel, setFloatPanel] = useState<"roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
@@ -448,6 +452,9 @@ export function App() {
     setPlaybackMode(mode);
     try { localStorage.setItem(PLAYBACK_MODE_KEY, mode); } catch { /* Playback still works if storage is unavailable. */ }
   }, []);
+  const [showObjectNames,setShowObjectNames]=useState(()=>{try{return localStorage.getItem("sda-object-names")==="true";}catch{return false;}});
+  const [miniPlaylistOpen,setMiniPlaylistOpen]=useState(false);
+  useEffect(()=>{if(floatPanel==="playlist")setMiniPlaylistOpen(false);},[floatPanel]);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
@@ -872,11 +879,12 @@ export function App() {
         // through the inverse head rotation. Apple-like feel: 1:1 rotation, a
         // few hundred ms of damping, and a dead zone that swallows tremor — the
         // drift fixes made the old 1.5x amplification read as hypersensitive.
+        headPoseStabilized: true,
         headPose: {
           yawMode: "yaw",
           sensitivity: 1,
           smoothingMs: 220,
-          deadZoneDegrees: 1,
+          deadZoneDegrees: 2.5,
           maxDegreesPerSecond: 480,
           updateHz: 120,
         },
@@ -905,7 +913,7 @@ export function App() {
         await player.dispose();
         return null;
       }
-      const latestHeadPose = headTrackingSessionRef.current.latestPose;
+      const latestHeadPose = headTrackingSessionRef.current.sample();
       if (latestHeadPose) player.setHeadPose(latestHeadPose);
       player.setVolume(volumeRef.current);
       player.setVolumeBalance(volumeBalanceRef.current);
@@ -957,9 +965,7 @@ export function App() {
     });
     const stopStatus = desktop.onHeadTrackingStatus?.(setHeadTrackingStatus);
     const applyPose = (pose: HeadTrackingPose) => {
-      const headPose = headTrackingSessionRef.current.update(rendererHeadPose(pose));
-      const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
-      player?.setHeadPose?.(headPose);
+      headTrackingSessionRef.current.update(rendererHeadPose(pose));
       const timestampMs = performance.now();
       const orientation: Quaternion = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w];
       const previous = previousTelemetryPoseRef.current;
@@ -975,6 +981,13 @@ export function App() {
       ]);
     };
     const stopPose = desktop.onHeadTrackingPose?.(applyPose);
+    let hadPose=false;
+    const poseTimer=setInterval(()=>{
+      const pose=headTrackingSessionRef.current.sample();
+      if(pose) playerRef.current?.setHeadPose(pose);
+      else if(hadPose) playerRef.current?.clearHeadPose();
+      hadPose=!!pose;
+    },20);
     const stopRecenter = desktop.onHeadTrackingRecenter?.((pose) => {
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
       const headPose = pose
@@ -990,6 +1003,7 @@ export function App() {
     return () => {
       stopStatus?.();
       stopPose?.();
+      clearInterval(poseTimer);
       stopRecenter?.();
     };
   }, []);
@@ -1371,16 +1385,18 @@ export function App() {
   );
   playRef.current = play;
 
-  const playPlaylistItem = useCallback((id: string) => {
+  const claimPlayback = (origin: "local"|"remote") => window.sdaDesktop?.remoteSession?.("playbackOrigin",origin) ?? Promise.resolve();
+  const playPlaylistItem = useCallback(async (id: string, origin?: "local"|"remote") => {
     const item = playlistRef.current.find((candidate) => candidate.id === id);
     if (!item) return;
+    if(origin)await claimPlayback(origin);
     playlistCurrentIdRef.current = id;
     setPlaylistCurrentId(id);
     void play(item.source);
   }, [play]);
   playPlaylistItemRef.current = playPlaylistItem;
 
-  const appendToPlaylist = useCallback((sources: readonly PlaybackSource[]) => {
+  const appendToPlaylist = useCallback((sources: readonly PlaybackSource[], origin: "local"|"remote" = "local") => {
     const existing = playlistRef.current;
     const identities = new Set(existing.map((item) => item.identity));
     const additions: PlaylistItem[] = [];
@@ -1403,7 +1419,7 @@ export function App() {
     if (
       firstAddition &&
       (!playlistCurrentIdRef.current || (!playingRef.current && !pausedRef.current))
-    ) playPlaylistItemRef.current(firstAddition.id);
+    ) void claimPlayback(origin).then(()=>playPlaylistItemRef.current(firstAddition.id)).catch(error=>setErrors(prev=>[...prev,String(error)]));
   }, []);
 
   useEffect(() => window.sdaDesktop?.onOpenFile?.((path) => {
@@ -1422,17 +1438,19 @@ export function App() {
   /** 播放中 → 暂停；暂停中 → 继续；已播完 → 重播（macOS 播放键行为）。
    *  UI 状态立即切换（乐观更新），不等 suspend/resume 的 promise —
    *  某些环境下这些 promise 不 resolve，会表现为按钮"没反应"。 */
-  const togglePlay = useCallback(() => {
+  const togglePlay = useCallback(async () => {
     const player = playerRef.current;
     if (playing && !paused) {
       pausedRef.current = true;
       setPaused(true);
       void player?.pause();
     } else if (paused) {
+      await claimPlayback("local");
       pausedRef.current = false;
       setPaused(false);
       void player?.resume();
     } else if (lastSourceRef.current) {
+      await claimPlayback("local");
       void play(lastSourceRef.current);
     }
   }, [playing, paused, play]);
@@ -1551,6 +1569,9 @@ export function App() {
 
   const [headphoneSwitchBusy,setHeadphoneSwitchBusy]=useState(false);
   const [audioSettingsRevision,setAudioSettingsRevision]=useState(0);
+  useEffect(()=>window.sdaDesktop?.onRoomLayoutApplied?.(({profileId})=>{
+    setRoomAudition(v=>({...v,profileId}));setAudioSettingsRevision(v=>v+1);
+  }),[]);
   const changeHeadphoneCompensation = async (id: string, source=headphoneSource) => {
     if(headphoneSwitchBusy)return;
     setHeadphoneSwitchBusy(true);
@@ -1796,9 +1817,10 @@ export function App() {
     scene:{objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
     source:track?{codec:track.codec,sampleRate:track.sampleRate,channels:track.rawBedLabels?.length??track.channels,objects:track.objectChannels}:undefined,
     artist:track?.artist, album:track?.album, coverUrl:track?.coverUrl, title:track?.title??fileNameRef.current??"",playing,paused,position,duration,volume,
-    currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,
+    currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,
     playlist:playlist.map(item=>({id:item.id,title:item.title})),
   },async command=>{
+    if(["play","next","previous","track","replay"].includes(command.action))await claimPlayback("remote");
     switch(command.action){
       case "play":
         if(paused){pausedRef.current=false;setPaused(false);await playerRef.current?.resume();}
@@ -1810,15 +1832,15 @@ export function App() {
       case "pause":pausedRef.current=true;setPaused(true);await playerRef.current?.pause();break;
       case "next":case "previous":{
         const items=playlistRef.current;if(!items.length)throw Error("主机播放列表为空");
-        const index=items.findIndex(item=>item.id===playlistCurrentIdRef.current);
-        const next=command.action==="next"?(index+1)%items.length:(Math.max(index,0)-1+items.length)%items.length;
-        playPlaylistItem(items[next]!.id);break;
+        const next=adjacentPlaylistItemId(items,playlistCurrentIdRef.current,command.action==="next"?1:-1);
+        if(next)await playPlaylistItem(next);break;
       }
-      case "mediaPaths":appendToPlaylist((command.value as string[]).map(path=>({kind:"path",path})));break;
+      case "mediaPaths":appendToPlaylist((command.value as string[]).map(path=>({kind:"path",path})),"remote");break;
       case "track":if(!playlistRef.current.some(item=>item.id===command.value))throw Error("歌曲已从主机列表移除");playPlaylistItem(String(command.value));break;
       case "replay":if(!lastSourceRef.current)throw Error("主机尚未选择歌曲");replay();break;
       case "volume":changeVolume(Number(command.value));break;
       case "playbackMode":changePlaybackMode(command.value as PlaybackMode);break;
+      case "volumeBalance":changeVolumeBalance(command.value===true);break;
       case "stereoMode":await changeStereoRenderMode(command.value as StereoRenderMode);break;
       case "roomCancel":await window.sdaDesktop?.roomLabCancel?.();break;
       case "roomGenerate":{
@@ -2012,7 +2034,7 @@ export function App() {
             <div className="settings-header">
               <h2>系统设置</h2>
               <button className="settings-close" onClick={() => setSettingsOpen(false)} title="关闭系统设置" aria-label="关闭系统设置">
-                <X size={18} />
+                <GlassRefraction strength={10}/><X size={20} />
               </button>
             </div>
             <div className="settings-tabs" role="tablist" aria-label="设置分类">
@@ -2059,12 +2081,13 @@ export function App() {
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>空间渲染</legend>
-                <label className="settings-switch" title="开启：逐对象 HRTF 卷积。关闭：虚拟音箱总线。两种模式均保留独立对象与 Solo。">
-                  <span>逐对象双耳渲染 <small>实验性</small></span>
+                <label className="settings-switch" title="独立启用基础逐对象处理。关闭后，连续方向或近场仍可自动启用对象处理。">
+                  <span>基础逐对象双耳渲染 <small>实验性</small></span>
                   <input type="checkbox" role="switch" checked={directObjectHrtf}
                     disabled={directObjectHrtfBusy || nativeRendererBusy}
                     onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
                 </label>
+                <ObjectRenderingStatus direct={directObjectHrtf}/>
                 <label className="settings-switch" title="启动或停止桌面唯一的 Rust/WASAPI 空间输出。停止后桌面不会退回 Web Audio 输出。">
                   <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <input type="checkbox" role="switch" checked={nativeRendererStatus?.running ?? false}
@@ -2170,7 +2193,7 @@ export function App() {
 
       <main>
         <section className="view">
-{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
           <div className="scene-heading"><span>空间声场</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
             track={track}
@@ -2180,14 +2203,19 @@ export function App() {
             paused={paused}
             objectCount={objects.length}
             volume={volume}
-            onTogglePlay={togglePlay}
+            canSkip={playlist.length>0}
+            onPrevious={()=>{const id=adjacentPlaylistItemId(playlistRef.current,playlistCurrentIdRef.current,-1);if(id)void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]));}}
+            onNext={()=>{const id=adjacentPlaylistItemId(playlistRef.current,playlistCurrentIdRef.current,1);if(id)void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]));}}
+            onTogglePlay={()=>void togglePlay().catch(error=>setErrors(prev=>[...prev,String(error)]))}
             playbackMode={playbackMode}
             onPlaybackModeChange={changePlaybackMode}
-            playlistOpen={floatPanel === "playlist"}
-            onTogglePlaylist={() => setFloatPanel(current => current === "playlist" ? null : "playlist")}
-            onReplay={replay}
+            playlistOpen={miniPlaylistOpen}
+            onTogglePlaylist={() => {setMiniPlaylistOpen(open=>!open);setFloatPanel(current=>current==="playlist"?null:current);}}
+            onReplay={()=>void claimPlayback("local").then(replay).catch(error=>setErrors(prev=>[...prev,String(error)]))}
             onVolume={changeVolume}
-          />
+          >
+            <PlaylistPanel embedded playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={id=>void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]))} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setMiniPlaylistOpen(false)}/>
+          </MiniPlayer>
         </section>
       </main>
 
@@ -2197,11 +2225,11 @@ export function App() {
           snapshot={{layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,muted:[...mutedSpeakerNames],solo:[...soloSpeakerNames],focus:[...focusedSpeakers]}}
           onRecall={recallLayoutMemory} onCompare={applyRoomComparison} onRestore={restoreRoomComparison} onVisual={setRoomVisual} comparison={roomComparison} visualSpeaker={roomVisual?.speaker} audition={roomAudition} onAudition={setRoomAudition}/>}
         {floatPanel === "head-tracking" && headTrackingStatus?.running && (
-          <HeadTrackingTelemetryPanel onClose={()=>setFloatPanel(null)} samples={headTrackingTelemetry} />
+          <HeadTrackingTelemetryPanel renderedPose={headTrackingSessionRef.current.latestPose} onClose={()=>setFloatPanel(null)} samples={headTrackingTelemetry} />
         )}
         {floatPanel === "stream" && (
-          <div className="panel float-panel">
-            <h2>码流</h2>
+          <div className="panel float-panel desktop-sheet">
+            <SheetHeading title="码流" onClose={()=>setFloatPanel(null)}/>
             {track ? (
               <dl>
                 <dt>编码</dt>
@@ -2257,8 +2285,8 @@ export function App() {
           </div>
         )}
         {floatPanel === "binaural" && (
-          <div className="panel float-panel">
-            <h2>双耳元数据</h2>
+          <div className="panel float-panel desktop-sheet">
+            <SheetHeading title="双耳元数据" onClose={()=>setFloatPanel(null)}/>
             <dl>
               <dt>来源</dt>
               <dd>{binauralMetadata?.available ? `BWF dbmd ${binauralMetadata.version ?? ""}` : "当前输入未携带可读取的 Binaural Render Mode"}</dd>
@@ -2288,9 +2316,15 @@ export function App() {
           </div>
         )}
         {floatPanel === "pinna" && (
-          <div className="panel float-panel personal-hrtf-panel">
-            <div className="personal-hrtf-heading"><h2>个人 HRTF</h2><button type="button" aria-label="关闭个人 HRTF" onClick={()=>setFloatPanel(null)}><X size={16}/></button></div>
+          <div className="panel float-panel personal-hrtf-panel desktop-sheet">
+            <SheetHeading title="耳廓" detail="个人档案与内置测量库" onClose={()=>setFloatPanel(null)}/>
             <PersonalHrtfPanel layout={outputSpeakers} currentHead={binauralHead} playing={playing&&!paused}
+              onPrepare={async()=>{
+                if(playingRef.current&&!pausedRef.current){
+                  await playerRef.current?.pause();pausedRef.current=true;setPaused(true);
+                }
+                await claimPlayback("local");
+              }}
               locked={personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}
               onApply={applyPersonalHrtf} onVisual={setHrtfTestVisual}/>
             <details className="phrtf-playback-library">
@@ -2333,11 +2367,11 @@ export function App() {
             </details>
           </div>
         )}
-        {floatPanel === "playlist" && <PlaylistPanel playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={playPlaylistItem} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setFloatPanel(null)}/>}
+        {floatPanel === "playlist" && !miniPlaylistOpen && <PlaylistPanel playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={id=>void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]))} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setFloatPanel(null)}/>}
         {floatPanel === "channels" && (
-          <div className="panel obj-panel float-panel" aria-label="输出音箱声道">
-            <div className="obj-head">
-              <h2>声道 <span className="obj-count">{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} · {outputSpeakers.length}</span></h2>
+          <div className="panel obj-panel float-panel desktop-sheet" aria-label="输出音箱声道">
+            <SheetHeading title="声道" detail={`${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} · ${outputSpeakers.length} 声道`} onClose={()=>setFloatPanel(null)}/>
+            <div className="obj-head desktop-sheet-utility">
               {activeSpeakerFocus.size > 0 && <button className="obj-clear-solo" onClick={() => setFocusedSpeakers(new Set())}>取消聚焦 ×{activeSpeakerFocus.size}</button>}
               {soloSpeakerNames.size > 0 && <button className="obj-clear-solo" disabled={speakerMixLocked} onClick={() => toggleSpeakerSoloGroup([], true)}>取消独奏 ×{soloSpeakerNames.size}</button>}
             </div>
@@ -2374,7 +2408,7 @@ export function App() {
           </div>
         )}
         {floatPanel === "objects" && (
-          <ObjectPanel onClose={()=>setFloatPanel(null)}
+          <ObjectPanel showObjectNames={showObjectNames} onShowObjectNames={enabled=>{setShowObjectNames(enabled);try{localStorage.setItem("sda-object-names",String(enabled));}catch{}}} onClose={()=>setFloatPanel(null)}
             className="float-panel"
             objects={diagnosticObjects}
             mutedIds={mutedIds}

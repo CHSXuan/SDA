@@ -397,3 +397,55 @@
 .avatar-skin-menu { position: absolute; top: calc(100% + 8px); left: 0; width: 220px; display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 10px 30px #0003; pointer-events: auto; text-align: left; }
 .avatar-skin-menu small { color: var(--dim); }
 .avatar-skin-menu [role="alert"] { color: var(--error); font-size: 12px; }
+
+/* Anchor the compact queue above the transport at its right edge. */
+.app .miniplayer .mp-playlist-panel {
+  position: absolute; inset: auto 0 calc(100% + 12px) auto;
+  width: min(410px, 100%); box-sizing: border-box;
+  margin: 0; max-height: min(440px, calc(100dvh - 260px));
+  overflow: auto; border-radius: 22px; z-index: auto;
+}
+:root .app button.playlist-clear {
+  flex-shrink: 0; width: auto; padding: 7px 12px; gap: 7px; white-space: nowrap;
+}
+
+/* Interface labels are controls, not selectable document text. */
+.app > header h1, .app .scene-heading, .app .float-buttons,
+.app .desktop-sheet-heading, .app .settings-tabs, .app .mp-meta {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Keep the play button and timeline on the same centre axis. */
+.app .mp-transport {
+  display: grid;
+  grid-template-columns: repeat(3, 36px) 40px repeat(3, 36px);
+  align-items: center;
+  justify-content: center;
+}
+.app .mp-transport > :first-child { grid-column: 2; }
+@media (min-width: 761px) {
+  .mp-bar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 480px) minmax(0, 1fr); }
+  .mp-left { width: auto; min-width: 0; }
+  .mp-center { width: 100%; }
+  .mp-right { justify-self: end; max-width: 100%; }
+}
+
+/* Compact object display options directly under the sheet heading. */
+.app .object-browser > .desktop-sheet-heading { margin-bottom: 2px; padding-bottom: 12px; }
+.app .object-browser > .settings-switch { margin: 0 0 8px; padding: 4px 0; min-height: 30px; }
+.app .object-browser > .desktop-sheet-utility:empty { display: none; }
+
+/* Queue rows use a single hover surface, including the trailing remove action. */
+.app .playlist-panel > .desktop-sheet-heading { margin-bottom: 2px; padding-bottom: 12px; }
+.app .playlist-panel > .playlist-items { margin-top: 0; }
+.app .playlist-items li { transition: background-color 140ms ease; }
+.app .playlist-items li:not(.current):hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+:root .app .playlist-panel button.playlist-select,
+:root .app .playlist-panel button.playlist-select:hover,
+:root .app .playlist-panel button.playlist-select:active {
+  background: transparent; border-color: transparent; box-shadow: none;
+}
+:root .app .playlist-panel button.playlist-remove:hover {
+  border-color: transparent; box-shadow: none;
+}

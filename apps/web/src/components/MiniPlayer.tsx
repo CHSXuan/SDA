@@ -1,9 +1,9 @@
 import { Slider } from "./Slider";
 import PlaybackModeButton from "./PlaybackModeButton";
 import type { PlaybackMode } from "../playbackOrder";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { GlassRefraction } from "./GlassRefraction";
-import { Pause, Play, RotateCcw, Volume2, ListMusic } from "lucide-react";
+import { Pause, Play, RotateCcw, Volume2, ListMusic, SkipBack, SkipForward } from "lucide-react";
 
 export interface TrackInfo {
   codec: string;
@@ -26,6 +26,7 @@ export interface TrackInfo {
 }
 
 interface MiniPlayerProps {
+  children?: ReactNode;
   track: TrackInfo | null;
   position: number;
   /** 已解码总时长（秒）。流式解码中持续增长，读完即为全长；0 表示未知。 */
@@ -34,6 +35,9 @@ interface MiniPlayerProps {
   paused: boolean;
   objectCount: number;
   volume: number;
+  onPrevious: () => void;
+  onNext: () => void;
+  canSkip: boolean;
   onTogglePlay: () => void;
   playbackMode: PlaybackMode;
   onPlaybackModeChange: (mode: PlaybackMode) => void;
@@ -50,6 +54,7 @@ function formatTime(sec: number): string {
 }
 
 export const MiniPlayer = memo(function MiniPlayer({
+  children,
   track,
   position,
   duration,
@@ -57,6 +62,9 @@ export const MiniPlayer = memo(function MiniPlayer({
   paused,
   objectCount,
   volume,
+  onPrevious,
+  onNext,
+  canSkip,
   onTogglePlay,
   playbackMode,
   onPlaybackModeChange,
@@ -91,6 +99,7 @@ export const MiniPlayer = memo(function MiniPlayer({
               <button className="mp-btn mp-replay" onClick={onReplay} aria-label="从头重新播放">
                 <RotateCcw size={17} strokeWidth={1.8} aria-hidden="true" />
               </button>
+              <button type="button" className="mp-btn" onClick={onPrevious} disabled={!canSkip} aria-label="上一曲" title="上一曲"><SkipBack size={18} fill="currentColor" aria-hidden="true" /></button>
               <button
                 className="mp-btn mp-play"
                 onClick={onTogglePlay}
@@ -98,6 +107,7 @@ export const MiniPlayer = memo(function MiniPlayer({
               >
                 {playing && !paused ? <Pause size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" /> : <Play size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" />}
               </button>
+              <button type="button" className="mp-btn" onClick={onNext} disabled={!canSkip} aria-label="下一曲" title="下一曲"><SkipForward size={18} fill="currentColor" aria-hidden="true" /></button>
               <PlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange} className="mp-btn" />
               <button type="button" className="mp-btn mp-playlist" onClick={onTogglePlaylist}
                 aria-label="播放列表" aria-expanded={playlistOpen} title={playlistOpen ? "收起播放列表" : "打开播放列表"}>
@@ -130,6 +140,7 @@ export const MiniPlayer = memo(function MiniPlayer({
           </div>
         </div>
       </div>
+      {playlistOpen && children}
     </div>
   );
 });

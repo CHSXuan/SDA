@@ -1,3 +1,4 @@
+import SheetHeading from "./SheetHeading";
 import { Slider } from "./Slider";
 import Select from "./Select";
 import {useEffect,useState} from "react";
@@ -61,8 +62,8 @@ export default function RoomLab({layout,snapshot,onRecall,onCompare,onRestore,on
   });
   const numeric=(key:"length"|"width"|"height"|"earHeight"|"placement"|"order",label:string,min:number,max:number,step:number)=>
     <label>{label}<input aria-label={label} type="number" min={min} max={max} step={step} value={config[key]} disabled={busy||(room?.builtin&&!custom)} onChange={e=>{const value=e.currentTarget.valueAsNumber;if(Number.isFinite(value))setConfig(v=>({...v,[key]:Math.min(max,Math.max(min,value))}));}}/></label>;
-  return <section className="panel float-panel room-lab" aria-label="房间实验室">
-    <div className="obj-head"><h2>房间实验室 <span className="obj-count">{layout}</span></h2><button disabled={busy||comparison!==null} onClick={onCalibration}>档案与校准</button></div>
+  return <section className="panel float-panel room-lab desktop-sheet" aria-label="房间实验室">
+    <SheetHeading title="房间" detail={`${layout} · 房间实验室`} onClose={onClose}/><div className="desktop-sheet-utility"><button disabled={busy||comparison!==null} onClick={onCalibration}>档案与校准</button></div>
     <div className="room-lab-tabs" role="group" aria-label="实验室页面">{[["room","房间"],["compare","对照"],["paths","声路"],["layouts","布局"]].map(([id,label])=><button key={id} aria-pressed={view===id} onClick={()=>setView(id!)}>{label}</button>)}</div>
     {view!=="layouts"&&<label className="cinema-profile">房间档案<Select aria-label="仿真档案" value={selected} disabled={busy||comparison!==null} onChange={e=>{setSelected(e.target.value);setCustom(false);onAudition({...audition,stage:"full",profileId:e.target.value});}}><option value="">选择档案</option>{rooms.map(r=><option value={r.id} key={r.id}>{r.builtin?"内置 · ":"自定义 · "}{r.name}</option>)}</Select></label>}
     {room&&!compatible&&<p className="cinema-warning">档案布局 {room.layout}，当前 {layout}</p>}

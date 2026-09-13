@@ -20,3 +20,11 @@ export function nextPlaylistItemId(items: readonly {id: string}[], currentId: st
   if (mode === "repeat-one") return items[index]!.id;
   return items[index + 1]?.id ?? (mode === "repeat-all" ? items[0]!.id : null);
 }
+
+/** Explicit skips move through the queue even when repeat-one is selected. */
+export function adjacentPlaylistItemId(items:readonly {id:string}[],currentId:string|null,direction:1|-1):string|null {
+  if(!items.length)return null;
+  const index=items.findIndex(item=>item.id===currentId);
+  const next=direction===1?(index+1)%items.length:(Math.max(index,0)-1+items.length)%items.length;
+  return items[next]!.id;
+}

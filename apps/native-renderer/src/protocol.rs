@@ -91,7 +91,7 @@ fn handle_command(
                     Vec::new()
                 };
                 let bed_route = (!is_object)
-                    .then(|| bed_route(bed_label.as_deref().unwrap_or(""), &state.vbap));
+                    .then(|| bed_route_with_head(bed_label.as_deref().unwrap_or(""), &state.vbap, state.head_pose));
                 let source = state.sources.entry(id).or_insert_with(|| Source {
                     gain: 1.0,
                     target_gain: 1.0,
@@ -185,7 +185,6 @@ fn handle_command(
                 let ids: Vec<String> = state
                     .sources
                     .keys()
-                    .filter(|id| id.starts_with("obj:"))
                     .cloned()
                     .collect();
                 for id in ids {
@@ -386,7 +385,7 @@ fn handle_command(
             let ids: Vec<String> = state
                 .sources
                 .iter()
-                .filter_map(|(id, source)| (source.kind == SourceKind::Object).then(|| id.clone()))
+                .map(|(id, _)| id.clone())
                 .collect();
             for id in ids {
                 let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);

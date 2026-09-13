@@ -3,10 +3,11 @@ const lib=require('../../apps/desktop/personal-hrtf-library.cjs'),{importInWorke
 (async()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'sda-hrtf-library-')),first=path.join(root,'first'),second=path.join(root,'second');try{
  const {generateParameters}=await import('../../apps/desktop/parametric-hrtf.mjs');
  const generated=await importInWorker(null,first,{parameters:generateParameters(),assessment:{test:'archive QA'}});
- lib.rename(first,generated.id,'我的耳机');assert.equal(listPersonal(first)[0].name,'我的耳机');
+ const created=lib.info(first,generated.id).createdAt;assert(Number.isFinite(Date.parse(created)));
+ lib.rename(first,generated.id,'我的耳机');assert.equal(lib.info(first,generated.id).createdAt,created);assert.equal(listPersonal(first)[0].name,'我的耳机');
  const one=await importInWorker(null,first,{kind:'archive',action:'export',id:generated.id,directory:root});
  const two=lib.exportArchive(first,generated.id,root);assert.notEqual(one.path,two.path);assert(fs.existsSync(one.path));
- const imported=await importInWorker(one.path,second);assert.equal(imported.id,generated.id);assert.equal(imported.name,'我的耳机');
+ const imported=await importInWorker(one.path,second);assert.equal(imported.id,generated.id);assert.equal(imported.name,'我的耳机');assert.equal(imported.createdAt,created);
  const source=path.join(first,'hrtf-'+generated.id),destination=path.join(second,'hrtf-'+imported.id);
  for(const file of fs.readdirSync(source))assert.deepEqual(fs.readFileSync(path.join(source,file)),fs.readFileSync(path.join(destination,file)),file);
  assert.equal((await importInWorker(one.path,second)).id,generated.id);assert.equal(listPersonal(second).length,1);

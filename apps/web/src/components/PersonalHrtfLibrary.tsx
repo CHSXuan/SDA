@@ -1,10 +1,11 @@
 import {useEffect,useState} from "react";
 import {createPortal} from "react-dom";
 import {MediaPicker} from "./MediaPicker";
-type Entry={id:string;name:string;directions:number;method:string};
+type Entry={id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string};
 export function PersonalHrtfLibrary({currentHead,disabled,revision,onApply}:{currentHead:string;disabled:boolean;revision?:string;onApply:(id:string)=>Promise<void>}){
  const [entries,setEntries]=useState<Entry[]>([]),[busy,setBusy]=useState(false),[message,setMessage]=useState(""),[error,setError]=useState("");
  const [picker,setPicker]=useState<{id?:string}|null>(null),[editing,setEditing]=useState<{id:string;copy:boolean;name:string}|null>(null);
+ const [applying,setApplying]=useState<string|null>(null);
  const api=window.sdaDesktop;
  const refresh=async()=>{const values=await api?.listPersonalHrtf?.();if(values)setEntries(values);};
  useEffect(()=>{let alive=true;void api?.listPersonalHrtf?.().then(v=>{if(alive)setEntries(v)}).catch(e=>{if(alive)setError(String(e))});return()=>{alive=false};},[revision,currentHead,disabled]);
@@ -15,13 +16,14 @@ export function PersonalHrtfLibrary({currentHead,disabled,revision,onApply}:{cur
  const blocked=busy||disabled;
  return <section className="phrtf-library" aria-label="个人档案管理">
   <div className="phrtf-library-head"><h4>个人档案</h4><button disabled={blocked||!api?.importPersonalHrtf} onClick={()=>setPicker({})}>导入档案</button></div>
-  <small>管理已保存的响应，或导入 .phrtf / SOFA 档案。</small>
+  <small>播放中可直接切换，无需暂停。支持导入 .phrtf / SOFA 档案。</small>
   {!entries.length&&<p className="phrtf-library-empty">尚无个人档案，完成测试后会显示在这里。</p>}
   {entries.map(p=><article className={`phrtf-library-item${p.id===currentHead?" active":""}`} key={p.id}>
    <div><strong>{p.name}</strong>{p.id===currentHead&&<span className="phrtf-badge">使用中</span>}</div>
    <small>{p.directions} 个方向 · {p.method==="parametric-feedback"?"个人生成":"SOFA 测量"}</small>
+   <small className="phrtf-created">{p.createdAt&&Number.isFinite(Date.parse(p.createdAt))?<>{p.createdAtSource==='file'?'创建日期（文件记录）':'创建日期'} · <time dateTime={p.createdAt}>{new Date(p.createdAt).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</time></>:"创建日期未知"}</small>
    <div className="phrtf-actions">
-    <button disabled={blocked||p.id===currentHead} onClick={()=>void run(async()=>{await onApply(p.id);setMessage(`已切换到“${p.name}”。`)})}>{p.id===currentHead?"已启用":"切换"}</button>
+    <button disabled={blocked||p.id===currentHead} onClick={()=>void run(async()=>{setApplying(p.id);try{await onApply(p.id);setMessage(`已应用“${p.name}”，当前播放使用此档案。`)}finally{setApplying(null)}})}>{applying===p.id?"切换中…":p.id===currentHead?"已启用":"切换"}</button>
    </div>
    <details className="phrtf-file-actions"><summary>管理档案</summary><div className="phrtf-actions">
     <button disabled={blocked||!api?.renamePersonalHrtf} onClick={()=>setEditing({id:p.id,name:p.name,copy:false})}>命名</button>

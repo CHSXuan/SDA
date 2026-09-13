@@ -28,6 +28,7 @@ async function generate(parameters,assessment,store){
    processing:{calibrated:false,preserveSamples:true,roomResponse:false,normalization:false},
    azimuthConvention:"positive left; elevation positive up; degrees",positions};
   fs.writeFileSync(path.join(staging,"hrtf-set.json"),JSON.stringify(manifest,null,2));
+  fs.writeFileSync(path.join(staging,"profile-info.json"),JSON.stringify({createdAt:new Date().toISOString(),createdAtSource:"recorded"},null,2));
   fs.writeFileSync(path.join(staging,"assessment.json"),record);
   fs.renameSync(staging,target);
  }finally{if(fs.existsSync(staging))fs.rmSync(staging,{recursive:true,force:true});}

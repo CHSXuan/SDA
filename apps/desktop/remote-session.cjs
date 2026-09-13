@@ -52,7 +52,7 @@ function validateControl(value) {
   if (!value || typeof value !== "object") throw Error("无效控制指令");
   const { action, value: arg } = value;
   if(action==="scene")return {action};
-  if(action==="localMute"&&typeof arg==="boolean")return {action,value:arg};
+  if(["localMute","volumeBalance"].includes(action)&&typeof arg==="boolean")return {action,value:arg};
   if(action==="artwork"&&typeof arg==="string"&&/^[a-f0-9]{64}$/.test(arg))return {action,value:arg};
   if(action==="mediaList"&&(arg==null||typeof arg==="string"&&/^[a-f0-9]{64}$/.test(arg)))return {action,value:arg??null};
   if(action==="mediaOpen"&&typeof arg==="string"&&/^[a-f0-9]{64}$/.test(arg))return {action,value:arg};
@@ -106,7 +106,7 @@ class RemoteSession {
     this.sockets = new Set(); this.bufferMs = 300; this.queued = 0; this.bytes = 0;
   }
   status() {
-    return { capacity:this.hooks.maxPeers??1, connectedDevices:[...this.hostPeers].map(p=>({id:p.deviceId??p.remoteAddress,name:p.deviceName??p.remoteAddress,canControl:p.canControl!==false})), devices:this.devices?.list()??[], pendingDevices:this.devices?.pendingList()??[], role: this.role, phase: this.phase, detail: this.detail, peer: this.peer?.remoteAddress ?? null,
+    return { capacity:this.capacity(), connectedDevices:[...this.hostPeers].map(p=>({id:p.deviceId??p.remoteAddress,name:p.deviceName??p.remoteAddress,canControl:p.canControl!==false})), devices:this.devices?.list()??[], pendingDevices:this.devices?.pendingList()??[], role: this.role, phase: this.phase, detail: this.detail, peer: this.peer?.remoteAddress ?? null,
       port: this.port, addresses: this.role === "host" ? addresses() : [],
       invites: this.role === "host" && this.key && !this.devices ? addresses().map(a => this.invite(a)) : [],
       webInvites: this.role === "host" && this.key ? addresses().map(a => this.webInvite(a)) : [],
@@ -170,7 +170,8 @@ class RemoteSession {
   }
   disconnectDevice(id){for(const socket of this.hostPeers)if(socket.deviceId===id)this.failPeer(socket,"设备连接已被电脑断开或撤销");}
   manageDevice(action,value){if(!this.devices)throw Error("设备授权不可用");if(action==="deviceApprove")this.devices.approve(value?.id,value?.canControl);else if(action==="deviceReject")this.devices.reject(value?.id);else if(action==="deviceRevoke")this.devices.revoke(value?.id);else if(action==="devicePermission")this.devices.permission(value?.id,value?.canControl);else if(action==="deviceDisconnect")this.disconnectDevice(value?.id);else throw Error("无效设备操作");return this.status();}
-  canAccept(){return this.hostPeers.size<(this.hooks.maxPeers??1);}
+  capacity(){const value=typeof this.hooks.maxPeers==="function"?this.hooks.maxPeers():this.hooks.maxPeers;return Number.isInteger(value)?Math.max(1,Math.min(16,value)):1;}
+  canAccept(){return this.hostPeers.size<this.capacity();}
   reservePeer(socket){if(this.hostPeers.has(socket))return true;if(!this.canAccept()||socket.deviceId&&[...this.hostPeers].some(p=>p.deviceId===socket.deviceId&&!p.destroyed))return false;this.hostPeers.add(socket);this.peer??=socket;socket.once("close",()=>{this.hostPeers.delete(socket);if(this.peer===socket)this.peer=this.hostPeers.values().next().value??null;});return true;}
   async attachHost(socket,generation){
     if(!this.reservePeer(socket))throw Error("已达到设备连接上限");
@@ -186,7 +187,7 @@ class RemoteSession {
         p.consumed=message.consumed;p.lastFeedback=Date.now();this.queued=Math.max(0,...[...hub.peers.values()].map(v=>v.sent-v.consumed));hub.pump();
         if(message.mediaState&&Date.now()-(p.mediaReportAt??0)>1000){
           const m=message.mediaState;p.mediaReportAt=Date.now();
-          this.hooks.diagnostic?.({transport:'pcm',hidden:m.hidden===true,context:['running','suspended','interrupted','closed'].includes(m.context)?m.context:'unknown',playback:['none','paused','playing','unavailable'].includes(m.playback)?m.playback:'unknown',buffering:m.buffering===true,mediaElement:m.mediaElement===true,mediaPaused:m.mediaPaused===true,mediaReadyState:Number.isInteger(m.mediaReadyState)&&m.mediaReadyState>=0&&m.mediaReadyState<=4?m.mediaReadyState:undefined});
+          this.hooks.diagnostic?.({transport:'pcm',queuedMs:Number.isFinite(m.queuedMs)?Math.max(0,Math.min(3000,m.queuedMs)):undefined,inflightMs:Math.round((p.sent-p.consumed)/48),hostQueuedMs:p.queue.length*10,hidden:m.hidden===true,context:['running','suspended','interrupted','closed'].includes(m.context)?m.context:'unknown',playback:['none','paused','playing','unavailable'].includes(m.playback)?m.playback:'unknown',buffering:m.buffering===true,mediaElement:m.mediaElement===true,mediaPaused:m.mediaPaused===true,mediaReadyState:Number.isInteger(m.mediaReadyState)&&m.mediaReadyState>=0&&m.mediaReadyState<=4?m.mediaReadyState:undefined});
         }
       }else if(kind==="C"){
         if(!p.ready||typeof message.id!=="string"||message.id.length>64)throw Error("无效远程控制");
@@ -199,10 +200,15 @@ class RemoteSession {
         if(command.action==="artwork")this.completeControl(id,null,{src:command.value===this.artworkId?this.artwork:""});
         else if(command.action==="scene")this.completeControl(id,null,this.scene??null);
         else this.dispatchControl(id,command);
-      }else if(kind==="Q")socket.end();else throw Error("不支持的远程消息");
+      }else if(kind==="Q"){this.hooks.diagnostic?.({event:"client-disconnect",deviceId:socket.deviceId??"legacy"});socket.end();}else throw Error("不支持的远程消息");
     });
     socket.on("data",chunk=>{try{incoming(chunk);}catch(e){this.failPeer(socket,e.message);}});
-    const timer=setInterval(()=>{if(Date.now()-p.lastFeedback>15000)this.failPeer(socket,"设备超过 15 秒没有音频响应");else{socket.write(packet("T",{}));this.publish();}},1000).unref();
+    const timer=setInterval(()=>{
+      socket.probeTransport?.();
+      const lastSeen=Math.max(p.lastFeedback,socket.transportLastSeen?.()??0);
+      if(Date.now()-lastSeen>15000)this.failPeer(socket,"设备连接心跳超时，请重新连接");
+      else{socket.write(packet("T",{}));this.publish();}
+    },1000).unref();
     socket.once("close",()=>{
       clearInterval(timer);hub.peers.delete(socket);this.hostPeers.delete(socket);
       for(const [id,v]of this.pendingControls)if(v.socket===socket)this.completeControl(id,"设备已断开");
@@ -221,8 +227,9 @@ class RemoteSession {
   failPeer(socket, detail) {
     if (this.peer !== socket && !this.hostPeers.has(socket)) return;
     socket.sdaFailure = detail;
+    this.hooks.diagnostic?.({event:"host-disconnect",deviceId:socket.deviceId??"legacy",reason:String(detail).slice(0,300)});
     this.detail = detail; this.publish();
-    if (socket.writable) socket.write(packet("E", { error: detail })); socket.destroy();
+    if (socket.writable) socket.write(packet("E", { error: detail, retryable:["设备连接心跳超时，请重新连接","此设备网络未跟上播放，请重新连接","主机原生音频连接中断"].includes(detail) })); socket.destroy();
   }
   dispatchControl(id,command){
     if(["mediaList","roomCancel"].includes(command.action)){this.hooks.control?.({id,...command});return;}
@@ -261,7 +268,7 @@ class RemoteSession {
       position: Number.isFinite(state.position) ? Math.max(0, state.position) : 0,
       duration: Number.isFinite(state.duration) ? Math.max(0, state.duration) : 0,
       volume: Number.isFinite(state.volume) ? Math.min(1, Math.max(0, state.volume)) : 1,
-      currentId: text(state.currentId), playbackMode: text(state.playbackMode), stereoMode: text(state.stereoMode),
+      currentId: text(state.currentId), playbackMode: text(state.playbackMode), stereoMode: text(state.stereoMode), stereoAvailable:state.stereoAvailable===true, volumeBalanceEnabled:state.volumeBalanceEnabled===true,
       tools: this.curateTools(state.tools),
       playlist: Array.isArray(state.playlist) ? state.playlist.slice(0, 500).map(v => ({ id: text(v.id), title: text(v.title) })) : [] };
     this.sync?.update(this.state);

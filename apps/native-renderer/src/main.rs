@@ -796,7 +796,7 @@ impl Engine {
             if kind == SourceKind::Object {
                 self.route_source_now(&id, 0)?;
             } else if let Some(label) = label {
-                let route = bed_route(&label, &self.vbap);
+                let route = bed_route_with_head(&label, &self.vbap, self.head_pose);
                 let source = self.sources.get_mut(&id).expect("source still exists");
                 Self::set_source_route(source, route, 0);
             }
@@ -872,6 +872,9 @@ impl Engine {
             .map(|source| (source.position, source.spread, source.extent, source.diffuse, source.horizontal_only, source.zone_exclusion.clone(), source.kind))
             .ok_or("unknown source")?;
         if kind != SourceKind::Object {
+            let label=self.sources.get(id).and_then(|source|source.bed_label.as_deref()).unwrap_or("");
+            let route=bed_route_with_head(label,&self.vbap,self.head_pose);
+            Self::set_source_route(self.sources.get_mut(id).unwrap(),route,ramp);
             return Ok(());
         }
         let route = RouteGains {
@@ -1638,7 +1641,9 @@ fn static_bed_position(azimuth: f32, elevation: f32) -> [f32; 3] {
 
 /// Mirrors master label aliases, snapping a bed to the selected room's exact
 /// physical speaker when it exists and VBAP-folding only labels absent there.
-fn bed_route(label: &str, solver: &vbap::VbapSolver) -> RouteGains {
+fn bed_route(label: &str, solver: &vbap::VbapSolver) -> RouteGains { bed_route_with_head(label,solver,None) }
+
+fn bed_route_with_head(label: &str, solver: &vbap::VbapSolver, head: Option<[f32;4]>) -> RouteGains {
     let (name, position) = match label {
         "LFE" | "LFE2" | "Lfe" | "LowFrequencyEffects" | "LowFrequencyEffects2" => {
             return RouteGains { buses: [0.0; vbap::MAX_BUS_COUNT], lfe: 1.0 };
@@ -1663,6 +1668,14 @@ fn bed_route(label: &str, solver: &vbap::VbapSolver) -> RouteGains {
         "TopFrontCenter" | "Tfc" => ("TopFrontCenter", static_bed_position(0.0, 45.0)),
         _ => ("Center", static_bed_position(0.0, 0.0)),
     };
+    if let Some(head) = head.and_then(spatial::normalize_quaternion) {
+        if head[..3].iter().any(|v| v.abs()>1e-6) {
+            let position=solver.speaker_index(name).map(|bus| {
+                let (az,el)=solver.speaker_direction(bus);static_bed_position(az,el)
+            }).unwrap_or(position);
+            return RouteGains {buses:solver.pan(spatial::head_relative_adm(position,Some(head)),0.0),lfe:0.0};
+        }
+    }
     if let Some(bus) = solver.speaker_index(name) {
         one_hot_route(bus)
     } else {
@@ -3050,5 +3063,22 @@ mod tests {
         Engine::set_source_route(&mut source, one_hot_route(2), 0);
         assert_eq!(source.lfe_gain, 0.0);
         assert_eq!(source.bus_gains[2], 1.0);
+    }
+}
+
+#[cfg(test)]
+mod head_tracking_bed_regression {
+    use super::*;
+    #[test]
+    fn bed_center_follows_inverse_head_rotation_and_lfe_stays_fixed() {
+        let solver=vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        for degrees in [-90.0_f32,-45.0,45.0,90.0] {
+            let a=degrees.to_radians();let q=[0.0,0.0,(a/2.0).sin(),(a/2.0).cos()];
+            let bed=bed_route_with_head("C",&solver,Some(q));
+            let expected=solver.pan([a.sin(),a.cos(),0.0],0.0);
+            for (actual,expected) in bed.buses.iter().zip(expected) {assert!((actual-expected).abs()<1e-5);}
+            let lfe=bed_route_with_head("LFE",&solver,Some(q));assert_eq!(lfe.lfe,1.0);assert_eq!(lfe.buses,[0.0;vbap::MAX_BUS_COUNT]);
+        }
+        assert_eq!(bed_route_with_head("C",&solver,None).buses,bed_route("C",&solver).buses);
     }
 }

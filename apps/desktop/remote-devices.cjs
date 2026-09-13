@@ -27,6 +27,7 @@ class RemoteDevices {
  reject(id){this.pending.delete(id);this.changed();}
  revoke(id){this.write(this.records().filter(v=>v.id!==id));this.kick(id);this.changed();}
  permission(id,canControl){if(typeof canControl!=='boolean')throw Error('无效设备权限');this.write(this.records().map(v=>v.id===id?{...v,canControl}:v));this.kick(id);this.changed();}
+ logout(req){const device=this.authenticate(req);if(device)this.revoke(device.id);const digest=hash(cookie(req));for(const [id,value] of this.pending)if(value.hash===digest)this.pending.delete(id);this.changed();}
  clearPending(){this.pending.clear();this.attempts.clear();}
 }
 module.exports={RemoteDevices};

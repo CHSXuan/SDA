@@ -1,9 +1,12 @@
+import SheetHeading from "./SheetHeading";
 import { memo } from "react";
 import { AudioLines, Headphones, Orbit, Volume2, VolumeX } from "lucide-react";
 import type { BinauralRenderMetadata, VisualObject } from "@sda/player";
 
 interface ObjectPanelProps {
   onClose?:()=>void;
+  showObjectNames?:boolean;
+  onShowObjectNames?:(enabled:boolean)=>void;
   objects: readonly VisualObject[];
   mutedIds: ReadonlySet<number>;
   soloIds: ReadonlySet<number>;
@@ -23,6 +26,8 @@ const formatDistance = (object: VisualObject): string | null => {
 };
 
 export const ObjectPanel = memo(function ObjectPanel({
+  showObjectNames,
+  onShowObjectNames,
   objects,
   mutedIds,
   soloIds,
@@ -34,9 +39,10 @@ export const ObjectPanel = memo(function ObjectPanel({
   onClose,
 }: ObjectPanelProps) {
   return (
-    <div className={`panel obj-panel object-browser${className ? ` ${className}` : ""}`} aria-label="音频对象">
-      <div className="obj-head">
-        <h2><Orbit size={19} aria-hidden="true"/>音频对象 <span className="obj-count">{objects.length}</span></h2>
+    <div className={`panel obj-panel object-browser desktop-sheet${className ? ` ${className}` : ""}`} aria-label="音频对象">
+      <SheetHeading title="音频对象" detail={`${objects.length} 个对象`} onClose={onClose}/>
+      {onShowObjectNames&&<label className="settings-switch"><span>3D 视图显示对象名称</span><input type="checkbox" role="switch" checked={!!showObjectNames} onChange={e=>onShowObjectNames(e.target.checked)}/></label>}
+      <div className="obj-head desktop-sheet-utility">
         {soloIds.size > 0 && (
           <button
             className="obj-clear-solo"

@@ -21,6 +21,8 @@ export interface HeadPose {
 }
 
 export interface HeadPoseOptions {
+  /** Provider already uses a persistent centered reference; idle drift returns to identity. */
+  fixedForward?: boolean;
   /** `yaw` ignores pitch and roll; `full` preserves all orientation axes. */
   yawMode?: HeadPoseYawMode;
   /** Multiplier applied to rotation around the centered listener after recentering. */
@@ -38,6 +40,7 @@ export interface HeadPoseOptions {
 }
 
 export const DEFAULT_HEAD_POSE_OPTIONS: Required<HeadPoseOptions> = {
+  fixedForward: false,
   yawMode: "yaw",
   sensitivity: 1,
   smoothingMs: 45,
@@ -225,6 +228,8 @@ export class HeadPoseTracker {
    *  pull would otherwise register as real motion and pause itself forever. */
   private providerOrientation: [number, number, number, number] = [0, 0, 0, 1];
   private acceptedProviderOrientation: [number, number, number, number] = [0, 0, 0, 1];
+  private motionWindowMs = Number.NEGATIVE_INFINITY;
+  private motionWindowPose: Quaternion = [0,0,0,1];
   private providerMs = Number.NEGATIVE_INFINITY;
   private readonly kalman = new YawKalmanFilter();
   private receivedAtMs = Number.NEGATIVE_INFINITY;
@@ -233,6 +238,7 @@ export class HeadPoseTracker {
 
   constructor(options: HeadPoseOptions = {}) {
     this.options = {
+      fixedForward: options.fixedForward ?? false,
       yawMode: options.yawMode ?? DEFAULT_HEAD_POSE_OPTIONS.yawMode,
       sensitivity: Math.min(4, Math.max(0.1, Number.isFinite(options.sensitivity) ? options.sensitivity! : DEFAULT_HEAD_POSE_OPTIONS.sensitivity)),
       smoothingMs: Math.max(0, Number.isFinite(options.smoothingMs) ? options.smoothingMs! : DEFAULT_HEAD_POSE_OPTIONS.smoothingMs),
@@ -251,10 +257,11 @@ export class HeadPoseTracker {
     if (!this.active) {
       this.orientation = target;
       this.targetOrientation = target;
-      this.anchorOrientation = target;
+      this.anchorOrientation = this.options.fixedForward ? [0,0,0,1] : target;
       this.providerOrientation = target;
       this.acceptedProviderOrientation = target;
       this.providerMs = nowMs;
+      this.motionWindowMs=nowMs;this.motionWindowPose=target;
       this.kalman.reset(quaternionYaw(target));
       this.active = true;
       this.lastUpdateMs = nowMs;
@@ -278,13 +285,18 @@ export class HeadPoseTracker {
       // anatomical limit (with hysteresis so a clamped target cannot flip-flop
       // the hold); an artifact pinned at the limit must not keep refreshing
       // the hold, or the anchor ease could never resume.
-      if (speedAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S
+      let coherentTurn=false;
+      if(nowMs-this.motionWindowMs>=250){
+        const delta=multiplyQuaternion(invertQuaternion(this.motionWindowPose),target);
+        coherentTurn=this.anchorAngleOf(target)>ANCHOR_ZONE_DEGREES*Math.PI/180 && 2*Math.acos(Math.min(1,Math.abs(delta[3])))*180/Math.PI>=Math.max(3,this.options.deadZoneDegrees);
+        this.motionWindowMs=nowMs;this.motionWindowPose=target;
+      }
+      if ((coherentTurn || (stepAngle >= this.options.deadZoneDegrees * Math.PI / 180
+        && speedAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S))
         && this.anchorAngleOf(this.targetOrientation) < (ANATOMICAL_LIMIT_DEGREES - 2) * Math.PI / 180) {
         this.lastRealMotionMs = nowMs;
       }
-      const candidateQuat = multiplyQuaternion(invertQuaternion(this.targetOrientation), target);
-      const candidateAngle = 2 * Math.acos(Math.min(1, Math.abs(candidateQuat[3])));
-      if (candidateAngle >= this.options.deadZoneDegrees * Math.PI / 180) {
+      if (stepAngle >= this.options.deadZoneDegrees * Math.PI / 180) {
         const integrated = normalizeQuaternion(multiplyQuaternion(this.targetOrientation, stepQuat));
         if (integrated) this.targetOrientation = integrated;
         this.acceptedProviderOrientation = target;
@@ -403,19 +415,26 @@ export class HeadPoseTracker {
     return this.active;
   }
 
+  /** The same stabilized head-to-world pose used by WebAudio, for native sinks. */
+  currentPose(nowMs: number): HeadPose | null {
+    if (!this.isActive(nowMs)) return null;
+    this.advance(nowMs);
+    const neutralToHead = multiplyQuaternion(this.recenterOrientation, this.orientation);
+    return {orientation: scaleQuaternionAngle(neutralToHead, this.options.sensitivity), timestampMs: nowMs};
+  }
+
   /** Canonical world spherical position transformed into the current head frame. */
   headRelative(world: Spherical, nowMs: number): Spherical {
-    if (!this.isActive(nowMs)) return world;
+    const pose = this.currentPose(nowMs);
+    if (!pose) return world;
     // Core Motion supplies timestamped attitude samples, while rendering runs on
     // its own steady clock. Continue toward the latest sample on every render
     // tick so sparse or discontinuous provider updates never become HRTF jumps.
-    this.advance(nowMs);
     // The listener/KU100 remains at the room origin. R0^-1 * R is only an
     // orientation relative to the recentered forward direction; applying its
     // inverse makes every world-locked source head-relative without translating
     // either the listener or the source.
-    const neutralToHead = multiplyQuaternion(this.recenterOrientation, this.orientation);
-    const sensitiveRotation = scaleQuaternionAngle(neutralToHead, this.options.sensitivity);
+    const sensitiveRotation = pose.orientation;
     const [x, y, z] = rotateAdmVector(invertQuaternion(sensitiveRotation), sphericalToAdm({ ...world, distance: 1 }));
     const direction = admToSpherical([x, y, z]);
     return { ...direction, distance: world.distance };

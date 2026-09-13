@@ -1,5 +1,6 @@
+import SheetHeading from "./SheetHeading";
 import Select from "./Select";
-import {SlidersHorizontal, Layers, Volume2, Waves, CircuitBoard} from "lucide-react";
+import {Layers, Volume2, Waves, CircuitBoard} from "lucide-react";
 import {AHB2_SOURCE,HARDWARE_PRESETS,createHardwarePreset,matchingHardwarePreset} from "../hardware-presets";
 import {useEffect,useState} from "react";
 import type {VirtualSpeaker} from "@sda/renderer";
@@ -44,8 +45,8 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false,onC
   const numeric=(key:"levelDb"|"dimDb"|"crossoverHz"|"bassDb",label:string,min:number,max:number,unit:string)=><label className="cinema-number"><span>{label}</span><input type="number" aria-label={label} value={settings[key]} min={min} max={max} step={key==="crossoverHz"?1:.5} disabled={busy} onChange={e=>{const n=e.currentTarget.valueAsNumber;if(Number.isFinite(n))setSettings(s=>({...s,[key]:Math.max(min,Math.min(max,n))}));}}/><small>{unit}</small></label>;
   const toggle=(key:"enabled"|"dim"|"muted"|"bassEnabled",label:string)=><label className="settings-switch"><span>{label}</span><input type="checkbox" role="switch" aria-label={label} checked={settings[key]} disabled={busy||(key==="bassEnabled"&&layout==="2.0")} onChange={e=>setSettings(s=>({...s,[key]:e.target.checked}))}/></label>;
   const changeOutput=(name:string,value:Partial<MonitorOutput>)=>setSettings(s=>({...s,outputs:{...s.outputs,[name]:{...output(),...s.outputs[name],...value}}}));
-  return <section className="panel float-panel cinema-panel monitor-panel" aria-label="监听处理器">
-    <div className="monitor-heading"><div><SlidersHorizontal size={20}/><h2>监听处理器</h2></div><span>{layout} · 48 kHz</span></div>
+  return <section className="panel float-panel cinema-panel monitor-panel desktop-sheet" aria-label="监听处理器">
+    <SheetHeading title="监听" detail={`${layout} · 48 kHz`} onClose={onClose}/>
     <fieldset className="monitor-controls">
     <div className="monitor-master">{toggle("enabled","启用监听处理器")}<p>管理监听电平、输出通道与硬件仿真</p></div>
     <details className="monitor-presets"><summary><Layers size={15}/>内置监听配置<span>{preset?MONITOR_PRESETS.find(p=>p.id===preset)?.name:"选择与载入"}</span></summary><div className="monitor-preset-body">

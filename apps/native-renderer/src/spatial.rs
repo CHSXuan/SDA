@@ -73,7 +73,7 @@ fn multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
         a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[1],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
         a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
     ]
 }
@@ -95,6 +95,21 @@ pub fn head_relative_adm(position: [f32; 3], head_to_world: Option<[f32; 4]>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_rotation_preserves_height_and_world_locked_direction() {
+        for degrees in [-90.0_f32, -45.0, 0.0, 45.0, 90.0] {
+            let angle = degrees.to_radians();
+            let q = [0.0, 0.0, (angle/2.0).sin(), (angle/2.0).cos()];
+            let local = head_relative_adm([0.0, 1.0, 0.4], Some(q));
+            assert!((local[0]-angle.sin()).abs()<1e-5);
+            assert!((local[1]-angle.cos()).abs()<1e-5);
+            assert!((local[2]-0.4).abs()<1e-5);
+        }
+        let half=std::f32::consts::FRAC_1_SQRT_2;
+        let local=head_relative_adm([0.0,1.0,0.0],Some([half,0.0,0.0,half]));
+        assert!((local[2]+1.0).abs()<1e-5);
+    }
 
     #[test]
     fn adm_coordinates_match_renderer_convention() {

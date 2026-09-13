@@ -6,10 +6,12 @@ import {trialStart,trialEnd,layoutPositions,speakerTrials,confirmedField,layoutM
 import "./PersonalHrtfPanel.css";
 import {PersonalHrtfLibrary} from "./PersonalHrtfLibrary";
 
-export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,onVisual,layout}:{
-  layout:readonly VirtualSpeaker[];onVisual?:(value:HrtfTestVisual|null)=>void;currentHead:string;playing:boolean;locked:boolean;onApply:(subject:string,parameters?:PhrtfParameters,assessment?:unknown)=>Promise<void>;
+export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,onVisual,onPrepare,layout}:{
+  onPrepare?:()=>Promise<void>;layout:readonly VirtualSpeaker[];onVisual?:(value:HrtfTestVisual|null)=>void;currentHead:string;playing:boolean;locked:boolean;onApply:(subject:string,parameters?:PhrtfParameters,assessment?:unknown)=>Promise<void>;
 }) {
   const [profile,setProfile]=useState(readProfile);
+  const [preparing,setPreparing]=useState(false);
+  const preparingRef=useRef(false);
   const [view,setView]=useState<"test"|"library">("test");
   const [trials,setTrials]=useState<Trial[]>([]),[answers,setAnswers]=useState<Answer[]>([]);
   const [index,setIndex]=useState(0),[phase,setPhase]=useState<"idle"|"screen"|"validation"|"result">("idle");
@@ -26,10 +28,18 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
   useEffect(()=>{if(layoutChanged){epoch.current++;audition.current?.stop();setHeard(false);setBusy(false);guard.current=false;}},[layoutChanged]);
   const [candidateIndex,setCandidateIndex]=useState(0);
   const cancel=()=>{epoch.current++;audition.current?.dispose();audition.current=null;setPhase("idle");setTrials([]);setAnswers([]);setHeard(false);setBusy(false);guard.current=false;setError("");};
-  const start=()=>{
+  const start=async()=>{
+    if(preparingRef.current||!confirmed||locked||busy||positions.length===0)return;
+    preparingRef.current=true;setPreparing(true);setError("");
+    try{
+      if(onPrepare)await onPrepare();
+      else if(playing)throw Error("请先暂停歌曲再开始测试");
+      if(!alive.current)return;
     previous.current=currentHead;responsesTotal.current=0;
     snapshot.current=positions;confirmations.current=[];field.current=null;setCandidateIndex(0);
     setTrials(speakerTrials(positions));setAnswers([]);setIndex(0);setPhase("screen");setHeard(false);setError("");
+    }catch(error){if(alive.current)setError(String(error));}
+    finally{preparingRef.current=false;if(alive.current)setPreparing(false);}
   };
   const listen=async()=>{
     if(!trial||guard.current||playing||locked||layoutChanged)return;
@@ -43,7 +53,7 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
     finally{if(alive.current&&token===epoch.current){guard.current=false;setBusy(false);}}
   };
   // A submitted answer advances the sound automatically; replay remains explicit.
-  useEffect(()=>{if((phase==="screen"||phase==="validation")&&!playing&&!locked)void listen();},[phase,index,candidateIndex]);
+  useEffect(()=>{if((phase==="screen"||phase==="validation")&&!playing&&!locked)void listen();},[phase,index,candidateIndex,playing,locked]);
   const answer=(response:boolean)=>{
     if(!trial||!heard||busy||playing||locked||layoutChanged)return;
     responsesTotal.current++;
@@ -108,7 +118,8 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
       <p className="phrtf-output-note">测试使用系统默认共享输出，不跟随 SDA 指定设备。</p>
       <label className="phrtf-check"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>
         <span>已戴好耳机，设为系统默认输出，并关闭系统空间音效。</span></label>
-      <button className="phrtf-primary" disabled={!confirmed||playing||locked||busy||positions.length===0} onClick={start}>开始感知测试</button>
+      <button className="phrtf-primary" disabled={!confirmed||(playing&&!onPrepare)||locked||busy||preparing||positions.length===0} onClick={()=>void start()}>{preparing?"正在准备测试…":playing&&onPrepare?"暂停歌曲并开始测试":"开始感知测试"}</button>
+      {locked?<p role="status">请先结束房间对照或等待当前音效切换完成。</p>:positions.length===0?<p role="status">当前没有可测试的音箱，请先选择输出布局。</p>:!confirmed?<p className="dim">请先确认上方的耳机与系统输出设置。</p>:null}
       <details className="phrtf-help"><summary>测试方式与注意事项</summary><p>保持头朝前、佩戴不变。回答否，只调整当前音箱并重听；回答是，保留响应并进入下一只。已经通过的音箱不会重置。</p><p>每只音箱独立生成和确认，最后合成一份 pHRTF。低音炮不参与方向定位测试。</p></details>
     </>}
     {(phase==="screen"||phase==="validation")&&<>

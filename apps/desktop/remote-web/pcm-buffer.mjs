@@ -1,7 +1,7 @@
 // One bounded FIFO of interleaved f32 program samples. No gain, filters,
 // interpolation, dropped frames or crossfades are applied here.
 export class StereoPcmBuffer {
-  constructor(capacity = 65536, refill = 1920) {
+  constructor(capacity = 131072, refill = 1920) {
     this.capacity = capacity; this.refill = refill;
     this.samples = new Float32Array(capacity * 2);
     this.read = 0; this.write = 0; this.queued = 0; this.consumed = 0; this.buffering = true;

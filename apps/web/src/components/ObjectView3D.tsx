@@ -280,8 +280,8 @@ const Room = memo(function Room({ p }: { p: Palette }) {
 /** 听者：仿纽曼 KU 100 人头麦 —— 光滑无五官的蛋形头、两侧硅胶耳廓、
  *  平直颈部切口 + 话筒立杆。耳廓中心对齐 y=0（ADM 耳位）。 */
 const Listener = memo(function Listener() {
-  const gray = "#8a93a6";
-  const grayDark = "#767e91";
+  const gray = "#a3a3a3";
+  const grayDark = "#898989";
   return (
     <group
       name="listener"
@@ -336,22 +336,39 @@ const Listener = memo(function Listener() {
       {/* 立杆 + 落地脚盘 */}
       <mesh position={[0, -0.43, 0]}>
         <cylinderGeometry args={[0.014, 0.014, 0.37, 12]} />
-        <meshStandardMaterial color="#3d4457" roughness={0.4} metalness={0.4} />
+        <meshStandardMaterial color="#484848" roughness={0.4} metalness={0.4} />
       </mesh>
       <mesh position={[0, FLOOR_Y + 0.016, 0]}>
         <cylinderGeometry args={[0.09, 0.11, 0.024, 32]} />
-        <meshStandardMaterial color="#3d4457" roughness={0.5} metalness={0.3} />
+        <meshStandardMaterial color="#484848" roughness={0.5} metalness={0.3} />
       </mesh>
     </group>
   );
 });
 
+function ObjectName({id,theme}:{id:number;theme:Theme}) {
+  const texture=useMemo(()=>{
+    const canvas=document.createElement("canvas");canvas.width=256;canvas.height=64;
+    const ctx=canvas.getContext("2d")!;
+    ctx.fillStyle=theme==="light"?"rgba(255,255,255,.92)":"rgba(24,28,30,.9)";
+    ctx.beginPath();ctx.roundRect(2,2,252,60,16);ctx.fill();
+    ctx.fillStyle=theme==="light"?"#18332a":"#f0f5f2";
+    ctx.font="500 28px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(`对象 ${id}`,128,33);
+    const value=new THREE.CanvasTexture(canvas);value.colorSpace=THREE.SRGBColorSpace;return value;
+  },[id,theme]);
+  useEffect(()=>()=>texture.dispose(),[texture]);
+  return <sprite position={[0,.18,0]} scale={[.64,.16,1]} renderOrder={13}><spriteMaterial map={texture} transparent depthTest={false} depthWrite={false} toneMapped={false}/></sprite>;
+}
+
 const ObjectDot = memo(function ObjectDot({
   obj,
+  showName=false,
   muted,
   sounding,
   theme,
 }: {
+  showName?:boolean;
   obj: VisualObject;
   muted: boolean;
   sounding: boolean;
@@ -385,6 +402,7 @@ const ObjectDot = memo(function ObjectDot({
   const dotOpacity = muted ? (theme === "light" ? 0.35 : 0.18) : 1;
   return (
     <group ref={ref} position={initialPosition} renderOrder={10}>
+      {showName&&<ObjectName id={obj.id} theme={theme}/>}
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
       <mesh renderOrder={10}>
         <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
@@ -403,7 +421,7 @@ const ObjectDot = memo(function ObjectDot({
 }, (prev, next) => {
   const a = prev.obj;
   const b = next.obj;
-  return prev.muted === next.muted
+  return prev.showName === next.showName && prev.muted === next.muted
     && prev.theme === next.theme
     && prev.sounding === next.sounding
     && a.id === b.id
@@ -439,6 +457,7 @@ function HrtfTestMarker({visual,layout}:{visual:HrtfTestVisual;layout:readonly V
 export function ObjectView({
   immersive = false,
   mobile = false,
+  showObjectNames = false,
   objects,
   layout,
   theme = "dark",
@@ -451,6 +470,7 @@ export function ObjectView({
 }: {
   immersive?: boolean;
   mobile?: boolean;
+  showObjectNames?:boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
@@ -502,7 +522,7 @@ export function ObjectView({
         <SpeakerRing interactive={!mobile} layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         {!immersive && <Listener />}
         {objects.map((o) => (
-          <ObjectDot key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
+          <ObjectDot showName={showObjectNames} key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
         ))}
         {!immersive && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
         {/* 听者半身像的光照 */}
