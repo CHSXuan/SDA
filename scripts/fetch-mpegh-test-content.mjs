@@ -1,0 +1,10 @@
+import {mkdir,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+const url='https://media.githubusercontent.com/media/Fraunhofer-IIS/mpegh-test-content/main/TRI_Fileset_17_514H_D1_D2_D3_O1_24bit2160p50.audio.mp4';
+const response=await fetch(url);if(!response.ok)throw Error(`Download failed: ${response.status}`);
+const data=Buffer.from(await response.arrayBuffer());
+if(createHash('sha256').update(data).digest('hex')!=='7aa464235b1015d3fa77eb5d34b70da6d6b68c07a1cd475a7d3859ed1f46f2af')throw Error('Test content checksum mismatch');
+await mkdir('tmp/mpegh-test',{recursive:true});
+await writeFile('tmp/mpegh-test/fraunhofer-objects.mp4',data);
+await writeFile('tmp/mpegh-test/ATTRIBUTION.txt','Copyright (c) 2023 Fraunhofer-Gesellschaft zur Förderung der angewandten Forschung e.V.\nMPEG-H Test Content: CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/\nSource: '+url+'\nLocal decoder testing only; not bundled with SDA.\n');
+console.log('Downloaded verified Fraunhofer MPEG-H test content (local testing only).');

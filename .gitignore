@@ -36,3 +36,5 @@ __pycache__/
 
 # Windows shell redirection artifact.
 /nul
+/vendor/libmpegh/
+/packages/core/pkg-mpegh/

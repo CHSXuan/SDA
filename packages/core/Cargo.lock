@@ -43,7 +43,8 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "dca"
-version = "0.7.3"
+version = "0.7.4"
+source = "git+https://github.com/harletty/harletty-bridge.git?rev=802367f8d36aff550c132118a573693fe50a5256#802367f8d36aff550c132118a573693fe50a5256"
 dependencies = [
  "log",
  "rustfft",

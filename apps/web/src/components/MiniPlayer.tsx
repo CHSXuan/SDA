@@ -88,7 +88,7 @@ export const MiniPlayer = memo(function MiniPlayer({
             <div className="mp-meta">
               <div className="mp-title">{track.title ?? track.codec}</div>
               <div className="mp-sub">
-                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
+                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : track.rawBedLabels ? "无声道床" : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
               </div>
             </div>
           </div>

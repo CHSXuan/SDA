@@ -16,6 +16,7 @@ import { canCoalesceObjectEvent } from "./control.js";
 import { LoudnessMeter } from "./bs1770.js";
 import { FrameBatcher } from "./frame-batcher.js";
 import { AlacResampler } from "./alac-resampler.js";
+import {initMpegh, isMhas, MpeghDecoder} from "../../core/src/mpegh.js";
 
 /** Minimal worker global typing (avoids DOM/WebWorker lib conflicts). */
 declare const self: {
@@ -23,7 +24,7 @@ declare const self: {
   onmessage: ((e: MessageEvent) => void) | null;
 };
 
-let decoder: SdaDecoder | null = null;
+let decoder: SdaDecoder | MpeghDecoder | null = null;
 let demuxer: Demuxer | null = null;
 let bwfMetadata: BwfMetadata | undefined;
 let decoderConfigurationError: string | null = null;
@@ -152,8 +153,19 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       const chunk = new Uint8Array(msg.chunk as ArrayBuffer);
       if (!demuxer) {
         const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
+        if(kind === "mp4" || isMhas(chunk)) await initMpegh();
+        if(kind === "raw" && isMhas(chunk)) {decoder?.free();decoder=new MpeghDecoder();}
         demuxer = createDemuxer(kind, {
           onTrack: (t) => {
+            if(t.codec === "mha1" || t.codec === "mhm1") {
+              decoder?.free();decoder=new MpeghDecoder(t.codec === "mha1",t.decoderConfig);
+              decoderConfigurationError=null;
+            }
+            if (["dts", "dtsc", "dtsh", "dtsl", "dtse"].includes(t.codec)) {
+              decoder?.free();
+              decoder = new SdaDecoder("dts");
+              decoderConfigurationError = null;
+            }
             if (t.codec === "ac-4") {
               decoder?.free();
               decoder = new SdaDecoder("ac4");

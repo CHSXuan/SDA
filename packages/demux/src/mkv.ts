@@ -375,6 +375,7 @@ export class MkvDemuxer {
     const trackVint = readVint(this.buf, offset, true);
     if (!trackVint) return;
     const [trackNumber, tnLen] = trackVint;
+    if (size < tnLen + 3) { this.cb.onError?.("truncated Matroska block header"); return; }
     const track = this.tracks.get(trackNumber);
     if (!track) return; // not an audio track we care about
 
@@ -396,53 +397,31 @@ export class MkvDemuxer {
   }
 
   private delace(lacing: number, start: number, end: number): Uint8Array[] | null {
-    const slice = (a: number, b: number) => this.buf.slice(a, b);
+    const slice = (a: number, b: number) => new Uint8Array(this.buf.subarray(a, b));
     if (lacing === 0) return [slice(start, end)];
+    if (start >= end) return null;
 
     const laceCount = this.buf[start]! + 1;
     let pos = start + 1;
+    if (laceCount === 1) return [slice(pos, end)];
 
-    if (lacing === 0x02) {
+    if (lacing === 0x01) {
       // Xiph lacing: (count-1) runs of 255-terminated sizes, last implicit.
       const sizes: number[] = [];
       for (let i = 0; i < laceCount - 1; i++) {
         let s = 0;
+        let terminated = false;
         while (pos < end) {
           const b = this.buf[pos++]!;
           s += b;
-          if (b !== 255) break;
+          if (b !== 255) { terminated = true; break; }
         }
+        if (!terminated) return null;
         sizes.push(s);
       }
       const frames: Uint8Array[] = [];
-      let consumed = 0;
       for (const s of sizes) {
-        frames.push(slice(pos, pos + s));
-        pos += s;
-        consumed += s;
-      }
-      frames.push(slice(pos, end));
-      return frames;
-    }
-
-    if (lacing === 0x01) {
-      // EBML lacing: first size vint, then signed vint diffs.
-      const first = readVint(this.buf, pos, true);
-      if (!first) return null;
-      let [size, len] = first;
-      pos += len;
-      const sizes = [size];
-      for (let i = 1; i < laceCount - 1; i++) {
-        const sv = readVint(this.buf, pos, true);
-        if (!sv) return null;
-        let [raw, slen] = sv;
-        pos += slen;
-        const bias = Math.pow(2, 7 * slen - 1) - 1;
-        size += raw - bias;
-        sizes.push(size);
-      }
-      const frames: Uint8Array[] = [];
-      for (const s of sizes) {
+        if (pos + s > end) return null;
         frames.push(slice(pos, pos + s));
         pos += s;
       }
@@ -451,8 +430,37 @@ export class MkvDemuxer {
     }
 
     if (lacing === 0x03) {
+      // EBML lacing: first size vint, then signed vint diffs.
+      const first = readVint(this.buf, pos, true);
+      if (!first) return null;
+      let [size, len] = first;
+      pos += len;
+      if (pos > end || size < 0) return null;
+      const sizes = [size];
+      for (let i = 1; i < laceCount - 1; i++) {
+        const sv = readVint(this.buf, pos, true);
+        if (!sv) return null;
+        let [raw, slen] = sv;
+        pos += slen;
+        const bias = Math.pow(2, 7 * slen - 1) - 1;
+        size += raw - bias;
+        if (pos + slen > end || size < 0) return null;
+        sizes.push(size);
+      }
+      const frames: Uint8Array[] = [];
+      for (const s of sizes) {
+        if (pos + s > end) return null;
+        frames.push(slice(pos, pos + s));
+        pos += s;
+      }
+      frames.push(slice(pos, end));
+      return frames;
+    }
+
+    if (lacing === 0x02) {
       // Fixed-size lacing.
       const total = end - pos;
+      if (total % laceCount !== 0) return null;
       const each = Math.floor(total / laceCount);
       if (each <= 0) return null;
       const frames: Uint8Array[] = [];

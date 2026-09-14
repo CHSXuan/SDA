@@ -41,6 +41,36 @@ export interface Mp4DemuxerCallbacks {
 
 const AUDIO_CODECS = new Set(["ec-3", "ac-3", "ac-4", "mlpa", "dtsc", "dtsh", "dtsl", "dtse"]);
 
+/** MP4Box 0.5 preserves unknown MPEG-H audio entries as data, like ALAC. */
+export function mpeghTracksFromMp4Box(file: any): Mp4AudioTrack[] {
+  const result:Mp4AudioTrack[]=[];
+  for(const trak of file.moov?.traks??[]) {
+    const entry=trak.mdia?.minf?.stbl?.stsd?.entries?.[0];
+    if(!['mha1','mhm1'].includes(entry?.type))continue;
+    const data:Uint8Array=entry.data;
+    let decoderConfig:Uint8Array|undefined;
+    if(entry.mhaC?.data){const config:Uint8Array=entry.mhaC.data;
+      if(config.length<5)throw Error('Truncated mhaC');
+      const n=(config[3]!<<8)|config[4]!;
+      if(n>config.length-5)throw Error('Truncated MPEG-H decoder configuration');
+      decoderConfig=config.slice(5,5+n);
+    }
+    if(data)for(let p=20;p+8<=data.length;){const size=readU32(data,p);if(size<8||p+size>data.length)throw Error('Invalid MPEG-H sample entry box');
+      if(atomType(data,p+4)==='mhaC'){
+        if(size<13)throw Error('Truncated mhaC');
+        const n=(data[p+11]!<<8)|data[p+12]!;
+        if(p+13+n>p+size)throw Error('Truncated MPEG-H decoder configuration');
+        decoderConfig=data.slice(p+13,p+13+n);
+      }p+=size;
+    }
+    if(entry.type==='mha1'&&!decoderConfig?.length)throw Error('MPEG-H mha1 requires mhaC');
+    const mdhd=trak.mdia.mdhd;
+    result.push({trackId:trak.tkhd.track_id,codec:entry.type,sampleRate:entry.samplerate??(data?.length>=20?readU32(data,16)/65536:0),
+      channels:entry.channel_count??0,decoderConfig,durationSec:mdhd?.duration/mdhd?.timescale});
+  }
+  return result;
+}
+
 /** ISO BMFF supplies raw AC-4 AUs; add Annex G framing for the byte-stream decoder. */
 export function ac4SyncFrame(payload: Uint8Array): Uint8Array {
   if (!payload.length || payload.length > 0xffffff) throw new Error("Invalid AC-4 MP4 access unit size");
@@ -174,6 +204,7 @@ export class Mp4Demuxer {
     this.file.onError = (e: unknown) => this.cb.onError?.(String(e));
     this.file.onReady = (info: { audioTracks: Array<{ id: number; codec: string; duration?: number; timescale?: number; movie_duration?: number; movie_timescale?: number; audio: { sample_rate: number; channel_count: number } }> }) => {
       const candidates: Mp4AudioTrack[] = [];
+      candidates.push(...mpeghTracksFromMp4Box(this.file));
       const alac = alacTrackFromMp4Box(this.file as unknown as { moov?: { traks?: Mp4AlacTrack[] } });
       if (alac) candidates.push(alac);
       for (const t of info.audioTracks) {

@@ -125,3 +125,36 @@ assert.equal(reusedPackets.length, 1, "push() retains an owned copy of an incomp
 assert.deepEqual([...reusedPackets[0].frames[0]], [1, 2, 3, 4]);
 
 console.log("MKV streaming tests passed");
+// Matroska Block lacing bits: 01 Xiph, 10 fixed, 11 EBML.
+const laceFixture = (mode, header, payload) => concat(
+  element(0x1a45dfa3, new Uint8Array(0)),
+  element(0x18538067, concat(
+    element(0x1654ae6b, audioTrack(1, 'A_DTS')),
+    element(0x1f43b675, element(0xa3, concat(vint(1), Uint8Array.of(0, 0, 0x80 | (mode << 1)), header, payload))),
+  )),
+);
+const samples = [Uint8Array.of(0x7f, 0xfe), Uint8Array.of(1, 2, 3), Uint8Array.of(8, 9)];
+for (const [mode, header, frames] of [
+  [1, Uint8Array.of(2, 2, 3), samples],
+  [3, Uint8Array.of(2, 0x82, 0xc0), samples], // first size 2, signed delta +1
+  [2, Uint8Array.of(2), [samples[0], samples[2], samples[0]]],
+]) {
+  const source = laceFixture(mode, header, concat(...frames));
+  for (const chunkSize of [1, 7, source.length]) {
+    const found = [], failed = [];
+    const d = new MkvDemuxer({onPacket:p=>found.push(...p.frames), onError:e=>failed.push(e)});
+    for(let i=0;i<source.length;i+=chunkSize)d.push(source.subarray(i,i+chunkSize));
+    assert.deepEqual(failed, []);
+    assert.deepEqual(found, frames, `mode ${mode}, chunk ${chunkSize}`);
+  }
+}
+for (const [mode, header, payload] of [
+  [1, Uint8Array.of(1,255), new Uint8Array()], // unterminated size
+  [1, Uint8Array.of(1,20), Uint8Array.of(1)], // oversized frame
+  [3, Uint8Array.of(2,0x81,0x80), Uint8Array.of(1,2)], // negative delta
+  [2, Uint8Array.of(2), Uint8Array.of(1,2,3,4)], // indivisible frame sizes
+]) {
+  const found=[],failed=[];const d=new MkvDemuxer({onPacket:p=>found.push(p),onError:e=>failed.push(e)});
+  d.push(laceFixture(mode,header,payload));assert.equal(found.length,0);assert.equal(failed.length,1);
+}
+console.log('MKV lacing and invalid-size tests passed');
