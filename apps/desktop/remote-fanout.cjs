@@ -5,9 +5,12 @@ const FRAMES=480,MAX_BACKLOG=600;
 class RemoteFanout {
  constructor(owner,{packet,decodePackets}){this.owner=owner;this.packet=packet;this.decodePackets=decodePackets;this.peers=new Map();this.inflight=0;this.starting=null;this.local=null;this.server=null;this.closed=false;this.history=[];this.sourceSample=null;this.sourceEnd=null;}
  add(socket){if(this.sourceEnd!==null)socket.endSample=this.sourceEnd;const position=this.owner.hooks.position?.();const queue=socket.sync&&Number.isFinite(position)?this.history.filter(f=>f.sample>=Math.max(0,position-1)*48000):[];const state={socket,ready:false,sent:0,consumed:0,queue:[...queue],lastFeedback:Date.now(),reset:false};this.peers.set(socket,state);return state;}
- window(p){return (this.owner.bufferMs+(p.socket.pcmPipeline?800:0))*48;}
+ // Browser main-thread delivery/ACKs can stall for over a second in the
+ // background. Keep 2.4 s of credit, below the worklet's 131072-frame FIFO;
+ // the configured startup threshold remains independent of this headroom.
+ window(p){return (p.socket.pcmPipeline?2400:this.owner.bufferMs)*48;}
  flush(p){const window=this.window(p);while(p.ready&&p.queue.length&&p.sent-p.consumed<window&&!p.socket.destroyed){const frame=p.queue.shift();if(p.socket.frameIndex===0&&Number.isSafeInteger(frame.sample))p.socket.positionBase=frame.sample/48000;p.sent+=FRAMES;p.socket.write(this.packet('A',frame.body??frame));}if(p.queue.length>(p.socket.sync?1000:MAX_BACKLOG)||p.socket.writableLength>1024*1024)this.owner.failPeer(p.socket,'此设备网络未跟上播放，请重新连接');}
- pump(){if(this.closed||!this.local)return;let demand=0;for(const p of this.peers.values()){this.flush(p);if(p.ready&&!p.socket.destroyed)demand=Math.max(demand,Math.floor((this.window(p)-(p.sent-p.consumed)-p.queue.length*FRAMES)/FRAMES));}const count=Math.max(0,demand-this.inflight);if(count){this.inflight+=count;this.local.write(Buffer.alloc(count,'P'));}}
+ pump(){if(this.closed||!this.local)return;let demand=0;for(const p of this.peers.values()){this.flush(p);if(p.ready&&!p.socket.destroyed)demand=Math.max(demand,Math.floor((this.window(p)-(p.sent-p.consumed)-p.queue.length*FRAMES)/FRAMES));}const count=Math.max(0,Math.min(demand,100)-this.inflight);if(count){this.inflight+=count;this.local.write(Buffer.alloc(count,'P'));}}
  async start(){if(this.starting)return this.starting;this.starting=this.open();return this.starting;}
  async open(){
   const token=crypto.randomBytes(32).toString('hex'),owner=this.owner;

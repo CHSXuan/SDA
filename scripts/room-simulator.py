@@ -143,7 +143,7 @@ def geometry(config):
         ray = np.array([math.cos(az)*math.cos(el), math.sin(az)*math.cos(el), math.sin(el)])
         room_edge = np.where(ray >= 0, size-listener, listener)-.25
         radius = np.min(np.divide(room_edge, np.abs(ray), out=np.full(3, np.inf), where=np.abs(ray)>1e-8))
-        distance=config.get("listeningDistance",1.2) if studio else radius*config["placement"]
+        distance=config.get("listeningDistance",1.2) if studio and config.get("shape") != "box" else radius*config["placement"]
         if distance>radius:raise ValueError("Listening distance places a monitor too close to/outside a room boundary")
         positions.append(listener+ray*distance)
     return size, listener, positions

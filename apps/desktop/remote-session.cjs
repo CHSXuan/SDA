@@ -281,7 +281,7 @@ class RemoteSession {
       return {layout:text(value.layout),head:text(value.head),locked:!!value.locked,dense:!!value.dense,calibrated:!!value.calibrated,
         generator:{available:!!value.generator?.available,running:!!value.generator?.running,current:Number(value.generator?.current)||0,total:Number(value.generator?.total)||0},
         error:text(value.error),cinema:{profileId:text(value.cinema.profileId)||null,settings:cinemaProfiles.validateSettings(value.cinema.settings)},
-        speakers:value.speakers.slice(0,16).map(v=>({name:text(v.name),label:text(v.label),az:Number(v.az)||0,el:Number(v.el)||0})),
+        speakers:value.speakers.slice(0,32).map(v=>({name:text(v.name),label:text(v.label),az:Number(v.az)||0,el:Number(v.el)||0})),
         rooms:value.rooms.slice(0,100).map(v=>({id:text(v.id),name:text(v.name),layout:text(v.layout),builtin:!!v.builtin})),
         heads:value.heads.slice(0,100).map(v=>({id:text(v.id),name:text(v.name)}))};
     } catch { return null; }

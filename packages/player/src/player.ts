@@ -187,6 +187,7 @@ export interface SdaPlayerOptions {
 export type LayoutResolver = (
   bedLabels: readonly string[],
   hasDynamics: boolean,
+  codec?: string,
 ) => readonly VirtualSpeaker[] | null;
 
 /** 解码前瞻：环形缓冲约 5.3s，前瞻 4s 可吞掉弹窗/后台切换造成的秒级供给抖动。 */
@@ -280,6 +281,7 @@ export class SdaPlayer {
   private ready: Promise<void>;
   private objectChannels = new Map<number, number>(); // object id → PCM channel
   private decodedFormatKey = "";
+  private trackCodec = "";
   private trackReported = false;
   private knownBedLabels: string[] = [];
   private mutedBedLabels = new Set<string>();
@@ -522,7 +524,7 @@ export class SdaPlayer {
     if (!resolver) return;
     this.autoLayoutEnabled = true;
     const hasDyn = this.objectChannels.size > 0;
-    const next = resolver(this.knownBedLabels, hasDyn);
+    const next = resolver(this.knownBedLabels, hasDyn, this.trackCodec);
     if (next) this.setLayout(next, false);
     this.layoutChecked = true;
     this.layoutHadDynamics = hasDyn;
@@ -1059,6 +1061,7 @@ export class SdaPlayer {
     this.queuedSamples = 0;
     this.containerDurationSec = null;
     this.trackReported = false;
+    this.trackCodec = "";
     this.programLoudness = null;
     this.programLoudnessGainDb = null;
     this.scheduledProgramLoudnessGainDb = undefined;
@@ -1752,6 +1755,7 @@ export class SdaPlayer {
         if (track.durationSec && Number.isFinite(track.durationSec)) {
           this.containerDurationSec = track.durationSec;
         }
+        this.trackCodec = track.codec;
         this.ensureStreamRate(track.sampleRate);
         console.log(
           `[SDA] player#${this.id} 轨道 ${track.container}/${track.codec} ${track.sampleRate}Hz ${track.channels}ch` +
@@ -1827,6 +1831,7 @@ export class SdaPlayer {
     // panel info from the first decoded frame instead.
     if (!this.trackReported) {
       this.trackReported = true;
+      this.trackCodec = frame.codec;
       this.ensureStreamRate(frame.sampleRate);
       this.cb.onTrack?.({
         codec: frame.codec,
@@ -2012,7 +2017,7 @@ export class SdaPlayer {
       if (this.autoLayoutEnabled && resolver && (!this.layoutChecked || (!this.layoutHadDynamics && hasDyn))) {
         this.layoutChecked = true;
         this.layoutHadDynamics = hasDyn;
-        const next = resolver(frame.labels, hasDyn);
+        const next = resolver(frame.labels, hasDyn, frame.codec);
         const cur = this.initArgs?.layout;
         const same =
           next && cur && next.length === cur.length && next.every((s, i) => s.name === cur[i]!.name);

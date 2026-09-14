@@ -43,6 +43,7 @@
       "builtin-rooms.cjs",
       "builtin-rooms/**",
       "room-lab.cjs",
+      "room-layouts.cjs",
       {
         "from": "../web/dist",
         "to": "web"

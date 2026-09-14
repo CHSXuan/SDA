@@ -71,6 +71,60 @@ const BED_9_1 = [...FRONT, ...WIDE, ...SURROUND_7];
 /** 7.1.4 — the full Atmos home bed. */
 export const LAYOUT_7_1_4: VirtualSpeaker[] = [...BED_7_1, ...TOP_FRONT, ...TOP_REAR];
 
+/** Sony demonstration geometry: upper +30°, lower -20°, front ±30°, rear ±110°.
+ * https://www.ecoustics.com/articles/sony-360-reality-audio-tour/ */
+const RA_HEIGHTS: VirtualSpeaker[] = [
+  { name: "UpperFrontLeft", azimuth: 30, elevation: 30, distance: 1 },
+  { name: "UpperFrontRight", azimuth: -30, elevation: 30, distance: 1 },
+  { name: "UpperCenter", azimuth: 0, elevation: 30, distance: 1 },
+  { name: "UpperRearLeft", azimuth: 110, elevation: 30, distance: 1 },
+  { name: "UpperRearRight", azimuth: -110, elevation: 30, distance: 1 },
+  { name: "LowerFrontLeft", azimuth: 30, elevation: -20, distance: 1 },
+  { name: "LowerFrontRight", azimuth: -30, elevation: -20, distance: 1 },
+  { name: "LowerCenter", azimuth: 0, elevation: -20, distance: 1 },
+];
+export const LAYOUT_360RA: VirtualSpeaker[] = [FRONT[0]!, FRONT[1]!, FRONT[2]!, ...SURROUND_5, ...RA_HEIGHTS];
+
+/** 22.2 / 9+10+3 (ITU-R BS.2051), MPEG-H CICP 13 nominal geometry.
+ * Order and nominal angles: libmpegh impeghd_cicp_2_geometry_rom.c. */
+export const LAYOUT_22_2: VirtualSpeaker[] = [
+  { name: "I_M_L060", azimuth: 60, elevation: 0, distance: 1 },
+  { name: "I_M_R060", azimuth: -60, elevation: 0, distance: 1 },
+  { name: "I_M_000", azimuth: 0, elevation: 0, distance: 1 },
+  { name: "LFE", azimuth: 45, elevation: -15, distance: 1, isLfe: true, bus: "I_LFE" },
+  { name: "I_M_L135", azimuth: 135, elevation: 0, distance: 1 },
+  { name: "I_M_R135", azimuth: -135, elevation: 0, distance: 1 },
+  { name: "I_M_L030", azimuth: 30, elevation: 0, distance: 1 },
+  { name: "I_M_R030", azimuth: -30, elevation: 0, distance: 1 },
+  { name: "I_M_180", azimuth: 180, elevation: 0, distance: 1 },
+  { name: "LFE2", azimuth: -45, elevation: -15, distance: 1, isLfe: true, bus: "I_LFE2" },
+  { name: "I_M_L090", azimuth: 90, elevation: 0, distance: 1 },
+  { name: "I_M_R090", azimuth: -90, elevation: 0, distance: 1 },
+  { name: "I_U_L045", azimuth: 45, elevation: 35, distance: 1 },
+  { name: "I_U_R045", azimuth: -45, elevation: 35, distance: 1 },
+  { name: "I_U_000", azimuth: 0, elevation: 35, distance: 1 },
+  { name: "I_T_000", azimuth: 0, elevation: 90, distance: 1 },
+  { name: "I_U_L135", azimuth: 135, elevation: 35, distance: 1 },
+  { name: "I_U_R135", azimuth: -135, elevation: 35, distance: 1 },
+  { name: "I_U_L090", azimuth: 90, elevation: 35, distance: 1 },
+  { name: "I_U_R090", azimuth: -90, elevation: 35, distance: 1 },
+  { name: "I_U_180", azimuth: 180, elevation: 35, distance: 1 },
+  { name: "I_L_000", azimuth: 0, elevation: -15, distance: 1 },
+  { name: "I_L_L045", azimuth: 45, elevation: -15, distance: 1 },
+  { name: "I_L_R045", azimuth: -45, elevation: -15, distance: 1 },
+];
+
+/** Dolby 11.1.8 guide: nominal angles within its placement ranges. */
+const ATMOS_11_EXTRAS: VirtualSpeaker[] = [
+  { name: "Surround1Left", azimuth: 122, elevation: 0, distance: 1 },
+  { name: "Surround1Right", azimuth: -122, elevation: 0, distance: 1 },
+  { name: "FrontHeightLeft", azimuth: 30, elevation: 25, distance: 1 },
+  { name: "FrontHeightRight", azimuth: -30, elevation: 25, distance: 1 },
+  { name: "RearHeightLeft", azimuth: 150, elevation: 25, distance: 1 },
+  { name: "RearHeightRight", azimuth: -150, elevation: 25, distance: 1 },
+];
+export const LAYOUT_11_1_8: VirtualSpeaker[] = [...BED_9_1, ...TOP_FRONT, ...TOP_REAR, ...ATMOS_11_EXTRAS];
+
 /** 可选扬声器布局（床 + 顶箱组合）。 */
 export const LAYOUTS = {
   "2.1": BED_2_1,
@@ -83,6 +137,9 @@ export const LAYOUTS = {
   "9.1.2": [...BED_9_1, ...TOP_MIDDLE],
   "9.1.4": [...BED_9_1, ...TOP_FRONT, ...TOP_REAR],
   "9.1.6": [...BED_9_1, ...TOP_FRONT, ...TOP_MIDDLE, ...TOP_REAR],
+  "360RA-13": LAYOUT_360RA,
+  "22.2": LAYOUT_22_2,
+  "11.1.8": LAYOUT_11_1_8,
 } as const;
 
 export type LayoutId = keyof typeof LAYOUTS;
@@ -92,13 +149,16 @@ export type LayoutId = keyof typeof LAYOUTS;
 export const RENDER_TOPOLOGY: readonly VirtualSpeaker[] = [
   ...LAYOUTS["9.1.6"],
   ...SURROUND_5,
+  ...RA_HEIGHTS,
+  ...LAYOUT_22_2,
+  ...ATMOS_11_EXTRAS,
 ];
 
 /** Dense fill directions for the opt-in precise-object binaural sphere. These
  * are binauralOnly: they must never leak into the stereo downmix or the
  * physical multichannel mapping, only the dense object VBAP sphere uses them.
- * The 18 physical buses plus these 14 fills stay within Web Audio's 32-channel
- * per-output limit: horizontal 30° grid plus upper-side ±90° directions. */
+ * Renderer partitions the fixed topology across output ports of at most
+ * 32 channels, preserving every fill direction. */
 const DENSE_HORIZONTAL = Array.from({ length: 12 }, (_, i) => i * 30 - 180);
 const DENSE_ELEVATED = [-90, 90];
 export const DENSE_BINAURAL_FILLS: VirtualSpeaker[] = [
@@ -115,6 +175,9 @@ export function speakerBusKey(speaker: Pick<VirtualSpeaker, "name" | "bus">): st
  *  取全部布局的并集，床标签在任何布局下都有位置（不在当前布局的音箱
  *  会由 VBAP 平移到最近的音箱上）。 */
 const LABEL_POSITIONS: Record<string, Spherical> = {
+  ...Object.fromEntries(ATMOS_11_EXTRAS.map(s => [s.name, s])),
+  ...Object.fromEntries(LAYOUT_22_2.filter(s => !s.isLfe).map(s => [s.name, s])),
+  ...Object.fromEntries(RA_HEIGHTS.map(s => [s.name, s])),
   ...Object.fromEntries([...LAYOUTS["9.1.6"]].map((s) => [s.name, s])),
   // 6.1 后中置（eac3 channel_mode 4/5、dependent chanmap Cs 位）：正后方 180°，
   // 不属于任何布局的音箱，渲染时由 VBAP 平移到后环/环绕对之间。
@@ -202,6 +265,8 @@ export function aliasLabel(label: string): string {
  *  顶层随后。返回布局总线索引按物理顺序排列的数组 —— 多声道直出时按此重排，
  *  否则 7.1 布局的侧环/后环会在 Windows 设备上互换。 */
 export function physicalChannelOrder(layout: readonly VirtualSpeaker[]): number[] {
+  // Standard 22.2 has no Windows home-theater mask: retain its CICP order.
+  if (layout === LAYOUT_11_1_8 || layout === LAYOUT_22_2 || layout.length === 24 && layout[0]?.name === "I_M_L060") return layout.map((_, i) => i);
   const PRIORITY = [
     "FrontLeft", "FrontRight", "Center", "LFE",
     "RearLeft", "RearRight", // WASAPI BL/BR bits

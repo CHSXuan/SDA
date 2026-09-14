@@ -1666,6 +1666,42 @@ fn bed_route_with_head(label: &str, solver: &vbap::VbapSolver, head: Option<[f32
         "RearCenter" | "Cb" | "CenterSurround" => ("RearCenter", static_bed_position(180.0, 0.0)),
         "TopCenter" | "Tc" => ("TopCenter", static_bed_position(0.0, 90.0)),
         "TopFrontCenter" | "Tfc" => ("TopFrontCenter", static_bed_position(0.0, 45.0)),
+        "UpperFrontLeft" => ("UpperFrontLeft", static_bed_position(30.0, 30.0)),
+        "UpperFrontRight" => ("UpperFrontRight", static_bed_position(-30.0, 30.0)),
+        "UpperCenter" => ("UpperCenter", static_bed_position(0.0, 30.0)),
+        "UpperRearLeft" => ("UpperRearLeft", static_bed_position(110.0, 30.0)),
+        "UpperRearRight" => ("UpperRearRight", static_bed_position(-110.0, 30.0)),
+        "LowerFrontLeft" => ("LowerFrontLeft", static_bed_position(30.0, -20.0)),
+        "LowerFrontRight" => ("LowerFrontRight", static_bed_position(-30.0, -20.0)),
+        "LowerCenter" => ("LowerCenter", static_bed_position(0.0, -20.0)),
+        "Surround1Left" => ("Surround1Left", static_bed_position(122.0, 0.0)),
+        "Surround1Right" => ("Surround1Right", static_bed_position(-122.0, 0.0)),
+        "FrontHeightLeft" => ("FrontHeightLeft", static_bed_position(30.0, 25.0)),
+        "FrontHeightRight" => ("FrontHeightRight", static_bed_position(-30.0, 25.0)),
+        "RearHeightLeft" => ("RearHeightLeft", static_bed_position(150.0, 25.0)),
+        "RearHeightRight" => ("RearHeightRight", static_bed_position(-150.0, 25.0)),
+        "I_M_L060" => ("I_M_L060", static_bed_position(60.0, 0.0)),
+        "I_M_R060" => ("I_M_R060", static_bed_position(-60.0, 0.0)),
+        "I_M_000" => ("I_M_000", static_bed_position(0.0, 0.0)),
+        "I_M_L135" => ("I_M_L135", static_bed_position(135.0, 0.0)),
+        "I_M_R135" => ("I_M_R135", static_bed_position(-135.0, 0.0)),
+        "I_M_L030" => ("I_M_L030", static_bed_position(30.0, 0.0)),
+        "I_M_R030" => ("I_M_R030", static_bed_position(-30.0, 0.0)),
+        "I_M_180" => ("I_M_180", static_bed_position(180.0, 0.0)),
+        "I_M_L090" => ("I_M_L090", static_bed_position(90.0, 0.0)),
+        "I_M_R090" => ("I_M_R090", static_bed_position(-90.0, 0.0)),
+        "I_U_L045" => ("I_U_L045", static_bed_position(45.0, 35.0)),
+        "I_U_R045" => ("I_U_R045", static_bed_position(-45.0, 35.0)),
+        "I_U_000" => ("I_U_000", static_bed_position(0.0, 35.0)),
+        "I_T_000" => ("I_T_000", static_bed_position(0.0, 90.0)),
+        "I_U_L135" => ("I_U_L135", static_bed_position(135.0, 35.0)),
+        "I_U_R135" => ("I_U_R135", static_bed_position(-135.0, 35.0)),
+        "I_U_L090" => ("I_U_L090", static_bed_position(90.0, 35.0)),
+        "I_U_R090" => ("I_U_R090", static_bed_position(-90.0, 35.0)),
+        "I_U_180" => ("I_U_180", static_bed_position(180.0, 35.0)),
+        "I_L_000" => ("I_L_000", static_bed_position(0.0, -15.0)),
+        "I_L_L045" => ("I_L_L045", static_bed_position(45.0, -15.0)),
+        "I_L_R045" => ("I_L_R045", static_bed_position(-45.0, -15.0)),
         _ => ("Center", static_bed_position(0.0, 0.0)),
     };
     if let Some(head) = head.and_then(spatial::normalize_quaternion) {
@@ -2360,7 +2396,8 @@ mod tests {
         assert_eq!(engine.bus_renderer.as_ref().unwrap().bus_count(), 2);
 
         let front_left = bed_route("FrontLeft", &engine.vbap);
-        assert_eq!(front_left.buses, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(front_left.buses[0], 1.0);
+        assert!(front_left.buses[1..].iter().all(|g| *g == 0.0));
         assert_eq!(front_left.lfe, 0.0);
 
         let lfe = bed_route("LFE", &engine.vbap);

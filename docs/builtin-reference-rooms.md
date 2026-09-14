@@ -1,13 +1,13 @@
 # Built-in Reference Rooms
 
-The installer includes five precomputed simulated profiles: 7.1.4, 2.0, 5.1,
-9.1.4 and 9.1.6. Users select Apply built-in room without installing Python,
+The installer includes eight precomputed simulated profiles: 7.1.4, 2.0, 5.1,
+9.1.4, 9.1.6, 360RA-13, 22.2 and Dolby 11.1.8. Users select Apply built-in room without installing Python,
 downloading measurement data or running a generator. Custom generation remains
 available when its optional scientific runtime is configured.
 
 ## Generation Inputs
 
-All five use the same room so a layout comparison does not also change room
+All eight use the same room so a layout comparison does not also change room
 acoustics. These are explicit SDA design assumptions, not parameters measured
 in a named studio or certified by Dolby.
 
@@ -15,7 +15,7 @@ in a named studio or certified by Dolby.
 | --- | --- |
 | Length / width / height | 6 / 5 / 3.2 m |
 | Listener | 60% of length from rear, centered left/right, ear height 1.2 m |
-| Monitor distance | All non-LFE speakers 1.2 m from listener, preserving layout angles |
+| Monitor distance | 1.2 m equal-radius array; 11.1.8 instead uses 70% of each wall-boundary ray, preserving angles |
 | Reflection order | 10 |
 | Front / ceiling | Fabric-covered 6 pcf rockwool panel, 70% coverage |
 | Side / rear walls | 50 mm rockwool, 80 kg/m³, 85% coverage |
@@ -159,3 +159,7 @@ the final 7.1.4 preset was accepted by native, persisted and displayed after a
 reload without changing the latest cinema/monitor/hardware settings. No media
 was played and no exclusive-device probe was run. The new revision was not
 repackaged into a fresh installer during this check.
+
+Room generation and import share `room-layouts.cjs` for non-LFE speaker names and directions. Validation requires exact layout coverage, rather than a fixed speaker-count ceiling. The 22.2 and 360RA-13 profiles include lower-layer responses; LFE remains on the existing bass path.
+
+22.2 is explicitly named a spherical speaker array, while 11.1.8 uses rectangular boundary placement. Both use rectangular-wall image-source acoustics; this is not a spherical-wall room simulation.

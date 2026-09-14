@@ -1,10 +1,11 @@
+const {roomSpeakers}=require('./room-layouts.cjs');
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {spawn}=require('node:child_process');
 const profiles=require('./cinema-profiles.cjs');
 
-const layouts=['2.0','2.1','5.1','5.1.2','5.1.4','7.1.2','7.1.4','9.1.2','9.1.4','9.1.6'];
+const layouts=['2.0','2.1','5.1','5.1.2','5.1.4','7.1.2','7.1.4','9.1.2','9.1.4','9.1.6','360RA-13','22.2','11.1.8'];
 function validateConfig(input) {
   if(!input||!layouts.includes(input.layout)||!['treated','living','reflective','rockwool_50mm_80kgm3','plasterboard','hard_surface','studio'].includes(input.material))throw new Error('仿真布局或材料无效');
   const result={layout:input.layout,material:({treated:"rockwool_50mm_80kgm3",living:"plasterboard",reflective:"hard_surface"}[input.material]??input.material)};
@@ -15,15 +16,9 @@ function validateConfig(input) {
   if(input.listeningDistance!==undefined||result.material==='studio'){
     const d=input.listeningDistance??1.2;if(typeof d!=='number'||!Number.isFinite(d)||d<.8||d>2.5)throw new Error('监听距离应为 0.8–2.5 米');result.listeningDistance=d;
   }
+  if(input.shape!==undefined){if(!['sphere','box'].includes(input.shape))throw new Error('房间布置无效');result.shape=input.shape;}
   if(!Number.isInteger(result.order))throw new Error('反射阶数必须是整数');
-  const [floor,,top=0]=input.layout.split('.').map(Number);
-  const list=[['FrontLeft',30,0],['FrontRight',-30,0]];
-  if(floor>=5)list.push(['Center',0,0],['SurroundLeft',floor===5?110:100,0],['SurroundRight',floor===5?-110:-100,0]);
-  if(floor>=7)list.push(['RearLeft',140,0],['RearRight',-140,0]);
-  if(floor>=9)list.push(['WideLeft',60,0],['WideRight',-60,0]);
-  if(top===2||top===6)list.push(['TopMiddleLeft',90,45],['TopMiddleRight',-90,45]);
-  if(top>=4)list.push(['TopFrontLeft',45,45],['TopFrontRight',-45,45],['TopRearLeft',135,45],['TopRearRight',-135,45]);
-  result.speakers=list.map(([name,azimuth,elevation])=>({name,azimuth,elevation}));
+  result.speakers=roomSpeakers(input.layout);
   return result;
 }
 

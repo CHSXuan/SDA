@@ -18,6 +18,9 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     super();
     const opts = (options && options.processorOptions) || {};
     this.busCount = opts.busCount || 12;
+    this.outputChunkSize = opts.outputChunkSize || this.busCount;
+    this.outputChunks = Math.ceil(this.busCount / this.outputChunkSize);
+    this.bankBuses = Array.from({length: 4}, () => new Array(this.busCount));
     this.paused = false;
     this.consumed = 0;
     this.lastTick = 0;
@@ -490,7 +493,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       if (gapMs > CALLBACK_GAP_ESCALATION_MS) this.callbackGapsOver25Ms++;
     }
     this.lastProcessAt = now;
-    const busesByBank = outputs;
+    const busesByBank = this.outputChunks === 1 ? outputs : this.bankBuses;
+    if (this.outputChunks > 1) for (let bank = 0; bank < 4; bank++) {
+      for (let bus = 0; bus < this.busCount; bus++) {
+        busesByBank[bank][bus] = outputs[bank * this.outputChunks + Math.floor(bus / this.outputChunkSize)][bus % this.outputChunkSize];
+      }
+    }
     const primaryBuses = busesByBank[0] || [];
     const blockSize = primaryBuses[0] ? primaryBuses[0].length : 128;
     let activeBankMask = 0;

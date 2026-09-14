@@ -22,7 +22,7 @@ export interface CinemaRoomSummary {
   rows: { name: string; arrivalMs: number; itdMs: number; directEnergyDb: number; peak: number }[];
   simulation?: RoomSimulation;
 }
-export interface RoomSimulationConfig { layout:string; length:number; width:number; height:number; earHeight:number; placement:number; listeningDistance?:number; material:"studio"|"treated"|"living"|"reflective"|"rockwool_50mm_80kgm3"|"plasterboard"|"hard_surface"; order:number; }
+export interface RoomSimulationConfig { shape?:"box"|"sphere"; layout:string; length:number; width:number; height:number; earHeight:number; placement:number; listeningDistance?:number; material:"studio"|"treated"|"living"|"reflective"|"rockwool_50mm_80kgm3"|"plasterboard"|"hard_surface"; order:number; }
 export interface RoomSimulation {
   surfaces?:Record<string,{materialId:string;coverage:number;remainder:string;coeffs:number[]}>;
   studioDesign?:{nominalTargetSeconds:number;eyringSeconds:number[];nearFieldDistanceMetres:number;source:string;firstOrderEarlyReflections:{speaker:string;wall:string;delayMs:number;worstDb:number}[]};

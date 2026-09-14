@@ -1399,9 +1399,9 @@ ipcMain.handle("sda:native-renderer-muted", async (_event, id, muted, atSample) 
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-speaker-mutes", async (_event, names, focus) => {
-  if (!Array.isArray(names) || names.length > 16 || names.some(name => typeof name !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(name))) return false;
+  if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(name))) return false;
   const focusedNames = focus == null ? [] : typeof focus === "string" ? [focus] : focus;
-  if (!Array.isArray(focusedNames) || focusedNames.length > 16 || focusedNames.some(name => typeof name !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(name))) return false;
+  if (!Array.isArray(focusedNames) || focusedNames.some(name => typeof name !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(name))) return false;
   return nativeRendererCommandAck({ type: "setSpeakerMutes", names, focus: focusedNames }, "setSpeakerMutes");
 });
 ipcMain.handle("sda:native-renderer-lfe-muted", async (_event, muted) => {
@@ -1506,7 +1506,7 @@ ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => exclusiveAudioUpdate(async () => {
-  if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6"]).has(layout)) return false;
+  if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6", "360RA-13", "22.2", "11.1.8"]).has(layout)) return false;
   const saved=readSettings().cinema;
   const {roomForLayout,rememberRoom}=require("./room-layout-follow.cjs");
   const roomId=roomForLayout(saved,layout,readCinemaProfile,builtinRooms().list());

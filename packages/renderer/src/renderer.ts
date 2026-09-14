@@ -363,7 +363,7 @@ export class SpatialRenderer {
   /** Nodes owned only by the replaceable binaural bus graph. */
   private binauralBusNodes: AudioNode[] = [];
   /** Worklet output connections that must be explicitly detached on layout swap. */
-  private binauralBankSplitters = new Map<BinauralBank, ChannelSplitterNode>();
+  private binauralBankSplitters = new Map<BinauralBank, ReturnType<SpatialRenderer["createBankSplitter"]>>();
   /** Bus identity sequence that owns the current replaceable binaural graph. */
   private binauralBusKeySequence = "";
   private sources = new Map<string, SourceState>();
@@ -493,8 +493,7 @@ export class SpatialRenderer {
     const nodes: AudioNode[] = [];
     const merger = this.ctx.createChannelMerger(3);
     BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(this.topology.length);
-      this.node!.connect(splitter, outputIndex);
+      const splitter = this.createBankSplitter(outputIndex);
       for (const [bus, outputChannel] of [[leftBus, 0], [rightBus, 1]] as const) {
         const [hpIn, hpOut] = this.lr4("highpass", BASS_MANAGEMENT_CROSSOVER_HZ);
         splitter.connect(hpIn, bus);
@@ -515,7 +514,7 @@ export class SpatialRenderer {
       splitter.connect(lfeIn, lfeBus);
       lfeOut.connect(subSum);
       subSum.connect(merger, 0, 2);
-      nodes.push(splitter, subSum, lfeIn, lfeOut);
+      nodes.push(...splitter.nodes, subSum, lfeIn, lfeOut);
     });
     const gain = this.ctx.createGain();
     gain.gain.value = initialGain;
@@ -535,15 +534,14 @@ export class SpatialRenderer {
     const nodes: AudioNode[] = [];
     const merger = this.ctx.createChannelMerger(layout.length);
     BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(this.topology.length);
-      this.node!.connect(splitter, outputIndex);
+      const splitter = this.createBankSplitter(outputIndex);
       physicalChannelOrder(layout).forEach((layoutBus, channel) => {
         const topologyBus = this.topology.findIndex(
           (speaker) => speakerBusKey(speaker) === speakerBusKey(layout[layoutBus]!),
         );
         if (topologyBus >= 0) splitter.connect(merger, topologyBus, channel);
       });
-      nodes.push(splitter);
+      nodes.push(...splitter.nodes);
     });
     const gain = this.ctx.createGain();
     gain.gain.value = initialGain;
@@ -577,7 +575,7 @@ export class SpatialRenderer {
       this.topology.map((speaker, index) => [speakerBusKey(speaker), index]),
     );
     return Int16Array.from(
-      this.renderLayout.map((speaker) => topologyByKey.get(speakerBusKey(speaker)) ?? -1),
+      this.renderLayout.map((speaker) => topologyByKey.get(speakerBusKey(speaker)) ?? this.topology.findIndex(bus => !bus.isLfe && bus.azimuth === speaker.azimuth && bus.elevation === speaker.elevation)),
     );
   }
 
@@ -672,18 +670,28 @@ export class SpatialRenderer {
     }
   }
 
+  private createBankSplitter(bank: number) {
+    const count = Math.ceil(this.topology.length / MAX_WORKLET_OUTPUT_CHANNELS);
+    const nodes = Array.from({length: count}, (_, chunk) => {
+      const node = this.ctx.createChannelSplitter(Math.min(MAX_WORKLET_OUTPUT_CHANNELS, this.topology.length - chunk * MAX_WORKLET_OUTPUT_CHANNELS));
+      this.node!.connect(node, bank * count + chunk);
+      return node;
+    });
+    return { nodes, connect: (destination: AudioNode, bus: number, input = 0) =>
+      nodes[Math.floor(bus / MAX_WORKLET_OUTPUT_CHANNELS)]!.connect(destination, bus % MAX_WORKLET_OUTPUT_CHANNELS, input),
+      disconnect: () => { for (const node of nodes) { this.node?.disconnect(node); node.disconnect(); } } };
+  }
+
   async init(workletModuleUrl: string | URL): Promise<void> {
-    if (this.topology.length > MAX_WORKLET_OUTPUT_CHANNELS) {
-      throw new Error(`双耳 worklet 总线数 ${this.topology.length} 超出 ${MAX_WORKLET_OUTPUT_CHANNELS} 路平台上限`);
-    }
+    const chunks = Math.ceil(this.topology.length / MAX_WORKLET_OUTPUT_CHANNELS);
     await this.ctx.audioWorklet.addModule(workletModuleUrl);
     this.master = this.ctx.createGain();
     this.master.connect(this.ctx.destination);
     this.node = new AudioWorkletNode(this.ctx, "sda-renderer", {
       numberOfInputs: 0,
-      numberOfOutputs: BINAURAL_BANKS.length,
-      outputChannelCount: BINAURAL_BANKS.map(() => this.topology.length),
-      processorOptions: { busCount: this.topology.length, epoch: this.epoch },
+      numberOfOutputs: BINAURAL_BANKS.length * chunks,
+      outputChannelCount: BINAURAL_BANKS.flatMap(() => Array.from({length: chunks}, (_, i) => Math.min(MAX_WORKLET_OUTPUT_CHANNELS, this.topology.length - i * MAX_WORKLET_OUTPUT_CHANNELS))),
+      processorOptions: { busCount: this.topology.length, outputChunkSize: MAX_WORKLET_OUTPUT_CHANNELS, epoch: this.epoch },
     });
     if (this.poseControlEnabled) this.node.port.postMessage({ type: "headTracking", enabled: true });
     this.node.port.onmessage = (e: MessageEvent) => {
@@ -1031,7 +1039,7 @@ export class SpatialRenderer {
 
   private teardownPostNodes(): void {
     this.outputGraphRevision++;
-    for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
+    for (const splitter of this.binauralBankSplitters.values()) splitter.disconnect();
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
     this.convs.clear();
@@ -1212,8 +1220,7 @@ export class SpatialRenderer {
   private buildStereoPath(n: number, output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);
     BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(n);
-      this.node!.connect(splitter, outputIndex);
+      const splitter = this.createBankSplitter(outputIndex);
       for (let bus = 0; bus < n; bus++) {
         const spk = this.topology[bus]!;
         // Dense binaural-only fills are not real speakers; they must never feed
@@ -1230,7 +1237,7 @@ export class SpatialRenderer {
         gainR.connect(merger, 0, 1);
         this.postNodes.push(gainL, gainR);
       }
-      this.postNodes.push(splitter);
+      this.postNodes.push(...splitter.nodes);
     });
     merger.connect(output);
     this.postNodes.push(merger);
@@ -1260,7 +1267,7 @@ export class SpatialRenderer {
     if (!this.binauralMerger) return;
     const nextBusKeySequence = this.currentBinauralBusKeySequence();
     if (!force && nextBusKeySequence === this.binauralBusKeySequence) return;
-    for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
+    for (const splitter of this.binauralBankSplitters.values()) splitter.disconnect();
     for (const node of this.binauralBusNodes) node.disconnect();
     const retired = new Set(this.binauralBusNodes);
     this.postNodes = this.postNodes.filter((node) => !retired.has(node));
@@ -1302,8 +1309,7 @@ export class SpatialRenderer {
   private buildBinauralBank(bank: BinauralBank): void {
     if (!this.node || !this.binauralMerger || this.convs.has(bank)) return;
     const outputIndex = BINAURAL_BANKS.indexOf(bank);
-    const splitter = this.ctx.createChannelSplitter(this.topology.length);
-    this.node.connect(splitter, outputIndex);
+    const splitter = this.createBankSplitter(outputIndex);
     this.binauralBankSplitters.set(bank, splitter);
     const convs = new Map<number, ConvolverNode | null>();
     const mode: BinauralMode = bank === "far" ? "far" : bank === "mid" ? "mid" : "near";
@@ -1370,7 +1376,7 @@ export class SpatialRenderer {
       }
     }
     this.convs.set(bank, convs);
-    this.trackBinauralBusNodes(splitter);
+    this.trackBinauralBusNodes(...splitter.nodes);
   }
 
   /** Per-mode double-ear rendering. The worklet exposes four topology-channel
@@ -1825,8 +1831,10 @@ export class SpatialRenderer {
     if (state.isLfe) {
       // LFE bypasses spatial panning: straight to the LFE bus.
       gains.fill(0);
-      const lfeBus = this.renderLayout.findIndex((s) => s.isLfe);
+      const lfeBus = this.renderLayout.findIndex((s) => s.isLfe && s.name === state.bedLabel);
+      const fallbackLfe = this.renderLayout.findIndex(s => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
+      else if (fallbackLfe >= 0) gains[fallbackLfe] = 1;
       scalar = metadataGain;
       if (this.lfeMuted) scalar = 0;
       lp = 1;

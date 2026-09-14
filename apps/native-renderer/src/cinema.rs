@@ -49,9 +49,9 @@ impl Settings {
         if !bounded(self.direct_db, -24.0, 6.0) || !bounded(self.early_db, -40.0, 6.0)
             || !bounded(self.late_db, -40.0, 6.0) || !bounded(self.early_ms, 10.0, 100.0)
             || !bounded(self.crossover_hz, 40.0, 160.0) || !bounded(self.bass_db, -24.0, 6.0)
-            || self.speakers.len() > 16 { return Err("invalid cinema settings".into()); }
+            || self.speakers.len() > 32 { return Err("invalid cinema settings".into()); }
         for (name, speaker) in &self.speakers {
-            let valid_name = name == "LFE" || vbap::speakers(vbap::LayoutId::Dolby9_1_6).iter().any(|s| s.name == name);
+            let valid_name = name == "LFE" || name == "LFE2" || vbap::speakers(vbap::LayoutId::Dolby9_1_6).iter().chain(crate::vbap::speakers(crate::vbap::LayoutId::Sony360Ra13).iter()).chain(crate::vbap::speakers(crate::vbap::LayoutId::Itu22_2).iter()).chain(crate::vbap::speakers(crate::vbap::LayoutId::Dolby11_1_8).iter()).any(|s| s.name == name);
             if !valid_name || !bounded(speaker.gain_db, -24.0, 6.0) || !bounded(speaker.delay_ms, 0.0, 20.0)
                 || !bounded(speaker.low_db, -6.0, 6.0) || !bounded(speaker.high_db, -6.0, 6.0) {
                 return Err("invalid speaker calibration".into());

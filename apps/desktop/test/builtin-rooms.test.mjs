@@ -9,7 +9,7 @@ const temp=fs.mkdtempSync(path.resolve(import.meta.dirname,'../../../tmp/builtin
 const cache=path.join(temp,'cache');
 const lib=createBuiltinRooms(root,cache);
 const list=lib.list();
-assert.deepEqual(list.map(x=>x.layout),['7.1.4','2.0','5.1','9.1.4','9.1.6']);
+assert.deepEqual(list.map(x=>x.layout),['7.1.4','2.0','5.1','9.1.4','9.1.6','360RA-13','22.2','11.1.8']);
 assert(list.every(x=>x.builtin&&x.measurement==='simulated'));
 assert.equal(createRoomLab({runtimeFile:path.join(temp,'missing.json'),storeRoot:temp,assetsRoot:temp}).status().available,false);
 for(const item of list){
@@ -25,7 +25,15 @@ for(const item of list){
  assert.equal(profile.simulation.reference.absoluteSplCalibrated,false);
  assert.equal(profile.simulation.reference.rirHighpassEnabled,false);
  assert.equal(Object.keys(profile.simulation.surfaces).length,6);
- assert(profile.simulation.studioDesign.firstOrderEarlyReflections.every(p=>p.worstDb<=-10));
+ if(c.shape!=="box")assert(profile.simulation.studioDesign.firstOrderEarlyReflections.every(p=>p.worstDb<=-10));
+ if(item.layout==="22.2")assert.equal(c.shape,"sphere");
+ if(item.layout==="11.1.8"){
+  assert.equal(c.shape,"box");
+  const distances=Object.values(profile.simulation.positions).map(p=>Math.hypot(...p.map((v,i)=>v-profile.simulation.listener[i])));
+  assert(Math.max(...distances)-Math.min(...distances)>.5,'rectangular boundary positions must not be equal-radius');
+  const moved=structuredClone(profile);moved.simulation.positions.FrontLeft[0]+=.1;
+  assert.throws(()=>profiles.validateRoom(moved),/方形布置距离/);
+ }
  const badSurface=structuredClone(profile);badSurface.simulation.surfaces.floor.coverage=2;
  assert.throws(()=>profiles.validateRoom(badSurface),/表面/);
  const badDistance=structuredClone(profile);badDistance.simulation.config.listeningDistance=2;
@@ -57,5 +65,5 @@ fs.copyFileSync(path.join(root,'catalog.json'),path.join(badRoot,'catalog.json')
 fs.writeFileSync(path.join(badRoot,`${list[0].id}.json.gz`),'corrupt archive');
 assert.throws(()=>createBuiltinRooms(badRoot,path.join(temp,'bad-cache')).read(list[0].id),/checksum/);
 const pkg=JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname,'../package.json')));
-for(const file of ['builtin-rooms/**','builtin-rooms.cjs','cinema-profiles.cjs','monitor-settings.cjs'])assert(pkg.build.files.includes(file));
+for(const file of ['builtin-rooms/**','builtin-rooms.cjs','cinema-profiles.cjs','monitor-settings.cjs','room-layouts.cjs'])assert(pkg.build.files.includes(file));
 console.log('PASS cache recovery, archive corruption, path rejection and packaging inclusion');

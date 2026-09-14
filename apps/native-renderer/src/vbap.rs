@@ -8,8 +8,8 @@ const DET_EPSILON: f32 = 1e-9;
 const HULL_EPSILON: f32 = 1e-7;
 const GAIN_EPSILON: f32 = 1e-4;
 
-/// 9.1.6 has fifteen non-LFE physical virtual speakers.
-pub const MAX_BUS_COUNT: usize = 15;
+/// Largest supported layout: 22 directional speakers (LFE uses its own path).
+pub const MAX_BUS_COUNT: usize = 22;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutId {
@@ -23,6 +23,9 @@ pub enum LayoutId {
     Dolby9_1_2,
     Dolby9_1_4,
     Dolby9_1_6,
+    Sony360Ra13,
+    Itu22_2,
+    Dolby11_1_8,
 }
 
 impl LayoutId {
@@ -38,6 +41,9 @@ impl LayoutId {
             "9.1.2" => Self::Dolby9_1_2,
             "9.1.4" => Self::Dolby9_1_4,
             "9.1.6" => Self::Dolby9_1_6,
+            "360RA-13" => Self::Sony360Ra13,
+            "22.2" => Self::Itu22_2,
+            "11.1.8" => Self::Dolby11_1_8,
             _ => return None,
         })
     }
@@ -54,6 +60,9 @@ impl LayoutId {
             Self::Dolby9_1_2 => "9.1.2",
             Self::Dolby9_1_4 => "9.1.4",
             Self::Dolby9_1_6 => "9.1.6",
+            Self::Sony360Ra13 => "360RA-13",
+            Self::Itu22_2 => "22.2",
+            Self::Dolby11_1_8 => "11.1.8",
         }
     }
 }
@@ -121,6 +130,52 @@ const LAYOUT_9_1_6: [Speaker; 15] = [
     FRONT[0], FRONT[1], FRONT[2], WIDE[0], WIDE[1], SURROUND_7[0], SURROUND_7[1], SURROUND_7[2], SURROUND_7[3], TOP_FRONT[0], TOP_FRONT[1], TOP_MIDDLE[0], TOP_MIDDLE[1], TOP_REAR[0], TOP_REAR[1],
 ];
 
+const LAYOUT_360RA: [Speaker; 13] = [
+    FRONT[0], FRONT[1], FRONT[2], SURROUND_5[0], SURROUND_5[1],
+    Speaker { name: "UpperFrontLeft", azimuth: 30.0, elevation: 30.0 },
+    Speaker { name: "UpperFrontRight", azimuth: -30.0, elevation: 30.0 },
+    Speaker { name: "UpperCenter", azimuth: 0.0, elevation: 30.0 },
+    Speaker { name: "UpperRearLeft", azimuth: 110.0, elevation: 30.0 },
+    Speaker { name: "UpperRearRight", azimuth: -110.0, elevation: 30.0 },
+    Speaker { name: "LowerFrontLeft", azimuth: 30.0, elevation: -20.0 },
+    Speaker { name: "LowerFrontRight", azimuth: -30.0, elevation: -20.0 },
+    Speaker { name: "LowerCenter", azimuth: 0.0, elevation: -20.0 },
+];
+
+const LAYOUT_11_1_8: [Speaker; 19] = [
+ FRONT[0], FRONT[1], FRONT[2], WIDE[0], WIDE[1], SURROUND_7[0], SURROUND_7[1], SURROUND_7[2], SURROUND_7[3], TOP_FRONT[0], TOP_FRONT[1], TOP_REAR[0], TOP_REAR[1],
+ Speaker { name: "Surround1Left", azimuth: 122.0, elevation: 0.0 },
+ Speaker { name: "Surround1Right", azimuth: -122.0, elevation: 0.0 },
+ Speaker { name: "FrontHeightLeft", azimuth: 30.0, elevation: 25.0 },
+ Speaker { name: "FrontHeightRight", azimuth: -30.0, elevation: 25.0 },
+ Speaker { name: "RearHeightLeft", azimuth: 150.0, elevation: 25.0 },
+ Speaker { name: "RearHeightRight", azimuth: -150.0, elevation: 25.0 },
+];
+const LAYOUT_22_2: [Speaker; 22] = [
+    Speaker { name: "I_M_L060", azimuth: 60.0, elevation: 0.0 },
+    Speaker { name: "I_M_R060", azimuth: -60.0, elevation: 0.0 },
+    Speaker { name: "I_M_000", azimuth: 0.0, elevation: 0.0 },
+    Speaker { name: "I_M_L135", azimuth: 135.0, elevation: 0.0 },
+    Speaker { name: "I_M_R135", azimuth: -135.0, elevation: 0.0 },
+    Speaker { name: "I_M_L030", azimuth: 30.0, elevation: 0.0 },
+    Speaker { name: "I_M_R030", azimuth: -30.0, elevation: 0.0 },
+    Speaker { name: "I_M_180", azimuth: 180.0, elevation: 0.0 },
+    Speaker { name: "I_M_L090", azimuth: 90.0, elevation: 0.0 },
+    Speaker { name: "I_M_R090", azimuth: -90.0, elevation: 0.0 },
+    Speaker { name: "I_U_L045", azimuth: 45.0, elevation: 35.0 },
+    Speaker { name: "I_U_R045", azimuth: -45.0, elevation: 35.0 },
+    Speaker { name: "I_U_000", azimuth: 0.0, elevation: 35.0 },
+    Speaker { name: "I_T_000", azimuth: 0.0, elevation: 90.0 },
+    Speaker { name: "I_U_L135", azimuth: 135.0, elevation: 35.0 },
+    Speaker { name: "I_U_R135", azimuth: -135.0, elevation: 35.0 },
+    Speaker { name: "I_U_L090", azimuth: 90.0, elevation: 35.0 },
+    Speaker { name: "I_U_R090", azimuth: -90.0, elevation: 35.0 },
+    Speaker { name: "I_U_180", azimuth: 180.0, elevation: 35.0 },
+    Speaker { name: "I_L_000", azimuth: 0.0, elevation: -15.0 },
+    Speaker { name: "I_L_L045", azimuth: 45.0, elevation: -15.0 },
+    Speaker { name: "I_L_R045", azimuth: -45.0, elevation: -15.0 },
+];
+
 pub fn speakers(layout: LayoutId) -> &'static [Speaker] {
     match layout {
         LayoutId::Stereo2_0 | LayoutId::Stereo2_1 => &LAYOUT_2_0,
@@ -132,6 +187,9 @@ pub fn speakers(layout: LayoutId) -> &'static [Speaker] {
         LayoutId::Dolby9_1_2 => &LAYOUT_9_1_2,
         LayoutId::Dolby9_1_4 => &LAYOUT_9_1_4,
         LayoutId::Dolby9_1_6 => &LAYOUT_9_1_6,
+        LayoutId::Sony360Ra13 => &LAYOUT_360RA,
+        LayoutId::Itu22_2 => &LAYOUT_22_2,
+        LayoutId::Dolby11_1_8 => &LAYOUT_11_1_8,
     }
 }
 
@@ -413,6 +471,37 @@ fn inverse3(rows: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dolby_11_1_8_routes_all_speakers() {
+        let solver = VbapSolver::with_layout(LayoutId::Dolby11_1_8);
+        assert_eq!(solver.bus_count(), 19);
+        for (i, s) in speakers(LayoutId::Dolby11_1_8).iter().enumerate() {
+            let gains = solver.pan(unit(s.azimuth, s.elevation), 0.0);
+            assert!(gains[i] > 0.999, "{}", s.name);
+        }
+    }
+
+    #[test]
+    fn standard_22_2_routes_all_layers() {
+        let solver = VbapSolver::with_layout(LayoutId::Itu22_2);
+        assert_eq!(solver.bus_count(), 22);
+        for (i, s) in speakers(LayoutId::Itu22_2).iter().enumerate() {
+            let gains = solver.pan(unit(s.azimuth, s.elevation), 0.0);
+            assert!(gains[i] > 0.999, "{}", s.name);
+        }
+    }
+
+    #[test]
+    fn sony_360ra_layers_route_to_their_actual_speakers() {
+        let solver = VbapSolver::with_layout(LayoutId::Sony360Ra13);
+        assert_eq!(solver.bus_count(), 13);
+        for (index, speaker) in speakers(LayoutId::Sony360Ra13).iter().enumerate() {
+            let gains = solver.pan(unit(speaker.azimuth, speaker.elevation), 0.0);
+            assert!(gains[index] > 0.999, "{}: {:?}", speaker.name, gains);
+            assert!((gains.iter().map(|g| g*g).sum::<f32>() - 1.0).abs() < 1e-4);
+        }
+    }
 
     #[test]
     #[ignore = "run scripts/test/phrtf-routing.test.cjs to generate audition fixtures"]

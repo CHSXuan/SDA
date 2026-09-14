@@ -22,9 +22,9 @@ impl Settings {
         let bounded = |v: f32, lo, hi| v.is_finite() && v >= lo && v <= hi;
         if !bounded(self.level_db, -80.0, 0.0) || !bounded(self.dim_db, -40.0, 0.0)
             || !bounded(self.crossover_hz, 40.0, 160.0) || !bounded(self.bass_db, -24.0, 6.0)
-            || self.outputs.len() > 16 { return Err("invalid monitor settings".into()); }
+            || self.outputs.len() > 32 { return Err("invalid monitor settings".into()); }
         for (name, output) in &self.outputs {
-            if (name != "LFE" && !crate::vbap::speakers(crate::vbap::LayoutId::Dolby9_1_6).iter().any(|s| s.name == name))
+            if (name != "LFE" && name != "LFE2" && !crate::vbap::speakers(crate::vbap::LayoutId::Dolby9_1_6).iter().chain(crate::vbap::speakers(crate::vbap::LayoutId::Sony360Ra13).iter()).chain(crate::vbap::speakers(crate::vbap::LayoutId::Itu22_2).iter()).chain(crate::vbap::speakers(crate::vbap::LayoutId::Dolby11_1_8).iter()).any(|s| s.name == name))
                 || !bounded(output.trim_db, -24.0, 6.0) || !bounded(output.delay_ms, 0.0, 20.0) {
                 return Err("invalid monitor output".into());
             }

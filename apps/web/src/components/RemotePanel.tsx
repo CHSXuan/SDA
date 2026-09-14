@@ -52,8 +52,8 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
 
     </>}
     {status.role!=="client"&&<div className="remote-preferences"><h4><Settings2 size={17}/>播放选项</h4>
-    {status.role!=="client"&&<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.hlsAllowed===true} disabled={busy} onChange={e=>void run("hlsAllowed",e.target.checked)}/><span>允许 HLS 原生播放</span><small>默认关闭，使用低延迟 PCM。开启后 Safari 可使用原生无损 HLS；请刷新网页并重新连接。关闭会断开现有 HLS 收听。</small></label>}
-    {status.role!=="client"&&<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.localMuted!==false} disabled={busy} onChange={e=>void run("localMute",e.target.checked)}/><span>电脑端静音</span><small>手机发起播放时静音电脑；电脑发起播放时恢复本机声音。仅连接或浏览手机界面不会静音。</small></label>}
+    {<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.hlsAllowed===true} disabled={busy} onChange={e=>void run("hlsAllowed",e.target.checked)}/><span>允许 HLS 原生播放</span><small>默认关闭，使用低延迟 PCM。开启后 Safari 可使用原生无损 HLS；请刷新网页并重新连接。关闭会断开现有 HLS 收听。</small></label>}
+    {<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.localMuted!==false} disabled={busy} onChange={e=>void run("localMute",e.target.checked)}/><span>电脑端静音</span><small>手机发起播放时静音电脑；电脑发起播放时恢复本机声音。仅连接或浏览手机界面不会静音。</small></label>}
     </div>}
     {busy&&<p className="remote-progress" role="status">正在应用，请稍候…</p>}{error&&<p className="remote-error" role="alert">{error}</p>}
   </section>;

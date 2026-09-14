@@ -1,3 +1,4 @@
+import {formatAutoLayout, resolveAutoLayout} from "./auto-layout";
 import ObjectRenderingStatus from "./components/ObjectRenderingStatus";
 import {GlassRefraction} from "./components/GlassRefraction";
 import SheetHeading from "./components/SheetHeading";
@@ -32,7 +33,6 @@ import {
   type HeadPose,
   type LocalHeadphoneCompensationData,
   LAYOUTS,
-  detectLayoutId,
   type LayoutId,
   type OutputMode,
   type BinauralEqBands,
@@ -760,6 +760,14 @@ export function App() {
         },
         onTrack: (t) => {
           if (!isCurrent()) return;
+          const formatLayout = formatAutoLayout(t.codec);
+          if (formatLayout || layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2") {
+            layoutIdRef.current = "auto";
+            immersiveLayoutRef.current = "auto";
+            setLayoutId("auto");
+            setDetectedLayout(formatLayout ?? null);
+            createdPlayer?.setAutoLayout();
+          }
           if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
           const coverUrl = t.coverArt
             ? URL.createObjectURL(new Blob([ownedArrayBuffer(t.coverArt.bytes)], { type: t.coverArt.mimeType }))
@@ -810,9 +818,7 @@ export function App() {
             setLayoutId(next);
             if (next === "auto") {
               createdPlayer?.setAutoLayout();
-              const detected = detectLayoutId(bedLabels, objectChannels > 0);
-              setDetectedLayout(detected);
-              createdPlayer?.setLayout(LAYOUTS[detected], false);
+              // setAutoLayout resolves using the current codec as well as bed labels.
             } else {
               setDetectedLayout(null);
               createdPlayer?.setLayout(LAYOUTS[next]);
@@ -891,8 +897,8 @@ export function App() {
       });
       createdPlayer = player;
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
-      const resolver = (labels: readonly string[], hasDynamics: boolean) => {
-        const id = detectLayoutId(labels, hasDynamics);
+      const resolver = (labels: readonly string[], hasDynamics: boolean, codec?: string) => {
+        const id = resolveAutoLayout(labels, hasDynamics, codec);
         if (isCurrent()) setDetectedLayout(id);
         return LAYOUTS[id];
       };
@@ -1814,7 +1820,7 @@ export function App() {
   const remote = useRemoteSession({
     tools:remoteTools?{...remoteTools,head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,
       locked:personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}:null,
-    scene:{spherical:["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""),objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
+    scene:{spherical:(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")),objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
     source:track?{codec:track.codec,sampleRate:track.sampleRate,channels:track.rawBedLabels?.length??track.channels,objects:track.objectChannels}:undefined,
     artist:track?.artist, album:track?.album, coverUrl:track?.coverUrl, title:track?.title??fileNameRef.current??"",playing,paused,position,duration,volume,
     currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,
@@ -1977,9 +1983,13 @@ export function App() {
               .filter((id) => !track || ((stereoProgram || mode === "stereo")
                 ? id === "2.0" || id === "2.1"
                 : id !== "2.0" && id !== "2.1"))
+              .filter((id) => id === "2.0" || id === "2.1" ||
+                (["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")
+                  ? id === "360RA-13" || id === "22.2"
+                  : id !== "360RA-13" && id !== "22.2"))
               .map((id) => (
                 <option key={id} value={id}>
-                  {id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `Dolby ${id}`}
+                  {id === "11.1.8" ? "Dolby 11.1.8 · Atmos / 母版（手动）" : id === "22.2" ? "22.2 · 标准三层布局（手动）" : id === "360RA-13" ? "360RA · 13 音箱参考布局" : id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `Dolby ${id}`}
                 </option>
               ))}
           </Select>
@@ -2193,8 +2203,8 @@ export function App() {
 
       <main>
         <section className="view">
-{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView spherical={["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
-          <div className="scene-heading"><span>{["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "") ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+          <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
             track={track}
             position={position}
