@@ -251,7 +251,7 @@ class RemoteSession {
     const finite=(v,f=0)=>Number.isFinite(v)?Math.max(-100000,Math.min(100000,v)):f;
     const vector=v=>Array.isArray(v)&&v.length===3?v.map(x=>finite(x)):[0,0,0];
     const ids=v=>Array.isArray(v)?v.filter(Number.isInteger).slice(0,256):[];
-    this.scene={trackId:text(scene.trackId),position:finite(scene.position),
+    this.scene={trackId:text(scene.trackId),position:finite(scene.position),spherical:scene.spherical===true,
       objects:scene.objects.slice(0,256).filter(o=>o&&Number.isInteger(o.id)).map(o=>({id:o.id,pos:vector(o.pos),size:vector(o.size),hasPos:!!o.hasPos,gainDb:finite(o.gainDb),anchor:["room","screen","speaker"].includes(o.anchor)?o.anchor:"room",distanceM:Number.isFinite(o.distanceM)?finite(o.distanceM):null,distanceInfinite:!!o.distanceInfinite})),
       layout:scene.layout.slice(0,64).filter(Boolean).map(s=>({name:text(s.name),azimuth:finite(s.azimuth),elevation:finite(s.elevation),distance:finite(s.distance,1),isLfe:!!s.isLfe})),
       muted:ids(scene.muted),sounding:ids(scene.sounding),hiddenSpeakers:Array.isArray(scene.hiddenSpeakers)?scene.hiddenSpeakers.slice(0,64).map(text):[]};

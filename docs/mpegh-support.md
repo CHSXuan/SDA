@@ -48,3 +48,15 @@ ignored scratch storage and is not distributed with SDA.
 - This is not Sony's proprietary ear-personalization renderer or a certified
   Sony 360 Reality Audio product. Decoder source licensing and patent licensing
   are separate; see the bundled Ittiam LICENSE and LICENSE2.
+
+## Scene visualization
+
+MPEG-H uses a listener-centred full sphere; other codecs retain the rectangular
+room view. The display radius is 2 scene units, matching the existing normalized
+object directions. Its height is 4 units, from -2 to +2 (the room was -0.6 to +2).
+This is display scale, not a claimed Sony room dimension in metres. Object
+coordinates and audio rendering are unchanged. No floor cuts the lower hemisphere.
+The 2D compatibility view uses a circular outline and marks negative elevation.
+
+Source: https://github.com/ittiam-systems/libmpeghe/blob/main/encoder/impeghe_oam_enc_utils.h
+specifies azimuth -180 to +180 degrees and elevation -90 to +90 degrees.

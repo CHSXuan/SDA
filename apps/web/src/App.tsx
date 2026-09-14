@@ -1814,7 +1814,7 @@ export function App() {
   const remote = useRemoteSession({
     tools:remoteTools?{...remoteTools,head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,
       locked:personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}:null,
-    scene:{objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
+    scene:{spherical:["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""),objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
     source:track?{codec:track.codec,sampleRate:track.sampleRate,channels:track.rawBedLabels?.length??track.channels,objects:track.objectChannels}:undefined,
     artist:track?.artist, album:track?.album, coverUrl:track?.coverUrl, title:track?.title??fileNameRef.current??"",playing,paused,position,duration,volume,
     currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,
@@ -2193,8 +2193,8 @@ export function App() {
 
       <main>
         <section className="view">
-{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
-          <div className="scene-heading"><span>空间声场</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView spherical={["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+          <div className="scene-heading"><span>{["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "") ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
             track={track}
             position={position}

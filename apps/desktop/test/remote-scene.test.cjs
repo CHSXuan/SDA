@@ -4,3 +4,13 @@ test('scene metadata is bounded, finite and never forwards arbitrary fields',()=
  assert.equal(host.scene.objects.length,256);assert.deepEqual(host.scene.objects[0].pos,[0,0,1]);assert.ok(!JSON.stringify(host.scene).includes('secret'));assert.equal(host.scene.layout[0].distance,1);assert.deepEqual(validateControl({action:'scene',value:'secret'}),{action:'scene'});
  host.publishScene({objects:[],layout:[],trackId:'new'});assert.equal(host.scene.objects.length,0);assert.equal(host.scene.trackId,'new');
 });
+test('scene shape survives forwarding and resets when switching away from MPEG-H',()=>{
+ const host=new RemoteSession({});
+ host.publishScene({objects:[{id:8,pos:[-0.43,0.75,-0.5]}],layout:[],spherical:true});
+ assert.equal(host.scene.spherical,true);
+ assert.deepEqual(host.scene.objects[0].pos,[-0.43,0.75,-0.5]);
+ for(const spherical of [false,undefined,'true']){
+  host.publishScene({objects:[],layout:[],spherical});
+  assert.equal(host.scene.spherical,false);
+ }
+});

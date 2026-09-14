@@ -9,7 +9,7 @@ export function createScene(request){
      if(epoch!==generation)return;
      if(scene&&Array.isArray(scene.objects)&&Array.isArray(scene.layout)){
        if(!view){loader??=import('./scene-view.mjs');const module=await loader;if(epoch!==generation)return;view=module.mountScene(host);}
-       last=scene;view.update(scene,theme());status.textContent=scene.objects.length?`${scene.objects.length} 个对象 · 主机实时位置`:'当前没有动态对象';
+       last=scene;view.update(scene,theme());status.textContent=`${scene.spherical?'360° 球形声场':'方形声场'} · ${scene.objects.length} 个对象`;
      }else status.textContent='等待主机的空间信息';
    }catch{if(epoch===generation)status.textContent='空间视图暂不可用，音频不受影响';}
    finally{if(epoch===generation)timer=setTimeout(()=>void poll(epoch),100);}

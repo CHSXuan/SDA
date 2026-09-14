@@ -10,6 +10,6 @@ class SceneBoundary extends Component<{children:ReactNode},{failed:boolean}> {
 export function mountScene(element:HTMLElement){
  const root=createRoot(element);
  return {update(scene:RemoteScene,theme:'light'|'dark'){
-   root.render(<SceneBoundary><ObjectView mobile objects={scene.objects} layout={scene.layout} theme={theme} mutedIds={new Set(scene.muted)} soundingIds={new Set(scene.sounding)} hiddenSpeakerNames={new Set(scene.hiddenSpeakers)}/></SceneBoundary>);
+   root.render(<SceneBoundary><ObjectView mobile spherical={scene.spherical} objects={scene.objects} layout={scene.layout} theme={theme} mutedIds={new Set(scene.muted)} soundingIds={new Set(scene.sounding)} hiddenSpeakerNames={new Set(scene.hiddenSpeakers)}/></SceneBoundary>);
  },dispose(){root.unmount();}};
 }

@@ -277,6 +277,37 @@ const Room = memo(function Room({ p }: { p: Palette }) {
   );
 });
 
+/** MPEG-H OAM uses full-sphere directions, including negative elevation. */
+const SphericalRoom = memo(function SphericalRoom({ p }: { p: Palette }) {
+  const geometry = useMemo(() => {
+    const points: number[] = [];
+    const segment = (a: number[], b: number[]) => points.push(...a, ...b);
+    for (const elevation of [-60, -30, 0, 30, 60]) {
+      const angle = elevation * Math.PI / 180;
+      const radius = ROOM * Math.cos(angle), y = ROOM * Math.sin(angle);
+      for (let i = 0; i < 96; i++) {
+        const a = i * Math.PI / 48, b = (i + 1) * Math.PI / 48;
+        segment([radius * Math.cos(a), y, radius * Math.sin(a)], [radius * Math.cos(b), y, radius * Math.sin(b)]);
+      }
+    }
+    for (let meridian = 0; meridian < 6; meridian++) {
+      const az = meridian * Math.PI / 6;
+      for (let i = 0; i < 96; i++) {
+        const a = i * Math.PI / 48, b = (i + 1) * Math.PI / 48;
+        segment([ROOM * Math.cos(a) * Math.cos(az), ROOM * Math.sin(a), ROOM * Math.cos(a) * Math.sin(az)],
+          [ROOM * Math.cos(b) * Math.cos(az), ROOM * Math.sin(b), ROOM * Math.cos(b) * Math.sin(az)]);
+      }
+    }
+    return new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+  }, []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <group name="mpegh-spherical-field">
+    <lineSegments geometry={geometry}><lineBasicMaterial color={p.outline} transparent opacity={0.55} depthWrite={false}/></lineSegments>
+    <Html position={[0, ROOM + 0.2, 0]} center style={{ pointerEvents: "none", whiteSpace: "nowrap", color: p.outline, fontSize: 11 }}>上方 +90°</Html>
+    <Html position={[0, -ROOM - 0.2, 0]} center style={{ pointerEvents: "none", whiteSpace: "nowrap", color: p.outline, fontSize: 11 }}>下方 −90°</Html>
+  </group>;
+});
+
 /** 听者：仿纽曼 KU 100 人头麦 —— 光滑无五官的蛋形头、两侧硅胶耳廓、
  *  平直颈部切口 + 话筒立杆。耳廓中心对齐 y=0（ADM 耳位）。 */
 const Listener = memo(function Listener() {
@@ -455,6 +486,7 @@ function HrtfTestMarker({visual,layout}:{visual:HrtfTestVisual;layout:readonly V
 }
 
 export function ObjectView({
+  spherical = false,
   immersive = false,
   mobile = false,
   showObjectNames = false,
@@ -468,6 +500,7 @@ export function ObjectView({
   hiddenSpeakerNames,
   testVisual,
 }: {
+  spherical?: boolean;
   immersive?: boolean;
   mobile?: boolean;
   showObjectNames?:boolean;
@@ -500,7 +533,7 @@ export function ObjectView({
   const rendererMode = window.sdaDesktop?.rendererMode;
   const isSwiftShader = mobile || rendererMode === "swiftshader";
   return (
-    <div ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
+    <div data-field-shape={spherical ? "sphere" : "room"} ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
     <Canvas
       frameloop="demand"
       camera={{ position: [5, 4.2, 6], fov: 50 }}
@@ -518,20 +551,20 @@ export function ObjectView({
         <ObjectListRefresh objects={objects} />
         {testVisual&&<HrtfTestMarker visual={testVisual} layout={layout.filter(s=>!hiddenSpeakerNames?.has(s.name))}/>}
         {immersive ? <ImmersiveCamera view={view} onFlightChange={setFlying}/> : <ViewportFraming mobile={mobile} />}
-        {!immersive && <Room p={p} />}
+        {!immersive && (spherical ? <SphericalRoom p={p} /> : <Room p={p} />)}
         <SpeakerRing interactive={!mobile} layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         {!immersive && <Listener />}
         {objects.map((o) => (
           <ObjectDot showName={showObjectNames} key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
         ))}
-        {!immersive && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
+        {!immersive && !spherical && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
         {/* 听者半身像的光照 */}
         <ambientLight intensity={0.75} />
         <directionalLight position={[2.5, 4, 2]} intensity={1.2} />
         {/* 左键拖动旋转视角 / 右键拖动平移 / 滚轮缩放空间 */}
         {!immersive && <OrbitControls
           makeDefault
-          target={[0, 0.5, 0]}
+          target={[0, spherical ? 0 : 0.5, 0]}
           enableDamping={!isSwiftShader}
           dampingFactor={0.08}
           rotateSpeed={0.9}

@@ -6,7 +6,7 @@ export interface RemoteTools {
   cinema:{profileId:string|null;settings:import("./vite-env").CinemaSettings};
   speakers:{name:string;label:string;az:number;el:number}[];rooms:{id:string;name:string;layout:string;builtin?:boolean}[];heads:{id:string;name:string}[];
 }
-export interface RemoteScene {objects:import("@sda/player").VisualObject[];layout:readonly import("@sda/renderer").VirtualSpeaker[];muted:number[];sounding:number[];hiddenSpeakers:string[];position:number;trackId:string}
+export interface RemoteScene {spherical?:boolean;objects:import("@sda/player").VisualObject[];layout:readonly import("@sda/renderer").VirtualSpeaker[];muted:number[];sounding:number[];hiddenSpeakers:string[];position:number;trackId:string}
 export interface RemotePlayback {
   scene?:RemoteScene;
   coverUrl?:string;
