@@ -21,6 +21,7 @@ pub struct Eac3Pipeline {
     pending_independent_core: Option<(CorePcmFrame, ProgramLoudnessMetadata)>,
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
+    last_joc_layout: Option<JocPresentationLayout>,
 }
 
 impl Eac3Pipeline {
@@ -33,6 +34,7 @@ impl Eac3Pipeline {
             pending_independent_core: None,
             total_samples: 0,
             declared: None,
+            last_joc_layout: None,
         }
     }
 
@@ -176,19 +178,57 @@ impl Eac3Pipeline {
             joc_slot_count,
             core.lfe_channel.is_some(),
         ) else {
-            // JOC without a complete, topology-consistent OAMD map cannot be
-            // routed safely: a guessed slot can attach dialogue to motion.
-            let object_channels = self.sparse_declare(Vec::new());
-            return bed_frame(
-                "eac3",
-                core,
-                Vec::new(),
-                object_channels,
-                Some(loudness),
+            // `object_channels` alone cannot describe where fixed JOC bed slots
+            // sit among dynamic slots. Reuse a proven topology only when this
+            // access unit has the same JOC/LFE shape; never invent Obj_N labels
+            // from raw JOC-row indices.
+            let Some(slot_layout) = self
+                .cached_joc_slot_layout(joc_slot_count, core.lfe_channel.is_some())
+                .cloned()
+            else {
+                let object_channels = self.sparse_declare(Vec::new());
+                return bed_frame(
+                    "eac3",
+                    core,
+                    Vec::new(),
+                    object_channels,
+                    Some(loudness),
+                    sample_pos,
+                    &[],
+                );
+            };
+
+            let mut channels =
+                Vec::with_capacity(joc_slot_count + usize::from(core.lfe_channel.is_some()));
+            let mut labels = Vec::with_capacity(channels.capacity());
+            if let Some(lfe) = &core.lfe_channel {
+                channels.push(lfe.clone());
+                labels.push("LFE".to_string());
+            }
+            let joc_channel_base = channels.len();
+            for (slot, pcm_channel) in slot_layout.slots.iter().zip(&pcm.object_channels) {
+                channels.push(pcm_channel.clone());
+                labels.push(match slot {
+                    JocSlot::Bed(label) => format!("{label:?}"),
+                    JocSlot::Dynamic { id } => format!("Obj_{id}"),
+                });
+            }
+            let object_channels =
+                self.sparse_declare(dynamic_object_declarations(&slot_layout.slots, joc_channel_base));
+            return FrameData {
+                codec: "eac3",
+                sample_rate: core.sample_rate,
                 sample_pos,
-                &[],
-            );
+                channels,
+                labels,
+                raw_bed_labels,
+                ramp_duration: 0,
+                events: Vec::new(),
+                object_channels,
+                program_loudness: Some(loudness),
+            };
         };
+        self.last_joc_layout = Some(slot_layout.clone());
 
         // JOC reconstructs every OAMD essence except the ordinary LFE carried by
         // CorePcmFrame::lfe_channel. Non-LFE bed members (including LFE2) retain
@@ -238,7 +278,18 @@ impl Eac3Pipeline {
         }
     }
 
+
     /// Emit the object↔channel declaration only when it changed (bridge parity).
+    fn cached_joc_slot_layout(
+        &self,
+        joc_slot_count: usize,
+        has_lfe: bool,
+    ) -> Option<&JocPresentationLayout> {
+        self.last_joc_layout.as_ref().filter(|layout| {
+            layout.slots.len() == joc_slot_count && layout.has_lfe == has_lfe
+        })
+    }
+
     fn sparse_declare(&mut self, current: Vec<ObjectChannelDecl>) -> Vec<ObjectChannelDecl> {
         if self.declared.as_ref() == Some(&current) {
             Vec::new()
@@ -442,7 +493,7 @@ fn extract_events(
                     sample_pos: base_sample_pos + sample_offset,
                     has_pos,
                     pos,
-                    gain_db: object_gain_db(block.gain, block.inactive),
+                    gain_db: f64::from(object_gain_db(block.gain, block.inactive)),
                     size,
                     anchor,
                     distance_m,
@@ -458,6 +509,46 @@ fn extract_events(
 }
 
 /// Shared bed-frame construction (also used by the plain PCM fallback).
+fn bed_frame(
+    codec: &'static str,
+    core: CorePcmFrame,
+    events: Vec<ObjectEvent>,
+    object_channels: Vec<ObjectChannelDecl>,
+    program_loudness: Option<ProgramLoudnessMetadata>,
+    sample_pos: u64,
+    extra_labels: &[String],
+) -> FrameData {
+    let mut channels = core.fullband_channels;
+    let raw_bed_labels: Vec<String> = core
+        .fullband_channel_order
+        .iter()
+        .map(|b| format!("{b:?}"))
+        .chain(core.lfe_channel.is_some().then(|| "LFE".to_string()))
+        .collect();
+    let mut labels: Vec<String> = core
+        .fullband_channel_order
+        .iter()
+        .map(|b| format!("{b:?}"))
+        .collect();
+    labels.extend(extra_labels.iter().cloned());
+    if let Some(lfe) = core.lfe_channel {
+        channels.push(lfe);
+        labels.push("LFE".to_string());
+    }
+    FrameData {
+        codec,
+        sample_rate: core.sample_rate,
+        sample_pos,
+        channels,
+        labels,
+        raw_bed_labels,
+        ramp_duration: 0,
+        events,
+        object_channels,
+        program_loudness,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +653,44 @@ mod tests {
     }
 
     #[test]
+    fn cached_sparse_layout_keeps_preceding_bed_slot_out_of_object_ids() {
+        let layout = joc_slot_layout(
+            &oamd(
+                vec![BedChannel::FrontLeft, BedChannel::LowFrequencyEffects],
+                2,
+            ),
+            3,
+        )
+        .expect("valid JOC layout");
+        let pipeline = Eac3Pipeline {
+            last_joc_layout: Some(layout),
+            ..Eac3Pipeline::new()
+        };
+        let cached = pipeline
+            .cached_joc_slot_layout(3, true)
+            .expect("matching cached JOC layout");
+        let labels: Vec<_> = cached
+            .slots
+            .iter()
+            .map(|slot| match slot {
+                JocSlot::Bed(label) => format!("{label:?}"),
+                JocSlot::Dynamic { id } => format!("Obj_{id}"),
+            })
+            .collect();
+
+        assert_eq!(labels, ["FrontLeft", "Obj_10", "Obj_11"]);
+        assert_eq!(
+            dynamic_object_declarations(&cached.slots, 1),
+            vec![
+                ObjectChannelDecl { id: 10, channel: 2 },
+                ObjectChannelDecl { id: 11, channel: 3 },
+            ]
+        );
+        assert!(pipeline.cached_joc_slot_layout(2, true).is_none());
+        assert!(pipeline.cached_joc_slot_layout(3, false).is_none());
+    }
+
+    #[test]
     fn multi_payload_layout_must_match_and_agree_with_core_lfe() {
         let lfe_dynamic = oamd(vec![BedChannel::LowFrequencyEffects], 2);
         let center_dynamic = oamd(vec![BedChannel::Center], 1);
@@ -587,45 +716,5 @@ mod tests {
         isf.bed_or_isf_objects = 2;
         isf.object_count = 4;
         assert_eq!(joc_slot_layout(&isf, 4), None);
-    }
-}
-
-fn bed_frame(
-    codec: &'static str,
-    core: CorePcmFrame,
-    events: Vec<ObjectEvent>,
-    object_channels: Vec<ObjectChannelDecl>,
-    program_loudness: Option<ProgramLoudnessMetadata>,
-    sample_pos: u64,
-    extra_labels: &[String],
-) -> FrameData {
-    let mut channels = core.fullband_channels;
-    let raw_bed_labels: Vec<String> = core
-        .fullband_channel_order
-        .iter()
-        .map(|b| format!("{b:?}"))
-        .chain(core.lfe_channel.is_some().then(|| "LFE".to_string()))
-        .collect();
-    let mut labels: Vec<String> = core
-        .fullband_channel_order
-        .iter()
-        .map(|b| format!("{b:?}"))
-        .collect();
-    labels.extend(extra_labels.iter().cloned());
-    if let Some(lfe) = core.lfe_channel {
-        channels.push(lfe);
-        labels.push("LFE".to_string());
-    }
-    FrameData {
-        codec,
-        sample_rate: core.sample_rate,
-        sample_pos,
-        channels,
-        labels,
-        raw_bed_labels,
-        ramp_duration: 0,
-        events,
-        object_channels,
-        program_loudness,
     }
 }

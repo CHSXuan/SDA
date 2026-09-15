@@ -1,10 +1,9 @@
-import { memo } from "react";
-
-/**
- * iOS 26 风格迷你播放器（macOS 布局）：通栏液态玻璃底条 —
- * 左侧封面+曲名，中间传输控制+进度条，右侧对象数+音量。
- * 液态玻璃为纯 CSS 实现：backdrop-filter 磨砂 + 内高光描边 + 斜向镜面光泽。
- */
+import { Slider } from "./Slider";
+import PlaybackModeButton from "./PlaybackModeButton";
+import type { PlaybackMode } from "../playbackOrder";
+import { memo, type ReactNode } from "react";
+import { GlassRefraction } from "./GlassRefraction";
+import { Pause, Play, RotateCcw, Volume2, ListMusic, SkipBack, SkipForward } from "lucide-react";
 
 export interface TrackInfo {
   codec: string;
@@ -22,9 +21,12 @@ export interface TrackInfo {
   objectChannels?: number;
   /** 歌曲标题：容器元数据（MKV Title / 音轨 Name）或文件名兜底。 */
   title?: string;
+  artist?: string;
+  album?: string;
 }
 
 interface MiniPlayerProps {
+  children?: ReactNode;
   track: TrackInfo | null;
   position: number;
   /** 已解码总时长（秒）。流式解码中持续增长，读完即为全长；0 表示未知。 */
@@ -33,7 +35,14 @@ interface MiniPlayerProps {
   paused: boolean;
   objectCount: number;
   volume: number;
+  onPrevious: () => void;
+  onNext: () => void;
+  canSkip: boolean;
   onTogglePlay: () => void;
+  playbackMode: PlaybackMode;
+  onPlaybackModeChange: (mode: PlaybackMode) => void;
+  playlistOpen: boolean;
+  onTogglePlaylist: () => void;
   onReplay: () => void;
   onVolume: (v: number) => void;
 }
@@ -45,6 +54,7 @@ function formatTime(sec: number): string {
 }
 
 export const MiniPlayer = memo(function MiniPlayer({
+  children,
   track,
   position,
   duration,
@@ -52,7 +62,14 @@ export const MiniPlayer = memo(function MiniPlayer({
   paused,
   objectCount,
   volume,
+  onPrevious,
+  onNext,
+  canSkip,
   onTogglePlay,
+  playbackMode,
+  onPlaybackModeChange,
+  playlistOpen,
+  onTogglePlaylist,
   onReplay,
   onVolume,
 }: MiniPlayerProps) {
@@ -61,6 +78,7 @@ export const MiniPlayer = memo(function MiniPlayer({
   return (
     <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>
       <div className="mp-glass">
+        <GlassRefraction />
         <div className="mp-bar">
           {/* 左：封面 + 曲名 */}
           <div className="mp-left">
@@ -70,7 +88,7 @@ export const MiniPlayer = memo(function MiniPlayer({
             <div className="mp-meta">
               <div className="mp-title">{track.title ?? track.codec}</div>
               <div className="mp-sub">
-                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
+                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : track.rawBedLabels ? "无声道床" : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
               </div>
             </div>
           </div>
@@ -78,15 +96,22 @@ export const MiniPlayer = memo(function MiniPlayer({
           {/* 中：传输控制 + 进度 */}
           <div className="mp-center">
             <div className="mp-transport">
-              <button className="mp-btn" onClick={onReplay} title="从头重新播放">
-                ⟲
+              <button className="mp-btn mp-replay" onClick={onReplay} aria-label="从头重新播放">
+                <RotateCcw size={17} strokeWidth={1.8} aria-hidden="true" />
               </button>
+              <button type="button" className="mp-btn" onClick={onPrevious} disabled={!canSkip} aria-label="上一曲" title="上一曲"><SkipBack size={18} fill="currentColor" aria-hidden="true" /></button>
               <button
                 className="mp-btn mp-play"
                 onClick={onTogglePlay}
-                title={playing && !paused ? "暂停" : paused ? "继续" : "播放"}
+                aria-label={playing && !paused ? "暂停" : paused ? "继续" : "播放"}
               >
-                {playing && !paused ? "❚❚" : "▶"}
+                {playing && !paused ? <Pause size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" /> : <Play size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" />}
+              </button>
+              <button type="button" className="mp-btn" onClick={onNext} disabled={!canSkip} aria-label="下一曲" title="下一曲"><SkipForward size={18} fill="currentColor" aria-hidden="true" /></button>
+              <PlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange} className="mp-btn" />
+              <button type="button" className="mp-btn mp-playlist" onClick={onTogglePlaylist}
+                aria-label="播放列表" aria-expanded={playlistOpen} title={playlistOpen ? "收起播放列表" : "打开播放列表"}>
+                <ListMusic size={18} strokeWidth={1.8} aria-hidden="true" />
               </button>
             </div>
             <div className="mp-progress">
@@ -103,9 +128,9 @@ export const MiniPlayer = memo(function MiniPlayer({
           <div className="mp-right">
             <span className="mp-objs">{objectCount} 对象</span>
             <div className="mp-vol" title="音量">
-              <span className="mp-vol-icon">🔊</span>
-              <input
-                type="range"
+              <span className="mp-vol-icon"><Volume2 size={18} /></span>
+              <Slider
+                aria-label="音量"
                 min={0}
                 max={100}
                 value={Math.round(volume * 100)}
@@ -115,6 +140,7 @@ export const MiniPlayer = memo(function MiniPlayer({
           </div>
         </div>
       </div>
+      {playlistOpen && children}
     </div>
   );
 });

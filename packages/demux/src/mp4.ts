@@ -20,6 +20,9 @@ export interface Mp4AudioTrack {
   /** Complete MP4 `alac` atom required before decoding ALAC packets. */
   decoderConfig?: Uint8Array;
   coverArt?: EmbeddedCoverArt;
+  title?: string;
+  artist?: string;
+  album?: string;
   /** Movie duration from the container header (seconds), when known. */
   durationSec?: number;
 }
@@ -37,6 +40,50 @@ export interface Mp4DemuxerCallbacks {
 }
 
 const AUDIO_CODECS = new Set(["ec-3", "ac-3", "ac-4", "mlpa", "dtsc", "dtsh", "dtsl", "dtse"]);
+
+/** MP4Box 0.5 preserves unknown MPEG-H audio entries as data, like ALAC. */
+export function mpeghTracksFromMp4Box(file: any): Mp4AudioTrack[] {
+  const result:Mp4AudioTrack[]=[];
+  for(const trak of file.moov?.traks??[]) {
+    const entry=trak.mdia?.minf?.stbl?.stsd?.entries?.[0];
+    if(!['mha1','mhm1'].includes(entry?.type))continue;
+    const data:Uint8Array=entry.data;
+    let decoderConfig:Uint8Array|undefined;
+    if(entry.mhaC?.data){const config:Uint8Array=entry.mhaC.data;
+      if(config.length<5)throw Error('Truncated mhaC');
+      const n=(config[3]!<<8)|config[4]!;
+      if(n>config.length-5)throw Error('Truncated MPEG-H decoder configuration');
+      decoderConfig=config.slice(5,5+n);
+    }
+    if(data)for(let p=20;p+8<=data.length;){const size=readU32(data,p);if(size<8||p+size>data.length)throw Error('Invalid MPEG-H sample entry box');
+      if(atomType(data,p+4)==='mhaC'){
+        if(size<13)throw Error('Truncated mhaC');
+        const n=(data[p+11]!<<8)|data[p+12]!;
+        if(p+13+n>p+size)throw Error('Truncated MPEG-H decoder configuration');
+        decoderConfig=data.slice(p+13,p+13+n);
+      }p+=size;
+    }
+    if(entry.type==='mha1'&&!decoderConfig?.length)throw Error('MPEG-H mha1 requires mhaC');
+    const mdhd=trak.mdia.mdhd;
+    result.push({trackId:trak.tkhd.track_id,codec:entry.type,sampleRate:entry.samplerate??(data?.length>=20?readU32(data,16)/65536:0),
+      channels:entry.channel_count??0,decoderConfig,durationSec:mdhd?.duration/mdhd?.timescale});
+  }
+  return result;
+}
+
+/** ISO BMFF supplies raw AC-4 AUs; add Annex G framing for the byte-stream decoder. */
+export function ac4SyncFrame(payload: Uint8Array): Uint8Array {
+  if (!payload.length || payload.length > 0xffffff) throw new Error("Invalid AC-4 MP4 access unit size");
+  const extended = payload.length >= 0xffff;
+  const frame = new Uint8Array(payload.length + (extended ? 7 : 4));
+  frame[0] = 0xac; frame[1] = 0x40;
+  if (extended) {
+    frame[2] = 0xff; frame[3] = 0xff;
+    frame[4] = payload.length >>> 16; frame[5] = payload.length >>> 8; frame[6] = payload.length;
+  } else { frame[2] = payload.length >>> 8; frame[3] = payload.length; }
+  frame.set(payload, extended ? 7 : 4);
+  return frame;
+}
 /** Keep EC-3/JOC work bounded: 16 × 1536-sample AUs is about 512 ms at 48 kHz.
  * Large MP4Box extraction batches turn into long worker decode bursts and flood
  * the renderer with object PCM/event messages. */
@@ -99,6 +146,27 @@ export function alacTrackFromMp4Box(file: { moov?: { traks?: Mp4AlacTrack[] } })
   return null;
 }
 
+/** Read bounded UTF-8 iTunes text tags, including track and album artists. */
+export function embeddedMusicTags(ilst?: Uint8Array): {title?:string;artist?:string;album?:string} {
+  const tags: Record<string,string> = {};
+  if (!ilst) return tags;
+  const view = new DataView(ilst.buffer, ilst.byteOffset, ilst.byteLength);
+  const names: Record<string,string> = {"©nam":"title","©ART":"artist","aART":"albumArtist","©alb":"album"};
+  for (let offset=0; offset+8<=ilst.length;) {
+    const size=view.getUint32(offset); if(size<8||size>ilst.length-offset)break;
+    const name=names[atomType(ilst,offset+4)];
+    if(name) for(let child=offset+8;child+16<=offset+size;) {
+      const length=view.getUint32(child); if(length<16||length>offset+size-child)break;
+      if(atomType(ilst,child+4)==="data"&&(view.getUint32(child+8)&0xffffff)===1) {
+        tags[name]=new TextDecoder().decode(ilst.subarray(child+16,Math.min(child+length,child+16+8192))).replace(/\0/g,"").trim(); break;
+      }
+      child+=length;
+    }
+    offset+=size;
+  }
+  return {title:tags.title,artist:tags.artist||tags.albumArtist,album:tags.album};
+}
+
 /** Extract iTunes `covr` artwork from mp4box's unparsed `ilst` children. */
 function embeddedCoverArt(file: { moov?: { udta?: { meta?: { ilst?: { data?: Uint8Array } } } } }): EmbeddedCoverArt | undefined {
   const ilst = file.moov?.udta?.meta?.ilst?.data;
@@ -125,6 +193,7 @@ export class Mp4Demuxer {
   private file: ReturnType<typeof MP4Box.createFile>;
   private offset = 0;
   private wantedTrackId: number | null = null;
+  private wantedCodec: string | null = null;
   /** MP4Box keeps sample payloads until this cursor is released. */
   private deliveredSamples = 0;
   private cb: Mp4DemuxerCallbacks;
@@ -135,13 +204,15 @@ export class Mp4Demuxer {
     this.file.onError = (e: unknown) => this.cb.onError?.(String(e));
     this.file.onReady = (info: { audioTracks: Array<{ id: number; codec: string; duration?: number; timescale?: number; movie_duration?: number; movie_timescale?: number; audio: { sample_rate: number; channel_count: number } }> }) => {
       const candidates: Mp4AudioTrack[] = [];
+      candidates.push(...mpeghTracksFromMp4Box(this.file));
       const alac = alacTrackFromMp4Box(this.file as unknown as { moov?: { traks?: Mp4AlacTrack[] } });
       if (alac) candidates.push(alac);
       for (const t of info.audioTracks) {
-        if (!AUDIO_CODECS.has(t.codec)) continue;
+        const codec = t.codec.split(".")[0]!;
+        if (!AUDIO_CODECS.has(codec)) continue;
         const track: Mp4AudioTrack = {
           trackId: t.id,
-          codec: t.codec,
+          codec,
           sampleRate: t.audio.sample_rate,
           channels: t.audio.channel_count,
         };
@@ -152,12 +223,15 @@ export class Mp4Demuxer {
         candidates.push(track);
       }
       for (const track of candidates) {
+        if (this.wantedTrackId !== null) break;
+        Object.assign(track, embeddedMusicTags(this.file.moov?.udta?.meta?.ilst?.data));
         const coverArt = embeddedCoverArt(this.file);
         if (coverArt) track.coverArt = coverArt;
         this.cb.onTrack?.(track);
         // Extract the first supported track only.
         if (this.wantedTrackId === null && track.trackId > 0) {
           this.wantedTrackId = track.trackId;
+          this.wantedCodec = track.codec;
           this.file.setExtractionOptions(track.trackId, null, { nbSamples: MP4_EXTRACTION_BATCH_SAMPLES });
           this.file.start();
         }
@@ -165,10 +239,13 @@ export class Mp4Demuxer {
     };
     this.file.onSamples = (trackId: number, _user: unknown, samples: Array<{ cts: number; timescale: number; data: Uint8Array }>) => {
       for (const s of samples) {
+        // MP4Box hands us a complete access unit per sample. Feed the decoder
+        // exactly that payload — not the surrounding MP4 container bytes —
+        // because the E-AC-3/JOC pipeline expects raw syncframes.
         this.cb.onPacket?.({
           trackId: this.wantedTrackId ?? 0,
           timestampMs: (s.cts / s.timescale) * 1000,
-          data: s.data,
+          data: this.wantedCodec === "ac-4" ? ac4SyncFrame(s.data) : s.data,
         });
       }
       // onPacket consumes each access unit synchronously. Release only after

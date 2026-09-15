@@ -50,7 +50,7 @@ function lifecycleGraph(keys) {
     binauralMerger: {},
     topology,
     binauralBusKeySequence: "",
-    binauralBankSplitters: new Map([["near", { id: "old-splitter" }]]),
+    binauralBankSplitters: new Map([["near", { id: "old-splitter", disconnect: () => operations.push("disconnect-old-splitter") }]]),
     binauralBusNodes: [{ id: "old-node", disconnect: () => operations.push("disconnect-node") }],
     postNodes: [],
     convs: new Map([["near", new Map()]]),
@@ -103,6 +103,8 @@ function lifecycleGraph(keys) {
     modeGains: new Map(),
     updateRenderLayout: () => { graph.updated = true; },
     rebuildBinauralBusGraph: () => { graph.rebuilt = true; },
+    headPose: { isActive: () => false },
+    syncPoseControl: () => {},
     sources: new Map(),
     applyGains: () => { graph.gainsApplied = true; },
   };

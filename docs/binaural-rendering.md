@@ -4,9 +4,13 @@
 > 本文档是 `packages/renderer` 及移动端原生渲染的设计依据。
 > **2026-08 更新：§1–§5 描述的管线已全部落地实现**（见各节「实现」注记）。
 
-## 1. 总体架构：虚拟扬声器 + BRIR 卷积
+## 1. SDA 总体架构：虚拟扬声器 + BRIR 卷积
 
-Dolby 渲染器与 EBU/BBC 的 BEAR（Binaural EBU ADM Renderer, Apache-2.0）采用的架构，也是 SDA 采用的架构：
+以下是 SDA 当前采用的虚拟扬声器总线架构。它保留每个对象的 PCM、位置、增益和 Solo 控制，
+再把对象分配到固定方向总线后卷积；这与直接为每个对象位置计算 HRTF 不同。
+Dolby 公开资料强调独立动态对象的位置、大小和距离会影响双耳处理，并指出固定扬声器轨道
+会限制空间分辨率、可能产生响度叠加。不能据此声称 Dolby 内部采用 SDA 的固定总线算法。
+BEAR 是另一个可研究的开源实现，也不构成与 Dolby 或 Apple 算法等价的证据。
 
 ```
 对象 PCM + 元数据 (x,y,z,gain,size)
@@ -17,24 +21,47 @@ Dolby 渲染器与 EBU/BBC 的 BEAR（Binaural EBU ADM Renderer, Apache-2.0）�
   │      （复杂度与对象数解耦，卷积次数恒为 N × 2 耳）
   ├─ (3) 双耳化: 每条总线卷积对应位置的「干 HRIR ↔ 湿 BRIR 混合」IR
   │      → ConvolverNode（FFT 卷积，浏览器原生加速）
-  ├─ (4) 距离层: 苹果 inverse 距离定律（参考距离内不衰减）
-  │      → Dolby near/mid/far = 干/湿 HRIR/BRIR 混合（见 §3）
+  ├─ (4) SDA 距离层: inverse 距离衰减（参考距离内不衰减）
+  │      → SDA near/mid/far 使用不同房间尾声权重（见 §3）
   └─ (5) 头追(可选/v2): 旋转世界坐标→头部坐标，重算各扬声器相对方位
 ```
 
-为什么不是"每对象一个 PannerNode 直接 HRTF"：
-- 每个 PannerNode(HRTF) = 2 次卷积，对象数 >~8 时 CPU 失控；
-- 无 size/spread 概念；距离只改增益不改音色；
-- bed（固定声道布局）与对象无法用同一管线处理。
+SDA 选择固定总线的工程考虑：
+- 卷积数量由布局决定；逐对象卷积的成本随对象数增长，实际性能需要按平台测量。
+- Web Audio PannerNode 不直接提供对象 size/spread 或房间响应，仍需应用补充。
+- 床声道与动态对象可共用总线输出；逐对象 HRTF 也可与床声道处理共存。
+
+这种选择有空间采样与频响上的取舍。总线到双耳的相干叠加不保证单位功率 VBAP
+在耳机上保持相同响度，不能将固定总线称为已验证的 Dolby 等效渲染。
 
 SDA 里 PannerNode HRTF 仅作为**无 IR 数据时的降级方案**（对 N 条虚拟扬声器总线各用一个 PannerNode，而非每对象一个）。
 
 > **实现**：worklet 总线混合 + 每源低通在
 > `packages/renderer/worklet/sda-renderer.worklet.js`；双耳图（splitter →
 > 每总线 ConvolverNode → merger）在 `packages/renderer/src/renderer.ts`；
-> LFE 无方向性，等量直送双耳不卷积（杜比双耳渲染惯例）。
+> SDA 将 LFE 等量直送双耳、不做方向卷积。Apple 的 Dolby 插件文档注明 LFE
+> 的 Binaural Render Mode 固定为 Off，但这不说明厂商内部全部低频处理步骤。
 
 ### 1.1 床声道：音箱吸附 + 上混扩展（AVR 语义）
+
+声床通道位置固定不等于其中的声像静止。混音师通过跨通道的声像自动化把移动写入
+PCM；双耳渲染应保留各声道的相对电平、相位和时序，而不是给声床补造对象轨迹。
+参考 Apple 的 [Bed tracks and object tracks](https://support.apple.com/guide/logicpro/bed-tracks-and-object-tracks-lgcp73f9b9ac/mac)
+与 [Surround Panner parameters](https://support.apple.com/guide/logicpro/surround-panner-parameters-lgcp7a500829/mac)。
+
+原生输出对缺失顶中音箱的 .4 布局采用明确的高度层重映射：`Ltm/Rtm` 分给同侧
+顶部前后音箱，各 `1/sqrt(2)`；.2 和 .6 布局存在顶中音箱时仍直接命中该音箱。
+此前通用三维 VBAP 会把顶中信号的一部分分到耳平面环绕音箱，削弱声床里已混好的
+向上运动。此规则是 SDA 的等功率重映射选择，不代表复现 Dolby 专有渲染器。
+
+原生回归测试覆盖全部十种可选布局：2.0、2.1、5.1、5.1.2、5.1.4、7.1.2、
+7.1.4、9.1.2、9.1.4、9.1.6。每种布局固定不变，将移动混入床声道 PCM，
+依次经过该布局的每个非 LFE 音箱并返回起点，覆盖宽声道及各顶部声道。
+逐采样对照独立音箱卷积参考（扣除固定输出延迟），最大误差要求小于
+`2e-6`。对象 HRTF 开关的两种状态都必须通过；测试信号低于限幅阈值，避免动态
+保护掩盖通道分配错误。没有为声床增加移动元数据或自动声像增强。
+这验证通道混音的保留，不等于主观定位听测；无顶部音箱的布局不能表达独立高度层，
+2.0/2.1 也没有独立后方音箱。LFE 不承载此测试中的方向轨迹。
 
 床声道（5.1/7.1 等固定声道）与对象走不同平移路径，对齐真实 AVR/物理系统：
 
@@ -117,13 +144,15 @@ Genelec 官方《Immersive Solutions Guide》（印刷页10–14）记录的示�
 | 值 | 名称 | 含义 |
 |---|---|---|
 | 0x00 | BYPASS | 不做双耳处理 |
-| 0x01 | NEAR | 近场，声像贴头（~0.5 m 量级）|
+| 0x01 | NEAR | 较近的距离模型；不推定物理米数 |
 | 0x02 | FAR | 远场，房间感/混响最多 |
-| 0x03 | MID | 中场（~2 m 量级），默认档 |
+| 0x03 | MID | 中等距离模型，Dolby 插件默认档 |
 | 0x04 | NOT_INDICATED | 未指定，渲染器用默认 |
 
-**语义**：三档对应不同 BRIR 集 —— near 用近头、几乎无房间成分的 HRIR；
-mid 用标准听音距离、含少量早期反射的 BRIR；far 用低直达声/混响比的 BRIR。
+**公开语义**：Near/Mid/Far 表示不同的距离模型；Off 关闭该声道/对象的双耳处理。
+Dolby 将其定义为不能自动化的节目级元数据，Apple Logic Pro 允许对各对象和床声道分别设置。
+这些设置不影响 Apple Renderer。已核对的公开资料没有给出精确物理距离、内部 BRIR 集
+或干湿混合公式，以下权重属于 SDA 的应用设计，不能作为 Dolby 算法参数引用。
 
 **SDA 的实现**（`packages/renderer/src/hrtf.ts`）：calibration v1 将目标方向的
 **干 HRIR 直达路径**与同一个 KU100 房间的**校准 BRIR 房间尾声**离线对齐：
@@ -158,6 +187,27 @@ stereo-linked lookahead limiter，再进入输出模式 master。
 Genelec 发布的固定双耳增益，也不是 KU100 补偿/耳机 profile。它不改 HRIR/BRIR
 资产、每方向能量归一化、LFE 带内增益或用户音量控制。
 
+2026-09-05 原生输出电平修正：移除了对象和床声道进入卷积前的固定 `-18 dB`
+衰减，逐对象模式和音箱总线模式均使用单位输入增益。此前把监听室声压参考直接
+解释为数字信号必须衰减 18 dB，没有依据；它与后级 `+6 dB` 合起来使非 LFE
+路径额外降低了 12 dB。现保留上述应用级补偿、用户音量、可选节目响度平衡及
+最终峰值保护，与 Web 路径的增益约定一致。LFE 的既有专用处理未改动。
+
+[Apple Video and Audio Asset Guide: Immersive Audio Source Profile](https://help.apple.com/itc/videoaudioassetguide/en.lproj/static.html#itcf946aaace)
+要求 Atmos 音乐交付文件的综合响度不超过 `-18 LKFS`、真峰值不超过 `-1 dBTP`
+（ITU-R BS.1770-4）。这是节目交付测量要求，不是逐对象数字衰减，也不是消费者
+耳机的固定声压或实时播放增益。不能据此宣称 SDA 输出符合 Apple/Dolby 全部要求。
+本轮访问 Dolby 官方专业站旧规范地址返回 404；官方支持站仅返回脚本页面，未能
+核实完整规范正文，因此没有把二手描述作为 Dolby 的固定双耳增益要求。
+
+回归测试以低电平连续音比较完整原生播放链和独立校准音箱参考，覆盖两种模式。
+真实歌曲离线对照脚本为 `tmp/egaku-level-prepare.mjs` 和
+`tmp/egaku-level-report.mjs`；原始输出未经整段音量归一化。
+该曲前 23 秒的双耳 BS.1770 测量：音箱总线和逐对象模式均从约 `-30.65 LUFS`
+变为 `-13.76 LUFS`，采样峰值约 `-1 dBFS`，没有非有限采样或满幅削波。
+这是选段的消费者双耳输出测量，不是完整 ADM 母带的 `-18 LKFS` 交付测量；
+更高电平也使既有峰值保护器开始作用，不能将该结果称为无动态处理或真峰值认证。
+
 `+6 dB` 缩小了多总线同相峰值的余量，因此双耳与立体声路径在模式交叉淡化后共用
 一个 ceiling `-1 dBFS`、约 `5 ms` lookahead 的 stereo-linked limiter。左右耳/声道
 共享同一 gain envelope，lookahead attack 和约 `100 ms` release 都连续，避免峰值阈值
@@ -166,11 +216,14 @@ inter-sample peak 的保护不等同于专业 true-peak 限制器。
 
 配合每源距离处理（`renderer.ts applyGains`）：
 1. **归一化对象距离**：ADM 距离 1 是虚拟音箱环。环内维持 0 dB；环外按
-   Apple inverse 定律 `gain = 1 / normalizedAdmDistance`，不会由用户切换
+   SDA 选用的 inverse 定律 `gain = 1 / normalizedAdmDistance`，不会由用户切换
    near/mid/far 而改变已制作对象的相对平衡。
 2. **不从 ADM 半径推导空气吸收**：OAMD 的归一化位置没有可靠的物理米制含义，
    所以不自动低通对象。空气吸收只能在输入包含明确物理距离元数据时再启用，避免
    将正常的沉浸声对象渲染得发闷。
+
+Apple 的通用空间音频 API 提供 inverse 距离衰减选项，但不能由此推断 Apple Music
+会以同样方式解释 ADM/OAMD 归一化距离。
 
 > 注意：制作端可给每个 3D object 和 surround-bed 子声道分别指定 Binaural Render
 > Mode；Apple Logic Pro 明确写明 “Each object and surround bed channel can be set to a
@@ -187,6 +240,9 @@ inter-sample peak 的保护不等同于专业 true-peak 限制器。
 参考：
 - Apple Logic Pro《Dolby Atmos plug-in overview》：https://support.apple.com/guide/logicpro/dolby-atmos-plug-in-overview-lgcpad99a338/mac
 - Apple Logic Pro《Binaural render modes》：https://support.apple.com/guide/logicpro/binaural-render-modes-lgcp789f000d/mac
+- Apple Logic Pro《监听格式》：https://support.apple.com/zh-cn/guide/logicpro/lgcp179f27c1/mac
+- Dolby《What is Binaural Render Mode and how do the settings affect my mix?》：https://professionalsupport.dolby.com/s/article/What-is-Binaural-Render-Mode-and-how-do-the-settings-affect-my-mix?language=en_US
+- Dolby《Why should I mix with dynamic objects when I can use 7.1.4 or 9.1.6 tracks?》：https://professionalsupport.dolby.com/s/article/Why-should-I-mix-with-dynamic-objects-when-I-can-use-7-1-4-or-9-1-6-tracks?language=en_US
 - Steinberg Nuendo《Binaural Render Mode for Beds Dialog》：https://archive.steinberg.help/nuendo/v11/en/cubase_nuendo/topics/surround_sound/surround_sound_adm_authoring_binaural_render_mode_for_beds_r.html
 - Dolby DBMD parser public mirror：https://github.com/Harrie2019/dbmd-atmos-parser
 - ETSI TS 103 420 V1.2.1 §5.5.9 / Annex C
@@ -238,12 +294,15 @@ left/right 原始测量来源**、夹具与 ANC/耳塞/固件/贴合状态、已
 
 ## 4. Apple 侧：移动端原生渲染可用 API（Expo 原生模块设计依据）
 
+以下是应用可用的空间音频 API，不是 Apple Music/Apple Renderer 内部算法说明。
+Apple 明确区分 Dolby Renderer 与用于 Apple Music/Apple TV 耳机监听的 Apple Renderer。
+
 ### AVAudioEnvironmentNode（iOS，最贴切）
 - 隐式听者：`listenerPosition` / `listenerAngularOrientation` / `listenerVectorOrientation`
 - **`isListenerHeadTrackingEnabled`（iOS 18+）**：一行接入 AirPods 头追
 - 距离衰减：`AVAudioEnvironmentDistanceAttenuationParameters`
   （exponential/inverse/linear + rolloffFactor + referenceDistance + maximumDistance）
-- `reverbParameters`（factory presets）→ 模拟 Dolby far 的房间感
+- `reverbParameters`（factory presets）→ 应用可选的房间感处理，不等同于 Dolby Far
 - 每输入总线 `renderingAlgorithm`：
   `equalPowerPanning`（最便宜）/ `sphericalHead` / **`HRTF`/`HRTFHQ`（双耳）** / `soundField` / `auto`
 - **关键限制：空间化只作用于 mono 输入** → 每个对象挂一路 mono
@@ -273,6 +332,22 @@ iOS 15+ 系统对 Atmos 内容自动做头追双耳；`AVAudioSession.SpatialExp
 
 ## 5. HRTF 数据集：SADIE II KU100（已落地）
 
+### KU100 数据校准开关
+
+“耳廓 / 完整 HRTF 测量”面板仅在选择 KU100 时显示“KU100 数据校准”，默认开启，
+保存于 `sda-ku100-calibration`。关闭时普通、高解析分别使用 `hrtf-raw`、
+`hrtf-dense-raw`，由 `scripts/build-raw-ku100.mjs` 从校验 SHA-256 的原始 D1.zip
+提取同一方向映射的完整 48 kHz WAV 样本：HRIR 256 点、BRIR 14400 点。
+仅转换为 float32 打包格式，不截断、不峰值归一、不做共同到达对齐、电平匹配、
+对称化、房间 EQ/门控/高通或尾声去相关。浏览器也绕过旧未校准资产的能量归一、
+中心耳间平衡、干湿对齐与右侧宽声道镜像。独立对象和当前布局继续使用所选资产。
+
+这取消的是 SDA 的 KU100 数据校准，不是禁用 HRTF。原始 HRIR/BRIR 仍按现有
+干湿权重混合，原始测量的时间、电平与房间差异会保留，切换不保证等响。
+影院处理（包括实测房间覆盖）、耳机 EQ、输出补偿、限幅器仍独立生效，
+因此此模式不等同于整个播放链 bit-perfect，也不声称等于原始测量房间的全湿回放。
+其他人头不受该偏好影响。切换会重建卷积响应，可能有短暂过渡。
+
 **格式标准：SOFA（AES69）**，netCDF-4 容器；但 SADIE II 同时发布 **WAV 版本**，
 SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 
@@ -286,7 +361,7 @@ SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 | BBC R&D (BEAR 默认) | 录音室 KU100 BRIR | 见 ebu/bear 仓库 |
 
 **选 SADIE II KU100 的理由**：① Apache-2.0 可随应用自由再发布；② 同一假头
-同时有 HRIR 和 BRIR —— 杜比 near/mid/far 的「干/湿混合」方案（§3）正好需要
+同时有 HRIR 和 BRIR —— SDA near/mid/far 的房间尾声混合方案（§3）需要
 成对的干湿数据；③ KU100 与 SDA 3D 视图里的假头模型一致。
 
 **转换与校准管线**（`scripts/build-hrtf.mjs`、`scripts/build-calibrated-hrtf.mjs`）：
@@ -335,8 +410,41 @@ calibration v1 manifest 明确禁用峰值归一和运行时逐 IR 总能量归�
 
 ## 8. 待核实清单（调研遗留）
 
-1. Dolby near/mid/far 精确距离数值 —— 对照《Dolby Atmos Binaural Settings
-   Plug-in Guide》PDF 原文
+1. Dolby near/mid/far 的精确距离和内部滤波实现未由已核对的公开资料确定，不使用猜测值。
 2. CIPIC / SADIE II / TH Köln 许可条文细节
 3. `AVAudioSession.SpatialExperience` 枚举确切 case 名
 4. ITU-R BS.2051 扬声器角度表原文（付费标准，本文用行业通行值）
+
+2026-09-05 的对象起伏排查、官方资料边界和可听对照见
+[`egaku-object-envelope-investigation.md`](egaku-object-envelope-investigation.md)。
+# Stereo Spatial Comparison
+
+Pure two-channel L/R programmes without objects expose three native playback
+modes: original stereo, dry HRTF, and room HRTF (the default). The setting is
+retained across tracks and restarts, but does not apply to multichannel/object
+programmes. ALAC is decoded to PCM before this selection; the same comparison
+also applies to other decoded stereo formats.
+
+Original stereo sends L/R to their corresponding ears with a one-block delay
+matching the spatial buses. Dry HRTF uses the selected measurements with zero
+room-response weight. Room HRTF uses the existing room-response weight. The
+paths stay warm and crossfade when switched. Changing the HRTF set or layout
+rebuilds the dry path alongside the room path.
+
+All modes retain channel monitoring, headphone compensation, final EQ, output
+gain, optional programme gain, and peak protection. Original stereo therefore
+means spatial bypass, not bit-perfect output. No per-mode loudness normalization
+is added: identical output settings need not produce identical perceived volume.
+These modes are diagnostic comparisons, not a reproduction of Apple's private
+Spatialize Stereo algorithm.
+
+## Backend portability
+
+For the current many-to-many audio graph and the interaction between HRTF,
+room profiles, cinema controls, and independent objects, see the
+[rendering signal-flow diagrams](rendering-signal-flow.md).
+
+See the [cross-platform backend investigation](backend-portability-research.md)
+for the current Rust/TypeScript boundary, macOS/Linux/iOS/Android migration
+paths, audio-clock and memory constraints, official references, and acceptance
+criteria. This is a feasibility report, not a claim of completed platform support.

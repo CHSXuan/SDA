@@ -9,6 +9,11 @@ apps/desktop/dist/
 packages/core/target/
 packages/core/pkg-web/
 packages/core/pkg-node/
+apps/head-tracking-helper/target/
+apps/desktop/head-tracking-helper/
+apps/desktop/head-tracking-driver/
+apps/head-tracking-driver/build/
+apps/head-tracking-driver/cert/
 
 # 参考资料（上游渲染器仓库，仅文档参考，不参与构建）
 /Omniphony/
@@ -17,3 +22,26 @@ packages/core/pkg-node/
 .DS_Store
 Thumbs.db
 *.log
+
+# Machine-local room simulation runtime and measured source locations.
+apps/desktop/room-simulator/runtime.json
+
+# Local research, dependency caches and native build intermediates.
+/tmp/
+/.tmp/
+/.pnpm-store/
+apps/native-renderer/target/
+__pycache__/
+*.pyc
+
+# Windows shell redirection artifact.
+/nul
+/vendor/libmpegh/
+/packages/core/pkg-mpegh/
+
+# Native renderer build output.
+apps/desktop/native-renderer/SdaNativeRenderer
+apps/desktop/native-renderer/SdaNativeRenderer.exe
+
+# Web build staged inside Electron appDir before ASAR packaging.
+/apps/desktop/web/

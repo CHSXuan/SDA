@@ -4,17 +4,19 @@
  * `createDemuxer` sniffs the container from the first bytes:
  *   - EBML magic          → Matroska (streaming, all A_* codecs we support)
  *   - `....ftyp`          → MP4 (mp4box.js)
- *   - RIFF/RF64 WAVE      → BWF metadata scanner (`dbmd` only)
+ *   - RIFF/RF64/BW64 WAVE → PCM and ADM BWF masters
  *   - otherwise           → treated as a raw elementary stream (passthrough)
  */
 
 import { MkvDemuxer, type MkvAudioTrack, type MkvPacket } from "./mkv.js";
 import { Mp4Demuxer, type Mp4AudioTrack } from "./mp4.js";
-import { BwfDemuxer } from "./bwf.js";
+import { BwfDemuxer, type BwfMetadata, type BwfPcmFrame } from "./bwf.js";
 import type { BinauralRenderMetadata, BinauralRenderMode } from "./dbmd.js";
 
 export { MkvDemuxer, Mp4Demuxer, BwfDemuxer };
 export { decodeDbmdBinauralMetadata } from "./dbmd.js";
+export { readBwfMetadata } from "./bwf.js";
+export type { BwfMetadata, BwfPcmFrame, BwfAudioTrack } from "./bwf.js";
 export type { MkvAudioTrack, MkvPacket, Mp4AudioTrack, BinauralRenderMetadata, BinauralRenderMode };
 
 export type ContainerKind = "mkv" | "mp4" | "bwf" | "raw";
@@ -34,8 +36,9 @@ export interface DemuxedAudioPacket {
 
 export interface DemuxerCallbacks {
   /** First supported audio track discovered. durationSec 来自容器头部元数据（如有）。 */
-  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string; decoderConfig?: Uint8Array; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
+  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string; artist?: string; album?: string; decoderConfig?: Uint8Array; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   onPacket?: (packet: DemuxedAudioPacket) => void;
+  onPcmFrame?: (frame: BwfPcmFrame) => void;
   onError?: (message: string) => void;
   onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
 }
@@ -46,7 +49,7 @@ export interface Demuxer {
   flush(): void;
 }
 
-export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks): Demuxer {
+export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMetadata?: BwfMetadata): Demuxer {
   if (kind === "mkv") {
     const mkv = new MkvDemuxer({
       onTrack: (t: MkvAudioTrack) =>
@@ -59,14 +62,19 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks): Demuxe
   if (kind === "mp4") {
     const mp4 = new Mp4Demuxer({
       onTrack: (t: Mp4AudioTrack) =>
-        cb.onTrack?.({ codec: t.codec, sampleRate: t.sampleRate, channels: t.channels, container: "mp4", durationSec: t.durationSec, decoderConfig: t.decoderConfig, coverArt: t.coverArt }),
+        cb.onTrack?.({ codec: t.codec, sampleRate: t.sampleRate, channels: t.channels, container: "mp4", title: t.title, artist: t.artist, album: t.album, durationSec: t.durationSec, decoderConfig: t.decoderConfig, coverArt: t.coverArt }),
       onPacket: (p) => cb.onPacket?.({ timestampMs: p.timestampMs, frames: [p.data] }),
       onError: cb.onError,
     });
     return { kind, push: (c) => mp4.push(c), flush: () => mp4.flush() };
   }
   if (kind === "bwf") {
-    const bwf = new BwfDemuxer({ onBinauralMetadata: cb.onBinauralMetadata, onError: cb.onError });
+    const bwf = new BwfDemuxer({
+      onTrack: (track) => cb.onTrack?.({ ...track, container: "bwf" }),
+      onPcmFrame: cb.onPcmFrame,
+      onBinauralMetadata: cb.onBinauralMetadata,
+      onError: cb.onError,
+    }, bwfMetadata);
     return { kind, push: (c) => bwf.push(c), flush: () => bwf.flush() };
   }
   // Raw elementary stream: pass bytes straight through; the decoder's own

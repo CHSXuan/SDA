@@ -88,6 +88,9 @@ export interface HrtfManifestEntry {
 export interface HrtfManifest {
   schemaVersion?: number;
   calibrationVersion?: number;
+  parametricHrtfVersion?: number;
+  completeSubject?: boolean;
+  subjectId?: string;
   sampleRate: number;
   source?: Record<string, unknown>;
   azimuthConvention?: string;
@@ -109,6 +112,11 @@ export interface RawBinauralIr {
 export interface BinauralIrSet {
   sampleRate: number;
   calibrated: boolean;
+  /** Raw measurement playback bypasses legacy normalization and symmetry too. */
+  preserveMeasurements?: boolean;
+  /** True only for a complete single-subject HRTF/BRIR measurement system. */
+  completeSubject: boolean;
+  subjectId: string | null;
   positions: RawBinauralIr[];
 }
 
@@ -123,8 +131,15 @@ export function setBinauralAssetLoader(loader: BinauralAssetLoader | null): void
   setCache.clear();
 }
 
+function assetSetDirectory(baseUrl: string): string {
+  const url = new URL(baseUrl, "http://sda.local");
+  const setDir = url.pathname.split("/").filter(Boolean).at(-1);
+  if (!setDir) throw new Error(`Invalid binaural asset URL: ${baseUrl}`);
+  return setDir;
+}
+
 async function loadAsset(baseUrl: string, fileName: string): Promise<ArrayBuffer> {
-  if (assetLoader) return assetLoader(`hrtf/${fileName}`);
+  if (assetLoader) return assetLoader(`${assetSetDirectory(baseUrl)}/${fileName}`);
   const response = await fetch(`${baseUrl}/${fileName}`);
   if (!response.ok) throw new Error(`${fileName} HTTP ${response.status}`);
   return response.arrayBuffer();
@@ -166,6 +181,9 @@ async function loadSet(baseUrl: string): Promise<BinauralIrSet> {
   return {
     sampleRate: manifest.sampleRate,
     calibrated: manifest.calibrationVersion !== undefined && manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true,
+    preserveMeasurements: manifest.processing?.preserveMeasurements === true || (manifest.parametricHrtfVersion === 1 && manifest.processing?.preserveSamples === true),
+    completeSubject: manifest.completeSubject === true,
+    subjectId: typeof manifest.subjectId === "string" ? manifest.subjectId : null,
     positions,
   };
 }
@@ -258,7 +276,7 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
   // 对齐：以左耳直达峰值为准（双耳共用同一 shift，保住 ITD）。
   // 只在 BRIR 前 20ms 内找直达峰，避免抓到房间反射峰。
   const search = Math.min(wetL.length, Math.round(rate * 0.02));
-  const shift = set.calibrated
+  const shift = (set.calibrated || set.preserveMeasurements)
     ? 0
     : argmaxAbs(wetL, search) - argmaxAbs(dryL, dryL.length);
 
@@ -283,7 +301,7 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
   // A nominal 0° source should not carry the KU100 fixture's persistent ear
   // sensitivity offset. Equalise only measured centre directions; lateral ILD
   // remains untouched and continues to encode direction.
-  if (!set.calibrated && Math.abs(raw.azimuth) < 1e-6) {
+  if (!set.calibrated && !set.preserveMeasurements && Math.abs(raw.azimuth) < 1e-6) {
     let leftEnergy = 0;
     let rightEnergy = 0;
     for (let i = 0; i < outLen; i++) {
@@ -303,7 +321,7 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
 
   // 未校准的旧资产保持原有总能量兼容归一。calibration v1 已离线对齐每只
   // 虚拟音箱的直达参考电平，并保持 direct/tail 标尺，不能在这里再次归一。
-  if (!set.calibrated) {
+  if (!set.calibrated && !set.preserveMeasurements) {
     let energy = 0;
     for (let i = 0; i < outLen; i++) energy += L[i]! * L[i]! + R[i]! * R[i]!;
     if (energy > 0) {
@@ -340,7 +358,7 @@ export function buildBusIrs(
     // The measured -60-degree KU100 response has a large spectral mismatch
     // against +60 degrees. Use the more continuous +60-degree measurement for
     // both front wides and mirror its ears for the right side.
-    const canonicalWide = !set.calibrated && spk.name === "WideRight"
+    const canonicalWide = !set.calibrated && !set.preserveMeasurements && spk.name === "WideRight"
       ? nearestPosition(set, -spk.azimuth, spk.elevation)
       : null;
     const raw = canonicalWide ?? nearestPosition(set, spk.azimuth, spk.elevation);

@@ -1,0 +1,132 @@
+//! Pure ADM spatial math shared by native object rendering and protocol tests.
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spherical {
+    pub azimuth: f32,
+    pub elevation: f32,
+    pub distance: f32,
+}
+
+pub fn adm_to_spherical(position: [f32; 3]) -> Spherical {
+    let [x, y, z] = position;
+    let distance = (x * x + y * y + z * z).sqrt().min(4.0);
+    if distance < 1e-6 {
+        return Spherical {
+            azimuth: 0.0,
+            elevation: 0.0,
+            distance: 0.0,
+        };
+    }
+    Spherical {
+        azimuth: -x.atan2(y).to_degrees(),
+        elevation: (z / distance).clamp(-1.0, 1.0).asin().to_degrees(),
+        distance,
+    }
+}
+
+pub fn spread_from_size(size: [f32; 3]) -> f32 {
+    let average = (size[0].abs() + size[1].abs() + size[2].abs()) / 3.0;
+    average.clamp(0.0, 1.0)
+}
+
+/// Spherical interpolation between two head-to-world quaternions. Used to
+/// smooth head-pose updates across the render clock so HRTF route updates run
+/// at the block cadence instead of the arrival cadence of pose messages.
+#[must_use]
+pub fn slerp_quaternion(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    // Take the short arc: a and -a describe the same rotation.
+    let (b, dot) = if dot < 0.0 {
+        ([-b[0], -b[1], -b[2], -b[3]], -dot)
+    } else {
+        (b, dot)
+    };
+    let (sin_a, sin_b_weight) = if dot > 0.9995 {
+        // Nearly identical: fall back to normalized lerp for stability.
+        let w = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]), a[3] + t * (b[3] - a[3])];
+        return normalize_quaternion(w).unwrap_or(b);
+    } else {
+        (dot.acos(), ((1.0 - t) * dot.acos()).sin())
+    };
+    let sin_b = (t * sin_a).sin();
+    let inv_sin = if sin_a.abs() < 1e-6 { 0.0 } else { 1.0 / sin_a };
+    [
+        (sin_b_weight * a[0] + sin_b * b[0]) * inv_sin,
+        (sin_b_weight * a[1] + sin_b * b[1]) * inv_sin,
+        (sin_b_weight * a[2] + sin_b * b[2]) * inv_sin,
+        (sin_b_weight * a[3] + sin_b * b[3]) * inv_sin,
+    ]
+}
+
+pub fn normalize_quaternion(q: [f32; 4]) -> Option<[f32; 4]> {
+    if !q.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let length = q.iter().map(|value| value * value).sum::<f32>().sqrt();
+    (length >= 1e-8).then(|| [q[0] / length, q[1] / length, q[2] / length, q[3] / length])
+}
+
+fn invert(q: [f32; 4]) -> [f32; 4] {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+fn multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+/// Turns a world ADM direction into head-local ADM with the inverse canonical
+/// head-to-world quaternion. Invalid poses leave the source unrotated.
+pub fn head_relative_adm(position: [f32; 3], head_to_world: Option<[f32; 4]>) -> [f32; 3] {
+    let Some(head_to_world) = head_to_world.and_then(normalize_quaternion) else {
+        return position;
+    };
+    let inverse = invert(head_to_world);
+    let rotated = multiply(
+        multiply(inverse, [position[0], position[1], position[2], 0.0]),
+        head_to_world,
+    );
+    [rotated[0], rotated[1], rotated[2]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn head_rotation_preserves_height_and_world_locked_direction() {
+        for degrees in [-90.0_f32, -45.0, 0.0, 45.0, 90.0] {
+            let angle = degrees.to_radians();
+            let q = [0.0, 0.0, (angle/2.0).sin(), (angle/2.0).cos()];
+            let local = head_relative_adm([0.0, 1.0, 0.4], Some(q));
+            assert!((local[0]-angle.sin()).abs()<1e-5);
+            assert!((local[1]-angle.cos()).abs()<1e-5);
+            assert!((local[2]-0.4).abs()<1e-5);
+        }
+        let half=std::f32::consts::FRAC_1_SQRT_2;
+        let local=head_relative_adm([0.0,1.0,0.0],Some([half,0.0,0.0,half]));
+        assert!((local[2]+1.0).abs()<1e-5);
+    }
+
+    #[test]
+    fn adm_coordinates_match_renderer_convention() {
+        let front = adm_to_spherical([0.0, 1.0, 0.0]);
+        let left = adm_to_spherical([-1.0, 0.0, 0.0]);
+        let right = adm_to_spherical([1.0, 0.0, 0.0]);
+        assert!(front.azimuth.abs() < 1e-5);
+        assert!((left.azimuth - 90.0).abs() < 1e-5);
+        assert!((right.azimuth + 90.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn inverse_head_pose_rotates_world_sources_into_head_space() {
+        // Head rotated +90° around ADM up. A world-front source is at head-right.
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let local = head_relative_adm([0.0, 1.0, 0.0], Some([0.0, 0.0, half, half]));
+        assert!(local[0] > 0.99);
+        assert!(local[1].abs() < 1e-4);
+    }
+}

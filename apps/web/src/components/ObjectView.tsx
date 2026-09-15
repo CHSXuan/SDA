@@ -1,6 +1,9 @@
+import { type HrtfTestVisual } from "../phrtf";
+import { FlatHrtfTest } from "./HrtfTestVisual";
 import { Component, lazy, memo, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
+import { speakerLabel } from "../speaker-labels";
 
 export type { VisualObject };
 export type Theme = "dark" | "light";
@@ -40,33 +43,48 @@ class WebglErrorBoundary extends Component<{ children: ReactNode; mode: string }
 
 /** CSS-only top-down view used by Electron's explicit 2D mode. */
 function FlatObjectView({
+  spherical = false,
   objects,
   layout,
   theme,
   mutedIds,
   soundingIds,
+  focusedSpeakers,
+  onSpeakerFocus,
+  hiddenSpeakerNames,
+  testVisual,
 }: {
+  spherical?: boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme: Theme;
   mutedIds?: ReadonlySet<number>;
   soundingIds?: ReadonlySet<number>;
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
+  testVisual?: HrtfTestVisual|null;
 }) {
   const background = theme === "light" ? "#e9edf4" : "#0c101c";
   return (
     <div className="flat-view" style={{ background }} aria-label="二维空间对象视图">
-      <div className="flat-room">
+      <div className="flat-room" style={spherical ? {borderRadius: "50%", overflow: "hidden"} : undefined}>
         <div className="flat-room-grid" />
+        {testVisual&&<FlatHrtfTest visual={testVisual}/>}
         <div className="flat-front-wall">前方</div>
         <div className="flat-listener" title="听者">●</div>
-        {layout.filter((s) => !s.isLfe).map((speaker) => {
+        {layout.filter((s) => !s.isLfe && !hiddenSpeakerNames?.has(s.name)).map((speaker) => {
           const [x, , z] = sphericalToWebAudio(speaker);
           return (
-            <span
+            <button
               className="flat-speaker"
               key={speaker.name}
-              title={speaker.name}
-              style={{ left: `${clampPercent(x)}%`, top: `${clampPercent(-z)}%` }}
+              title={speakerLabel(speaker.name)}
+              aria-label={`聚焦 ${speaker.name}`}
+              aria-pressed={focusedSpeakers?.has(speaker.name) ?? false}
+              disabled={!onSpeakerFocus}
+              onClick={() => onSpeakerFocus?.(speaker.name)}
+              style={{ left: `${clampPercent(x)}%`, top: `${clampPercent(-z)}%`, opacity: focusedSpeakers?.size && !focusedSpeakers.has(speaker.name) ? 0.22 : 1 }}
             />
           );
         })}
@@ -82,6 +100,7 @@ function FlatObjectView({
             >
               <b>#{object.id}</b>
               {object.pos[2] > 0.15 && <i>↑</i>}
+              {object.pos[2] < -0.15 && <i>↓</i>}
             </span>
           );
         })}
@@ -95,33 +114,54 @@ function FlatObjectView({
 }
 
 export const ObjectView = memo(function ObjectView({
+  spherical = false,
+  immersive = false,
+  showObjectNames = false,
   objects,
   layout,
   theme = "dark",
   mutedIds,
   soundingIds,
+  focusedSpeakers,
+  onSpeakerFocus,
+  hiddenSpeakerNames,
+  testVisual,
 }: {
+  immersive?: boolean;
+  showObjectNames?:boolean;
+  spherical?: boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
   mutedIds?: ReadonlySet<number>;
   soundingIds?: ReadonlySet<number>;
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
+  testVisual?: HrtfTestVisual|null;
 }) {
   const desktop = window.sdaDesktop;
   if (desktop && desktop.electron3D !== true) {
-    return <FlatObjectView objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} />;
+    return <FlatObjectView spherical={spherical} objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} testVisual={testVisual} />;
   }
 
   const rendererMode = desktop?.rendererMode ?? "browser";
   return (
     <WebglErrorBoundary mode={rendererMode}>
       <Suspense fallback={<div className="flat-view" aria-label="正在加载三维视图">正在加载三维视图…</div>}>
-        <ObjectView3D objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} />
+        <ObjectView3D spherical={spherical} showObjectNames={showObjectNames} immersive={immersive} objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} testVisual={testVisual} />
       </Suspense>
     </WebglErrorBoundary>
   );
 }, (previous, next) => previous.objects === next.objects
+  && previous.spherical === next.spherical
+  && previous.showObjectNames === next.showObjectNames
+  && previous.testVisual === next.testVisual
+  && previous.immersive === next.immersive
   && previous.layout === next.layout
   && previous.theme === next.theme
   && previous.mutedIds === next.mutedIds
-  && previous.soundingIds === next.soundingIds);
+  && previous.soundingIds === next.soundingIds
+  && previous.focusedSpeakers === next.focusedSpeakers
+  && previous.onSpeakerFocus === next.onSpeakerFocus
+  && previous.hiddenSpeakerNames === next.hiddenSpeakerNames);

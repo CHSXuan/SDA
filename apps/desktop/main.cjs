@@ -4,16 +4,49 @@
  * The desktop app is the web build (apps/web/dist) plus:
  *  - native file open dialog / CLI file argument (no 4 GB File API limits —
  *    renderer reads via sda.readFileSlice IPC)
- *  - multichannel audio devices just work via Chromium (WASAPI exclusive
- *    would need a native output path; see docs for the plan)
+ *  - native WASAPI endpoint management and shared/exclusive binaural output
  */
 
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { exec } = require("node:child_process");
+const { createMediaBrowser } = require("./media-browser.cjs");
+const { eventBatches } = require("./native-event-batches.cjs");
+const { RemoteSession } = require("./remote-session.cjs");
+const { loadRemoteCertificate } = require("./remote-certificate.cjs");
+const personalHrtf = require("./personal-hrtf.cjs");
+const personalHrtfDirectory = () => path.join(app.getPath("userData"), "personal-hrtf");
+const cinemaProfiles = require("./cinema-profiles.cjs");
+const { createRoomLab } = require("./room-lab.cjs");
+const { exec, spawn } = require("node:child_process");
+const startupLogPath = path.join(process.cwd(), "tmp", "sda-startup.log");
+let startupLogPending = "";
+let startupLogWriting = false;
+let startupLogTimer = null;
+function flushStartupLog() {
+  startupLogTimer = null;
+  if (startupLogWriting || !startupLogPending) return;
+  startupLogWriting = true;
+  const text = startupLogPending;
+  startupLogPending = "";
+  fs.mkdir(path.dirname(startupLogPath), { recursive: true }, () => {
+    fs.appendFile(startupLogPath, text, "utf8", () => {
+      startupLogWriting = false;
+      if (startupLogPending && !startupLogTimer) startupLogTimer = setTimeout(flushStartupLog, 50);
+    });
+  });
+}
+function writeStartupLog(line) {
+  // Diagnostic disk writes must not stall the PCM/ACK transport. Bound queued
+  // diagnostics if the disk stalls; playback never waits on the log sink.
+  if (startupLogPending.length < 1024 * 1024) startupLogPending += `[${new Date().toISOString()}] ${line}\n`;
+  if (!startupLogWriting && !startupLogTimer) startupLogTimer = setTimeout(flushStartupLog, 50);
+}
+function logRenderer(_level, sourceId, line, message) {
+  writeStartupLog(`[SDA renderer] ${sourceId}:${line} ${message}`);
+}
 
 /**
  * Windows 会把窗口被遮挡/最小化的进程打进 EcoQoS 效率模式，alt+tab、
@@ -70,7 +103,7 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
-const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".dts"]);
+const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".dts", ".iamf", ".mhas", ".mha"]);
 const MEDIA_DIALOG_EXTENSIONS = [...MEDIA_EXTENSIONS].map((extension) => extension.slice(1));
 const MAX_FOLDER_MEDIA_FILES = 2000;
 const MAX_FOLDER_ENTRIES = 20000;
@@ -108,7 +141,14 @@ function scanMediaFolder(root) {
 
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
-const BUNDLED_HRTF_PATTERN = /^hrtf\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
+const BUNDLED_HEADPHONE_PROFILES = new Map([
+  ["beyerdynamic-dt-1990-balanced-average-autoeq", { preampDb: -1.8, left: "headphone-compensation/beyerdynamic-dt-1990-balanced-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-dt-1990-balanced-average-autoeq/average.f32" }],
+  ["sennheiser-hd-820-average-autoeq", { preampDb: -8.3, left: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32", right: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32" }],
+  ["beyerdynamic-xelento-2nd-gen-average-autoeq", { preampDb: -6.3, left: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32" }],
+  ["beyerdynamic-xelento-wired-average-autoeq", { preampDb: -5.2, left: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32" }],
+  ["sony-mdr-7506-average-autoeq", { preampDb: -6.1, left: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32", right: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32" }],
+]);
+const BUNDLED_HRTF_PATTERN = /^hrtf(?:-[a-z0-9]+)*\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
 
 const OUTPUT_LATENCY_SECONDS = [0.1, 0.2, 0.3];
@@ -151,6 +191,52 @@ function writeVolumeBalanceEnabled(enabled) {
   writeSettings({ volumeBalanceEnabled: enabled });
 }
 
+function readHeadTrackingEnabled() {
+  return readSettings().experimentalHeadTrackingEnabled === true;
+}
+
+function writeHeadTrackingEnabled(enabled) {
+  if (typeof enabled !== "boolean") throw new Error("invalid head tracking setting");
+  writeSettings({ experimentalHeadTrackingEnabled: enabled });
+}
+
+function isHeadTrackingHelperFile(helperPath) {
+  try {
+    if (typeof helperPath !== "string" || fs.lstatSync(helperPath).isSymbolicLink() || !fs.statSync(helperPath).isFile()) return false;
+    if (process.platform === "darwin") return path.basename(helperPath) === "SdaAirPodsHeadTracking";
+    return path.extname(helperPath).toLowerCase() === ".exe";
+  } catch {
+    return false;
+  }
+}
+
+function readHeadTrackingHelperPath() {
+  const helperPath = readSettings().experimentalHeadTrackingHelperPath;
+  return isHeadTrackingHelperFile(helperPath) ? helperPath : null;
+}
+
+function bundledHeadTrackingHelperPath() {
+  const ext = process.platform === "darwin" ? "" : ".exe";
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "head-tracking-helper", `SdaAirPodsHeadTracking${ext}`)]
+    : [path.join(__dirname, "head-tracking-helper", `SdaAirPodsHeadTracking${ext}`)];
+  return candidates.find(isHeadTrackingHelperFile) ?? null;
+}
+
+function resolvedHeadTrackingHelper() {
+  const externalPath = readHeadTrackingHelperPath();
+  if (externalPath) return { helperPath: externalPath, source: "external-helper" };
+  const bundledPath = bundledHeadTrackingHelperPath();
+  return bundledPath ? { helperPath: bundledPath, source: "bundled-helper" } : null;
+}
+
+function writeHeadTrackingHelperPath(helperPath) {
+  if (helperPath !== null && !isHeadTrackingHelperFile(helperPath)) {
+    throw new Error("head tracking helper must be a selected .exe regular file");
+  }
+  writeSettings({ experimentalHeadTrackingHelperPath: helperPath });
+}
+
 function readLastMediaDirectory() {
   const directory = readSettings().lastMediaDirectory;
   try {
@@ -158,6 +244,883 @@ function readLastMediaDirectory() {
   } catch {
     return null;
   }
+}
+
+// AirPods orientation is supplied by a separate GPL helper process. Keeping the
+// device transport behind JSONL also prevents Bluetooth access from reaching the renderer.
+const HEAD_TRACKING_PROTOCOL = 1;
+const HEAD_TRACKING_MAX_LINE_BYTES = 4096;
+const HEAD_TRACKING_MAX_BUFFER_BYTES = HEAD_TRACKING_MAX_LINE_BYTES * 2;
+const HEAD_TRACKING_MAX_RATE_HZ = 120;
+const HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS = 240;
+const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
+
+// Native object renderer owns desktop audible output. It remains muted until a
+// complete calibrated HRTF is prepared and the player issues startAt().
+const NATIVE_RENDERER_PROTOCOL = 7;
+const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
+let nativeRenderer = null;
+let nativeRendererWritable = true;
+// PCM batches that arrived during pipe backpressure. They are flushed in order
+// on drain so the codec timeline never loses a frame to congestion.
+const nativeRendererBatchQueue = [];
+let nativeRendererBuffer = "";
+let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
+let nativeRendererObjectActivity = [];
+let nativeRendererHealthTimer = null;
+const nativeRendererPendingBatches = new Map();
+const nativeRendererPendingCommands = new Map();
+let nativeRendererControlChain = Promise.resolve();
+let nativeRendererClockChain = Promise.resolve();
+const NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS = 1500;
+const NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS = 3000;
+
+function bundledNativeRendererPath() {
+  const executable = process.platform === "win32" ? "SdaNativeRenderer.exe" : "SdaNativeRenderer";
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "native-renderer", executable)]
+    : [path.join(__dirname, "native-renderer", executable)];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function publishNativeRendererStatus() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("sda:native-renderer-status", nativeRendererStatus);
+  }
+  return nativeRendererStatus;
+}
+
+function setNativeRendererStatus(running, detail, referenceMix = true, telemetry = {}) {
+  nativeRendererStatus = {
+    running,
+    referenceMix,
+    detail: safeDiagnosticText(detail, "状态未知"),
+    samplePos: Number.isSafeInteger(telemetry.samplePos) ? telemetry.samplePos : nativeRendererStatus.samplePos ?? 0,
+    outputActive: telemetry.outputActive === true,
+    hrtfReady: telemetry.hrtfReady === true,
+    remoteSynchronized:telemetry.remoteSynchronized===true,
+    remoteSyncWaiting:telemetry.remoteSyncWaiting===true,
+  };
+  return publishNativeRendererStatus();
+}
+
+function publishNativeRendererObjectActivity(ids) {
+  const normalized = [...new Set(ids)]
+    .filter((id) => Number.isSafeInteger(id) && id >= 0)
+    .sort((left, right) => left - right)
+    .slice(0, 128);
+  if (
+    normalized.length === nativeRendererObjectActivity.length &&
+    normalized.every((id, index) => id === nativeRendererObjectActivity[index])
+  ) return;
+  nativeRendererObjectActivity = normalized;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("sda:native-renderer-object-activity", { ids: normalized });
+  }
+}
+
+function nativeRendererCommand(command, priority = false) {
+  if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed || (!nativeRendererWritable&&!priority) || !command || typeof command !== "object") return false;
+  try {
+    const json = Buffer.from(JSON.stringify(command), "utf8");
+    if (json.length > NATIVE_RENDERER_MAX_LINE_BYTES) return false;
+    const header = Buffer.allocUnsafe(5);
+    header.writeUInt8("J".charCodeAt(0), 0);
+    header.writeUInt32LE(json.length, 1);
+    const queued = nativeRenderer.stdin.write(Buffer.concat([header, json]));
+    // Node returns false for normal pipe backpressure, not a failed write. The
+    // frame remains queued and must still receive its sidecar ACK; only stdin
+    // error/close transitions the renderer to unavailable.
+    if (!queued) writeStartupLog(`sidecar control pipe backpressure: ${command.type ?? "unknown"}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function nativeRendererCommandAck(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS, priority = false) {
+  const task = (priority?nativeRendererClockChain:nativeRendererControlChain).then(() => new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      nativeRendererPendingCommands.delete(ackCommand);
+      writeStartupLog(`${ackCommand} ACK timeout`);
+      resolve(false);
+    }, timeoutMs);
+    nativeRendererPendingCommands.set(ackCommand, { resolve, timeout });
+    if (!nativeRendererCommand(command,priority)) {
+      nativeRendererPendingCommands.delete(ackCommand);
+      clearTimeout(timeout);
+      writeStartupLog(`${ackCommand} pipe write rejected`);
+      resolve(false);
+    }
+  }));
+  // A rejected sidecar command must not poison later transport work.
+  if(priority)nativeRendererClockChain=task.catch(()=>{});else nativeRendererControlChain = task.catch(() => {});
+  return task;
+}
+
+function nativeRendererPcm(id, start, samples) {
+  if (!nativeRenderer?.stdin || !nativeRendererWritable || typeof id !== "string" || !/^((obj:\d+)|(bed:\d+))$/.test(id)) return false;
+  if (!Number.isSafeInteger(start) || start < 0 || !ArrayBuffer.isView(samples) || samples.BYTES_PER_ELEMENT !== 4) return false;
+  const float = samples instanceof Float32Array
+    ? samples
+    : new Float32Array(samples.buffer, samples.byteOffset, Math.floor(samples.byteLength / 4));
+  if (float.length === 0 || float.length > 480_000) return false;
+  try {
+    const idBytes = Buffer.from(id, "utf8");
+    const header = Buffer.allocUnsafe(1 + 2 + 8 + 4);
+    header.writeUInt8("P".charCodeAt(0), 0);
+    header.writeUInt16LE(idBytes.length, 1);
+    header.writeBigUInt64LE(BigInt(start), 3);
+    header.writeUInt32LE(float.length, 11);
+    const accepted = nativeRenderer.stdin.write(Buffer.concat([
+      header,
+      idBytes,
+      Buffer.from(float.buffer, float.byteOffset, float.byteLength),
+    ]));
+    if (!accepted) nativeRendererWritable = false;
+    return accepted;
+  } catch {
+    return false;
+  }
+}
+
+function nativeRendererHeadphoneFir(preamp, left, right) {
+  if (!nativeRenderer?.stdin || !nativeRendererWritable || !Number.isFinite(preamp) || preamp <= 0) return Promise.resolve(false);
+  // Files contain little-endian f32 bytes; Buffer elements are bytes, not taps.
+  const decodeTaps = (value) => {
+    if (value instanceof Float32Array) return value;
+    if (!Buffer.isBuffer(value) || value.byteLength % 4 !== 0 || value.byteLength > 32768 * 4) return null;
+    const taps = new Float32Array(value.byteLength / 4);
+    for (let i = 0; i < taps.length; i++) taps[i] = value.readFloatLE(i * 4);
+    return taps;
+  };
+  const leftTaps = decodeTaps(left);
+  const rightTaps = decodeTaps(right);
+  if (!leftTaps || !rightTaps) return Promise.resolve(false);
+  if (leftTaps.length < 2 || rightTaps.length < 2 || leftTaps.length > 32768 || rightTaps.length > 32768 || !leftTaps.every(Number.isFinite) || !rightTaps.every(Number.isFinite)) return Promise.resolve(false);
+  const task = nativeRendererControlChain.then(() => new Promise((resolve) => {
+    const ackCommand = "setHeadphoneFir";
+    const timeout = setTimeout(() => {
+      nativeRendererPendingCommands.delete(ackCommand);
+      writeStartupLog(`${ackCommand} ACK timeout`);
+      resolve(false);
+    }, NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
+    nativeRendererPendingCommands.set(ackCommand, { resolve, timeout });
+    const header = Buffer.allocUnsafe(13);
+    header.writeUInt8("H".charCodeAt(0), 0);
+    header.writeFloatLE(preamp, 1);
+    header.writeUInt32LE(leftTaps.length, 5);
+    header.writeUInt32LE(rightTaps.length, 9);
+    try {
+      const queued = nativeRenderer.stdin.write(Buffer.concat([
+        header,
+        Buffer.from(leftTaps.buffer, leftTaps.byteOffset, leftTaps.byteLength),
+        Buffer.from(rightTaps.buffer, rightTaps.byteOffset, rightTaps.byteLength),
+      ]));
+      if (!queued) writeStartupLog(`sidecar headphone FIR pipe backpressure: ${leftTaps.length}/${rightTaps.length}`);
+    } catch {
+      nativeRendererPendingCommands.delete(ackCommand);
+      clearTimeout(timeout);
+      resolve(false);
+    }
+  }));
+  nativeRendererControlChain = task.catch(() => {});
+  return task;
+}
+
+function nativeRendererBatch(start, entries, events) {
+  if (!nativeRenderer?.stdin || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 128) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
+  if (nativeRendererPendingBatches.has(start)) {
+    // The batch is still awaiting its ACK, not lost. Report the original outcome
+    // once it arrives instead of failing the player's duplicate submission.
+    const pending = nativeRendererPendingBatches.get(start);
+    return pending.promise.then((result) => (result?.accepted ? result : { accepted: false, samples: 0, reason: "duplicate codec batch clock" }));
+  }
+  // Backpressure must NOT reject PCM: each rejected batch is a 32 ms silent gap
+  // in every object, and the refill lands as an audible level-step crackle.
+  // Queue behind the drain instead - order is preserved by the pipe.
+  if (!nativeRendererWritable) {
+    if (nativeRendererBatchQueue.length >= 512) return Promise.resolve({accepted:false,samples:0,reason:"native batch queue full"});
+    return new Promise(resolve => nativeRendererBatchQueue.push({ start, entries, events, resolve }));
+  }
+  try {
+    let metadata = null;
+    if (events !== undefined) {
+      if (!Array.isArray(events) || events.length > 4096) throw new Error("invalid frame metadata");
+      const json = Buffer.from(JSON.stringify(events));
+      if (json.length > 1024 * 1024) throw new Error("frame metadata exceeds limit");
+      metadata = Buffer.allocUnsafe(5 + json.length);
+      metadata[0] = 70; metadata.writeUInt32LE(json.length, 1); json.copy(metadata, 5);
+    }
+    const prepared = entries.map((entry) => {
+      if (!/^((obj:\d+)|(bed:\d+))$/.test(entry?.id ?? "") || !ArrayBuffer.isView(entry?.samples) || entry.samples.BYTES_PER_ELEMENT !== 4) throw new Error("invalid source entry");
+      const samples = entry.samples instanceof Float32Array ? entry.samples : new Float32Array(entry.samples.buffer, entry.samples.byteOffset, Math.floor(entry.samples.byteLength / 4));
+      if (samples.length === 0 || samples.length > 480_000) throw new Error("invalid source PCM length");
+      const id = Buffer.from(entry.id, "utf8");
+      if (id.length === 0 || id.length > 128) throw new Error("invalid source id length");
+      const entryHeader = Buffer.allocUnsafe(6);
+      entryHeader.writeUInt16LE(id.length, 0);
+      entryHeader.writeUInt32LE(samples.length, 2);
+      return [entryHeader, id, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)];
+    });
+    const header = Buffer.allocUnsafe(11);
+    header.writeUInt8("B".charCodeAt(0), 0);
+    header.writeBigUInt64LE(BigInt(start), 1);
+    header.writeUInt16LE(prepared.length, 9);
+    const pending = {};
+    const promise = new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        nativeRendererPendingBatches.delete(start);
+        resolve({ accepted: false, samples: 0, reason: "native batch ACK timeout" });
+      }, NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS);
+      Object.assign(pending, { resolve, timeout });
+      nativeRendererPendingBatches.set(start, pending);
+      const queued = nativeRenderer.stdin.write(Buffer.concat([...(metadata ? [metadata, header.subarray(1)] : [header]), ...prepared.flat()]));
+      if (!queued) writeStartupLog(`sidecar PCM pipe backpressure: start=${start}`);
+    });
+    pending.promise = promise;
+    return promise;
+  } catch (error) {
+    return Promise.resolve({ accepted: false, samples: 0, reason: error instanceof Error ? error.message : "invalid native PCM batch" });
+  }
+}
+
+let outputDevicesState = null;
+let outputSettingsChain = Promise.resolve();
+function publishOutputDevices(value) {
+  outputDevicesState = value;
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send("sda:output-devices", value);
+}
+function validOutputSettings(value) {
+  return value && typeof value.exclusive === "boolean" && (value.remoteCompatible === undefined || typeof value.remoteCompatible === "boolean") && (value.deviceId === null ||
+    (typeof value.deviceId === "string" && value.deviceId.length > 0 && value.deviceId.length <= 1024 && !/[\x00-\x1f]/.test(value.deviceId)));
+}
+function savedOutputSettings() {
+  const value = readSettings().audioOutput;
+  return validOutputSettings(value) ? normalizeOutputSettings(value) : {deviceId:null,exclusive:false,remoteCompatible:true};
+}
+function normalizeOutputSettings(value) {
+  return {deviceId:value.remoteCompatible ? null : value.deviceId,exclusive:value.remoteCompatible ? false : value.exclusive,remoteCompatible:value.remoteCompatible===true};
+}
+function consumeNativeRendererOutput(chunk) {
+  nativeRendererBuffer += chunk;
+  if (nativeRendererBuffer.length > NATIVE_RENDERER_MAX_LINE_BYTES * 2) {
+    nativeRendererBuffer = "";
+    setNativeRendererStatus(false, "native renderer 输出超限，播放已停止");
+    return;
+  }
+  for (;;) {
+    const newline = nativeRendererBuffer.indexOf("\n");
+    if (newline < 0) break;
+    const line = nativeRendererBuffer.slice(0, newline);
+    nativeRendererBuffer = nativeRendererBuffer.slice(newline + 1);
+    if (!line || line.length > NATIVE_RENDERER_MAX_LINE_BYTES) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
+        setNativeRendererStatus(true, `渲染 ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true);
+      } else if (message?.type === "outputDevices") {
+        publishOutputDevices({status:message.status,devices:message.devices});
+        writeStartupLog(`audio output: ${JSON.stringify(message.status)}`);
+      } else if (message?.type === "error") {
+        setNativeRendererStatus(false, `native renderer: ${safeDiagnosticText(message.detail, "错误")}`);
+      } else if (message?.type === "ack") {
+        const pending = nativeRendererPendingCommands.get(message.command);
+        writeStartupLog(`sidecar ACK ${message.command} accepted=${message.accepted === true} detail=${message.detail ?? ""}`);
+        if (pending) {
+          nativeRendererPendingCommands.delete(message.command);
+          clearTimeout(pending.timeout);
+          pending.resolve(message.accepted === true);
+        }
+      } else if (message?.type === "batchAck") {
+        const start = Number(message.start);
+        const pending = nativeRendererPendingBatches.get(start);
+        if (pending) {
+          nativeRendererPendingBatches.delete(start);
+          clearTimeout(pending.timeout);
+          const result = { accepted: message.accepted === true, samples: Number(message.samples) || 0, reason: message.detail ?? undefined };
+          if (!result.accepted) {
+            writeStartupLog(`[SDA native renderer] batch ${start} rejected: ${result.reason ?? "unknown"}`);
+          }
+          pending.resolve(result);
+        }
+      } else if (message?.type === "objectActivity") {
+        if (Array.isArray(message.ids)) publishNativeRendererObjectActivity(message.ids);
+      } else if (message?.type === "health") {
+        writeStartupLog(
+          `health sample=${message.samplePos} sources=${message.activeSources} layout=${message.layout ?? "unknown"} ` +
+          `spatialBuses=${message.spatialBusCount ?? 0} ` +
+          `sourceUnderrun=${message.underrunSamples} fifoUnderrun=${message.callbackFifoUnderrunFrames ?? 0} ` +
+          `outputPeak=${message.outputPeak ?? 0} outputMaxStep=${message.outputMaxSampleStep ?? 0} ` +
+          `outputMaxStepSample=${message.outputMaxStepSample ?? 0} ` +
+          `outputLargeSteps=${message.outputLargeSteps ?? 0} outputLastStepSample=${message.outputLastLargeStepSample ?? 0} ` +
+          `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
+          `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} routes=${message.routeUpdateCount ?? 0} ` +
+          `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
+          `controlLockMaxUs=${message.controlLockMaxMicros ?? 0} renderLockWaitUs=${message.renderWaitLockMicros ?? 0} ` +
+          `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}`,
+        );
+        const hrtf = message.hrtfReady ? "HRTF ready" : "等待 HRTF";
+        const ownership = message.outputActive ? "native output" : "静音预热";
+        setNativeRendererStatus(
+          true,
+          `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun · ${hrtf} · ${ownership}`,
+          Boolean(message.referenceMix),
+          { samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true, remoteSynchronized:message.remoteSynchronized===true,remoteSyncWaiting:message.remoteSyncWaiting===true },
+        );
+      }
+    } catch { /* malformed helper output is ignored; stderr still records it */ }
+  }
+}
+
+function clearNativeRendererSession(reason) {
+  publishOutputDevices({status:{requested:savedOutputSettings(),state:"unavailable",detail:reason},devices:[]});
+  publishNativeRendererObjectActivity([]);
+  if (nativeRendererHealthTimer) clearInterval(nativeRendererHealthTimer);
+  nativeRendererHealthTimer = null;
+  nativeRendererWritable = false;
+  nativeRendererBuffer = "";
+  for (const queued of nativeRendererBatchQueue.splice(0)) queued.resolve({accepted:false,samples:0,reason:"native renderer stopped"});
+  for (const pending of nativeRendererPendingBatches.values()) {
+    clearTimeout(pending.timeout);
+    pending.resolve({ accepted: false, samples: 0, reason });
+  }
+  nativeRendererPendingBatches.clear();
+  for (const pending of nativeRendererPendingCommands.values()) {
+    clearTimeout(pending.timeout);
+    pending.resolve(false);
+  }
+  nativeRendererPendingCommands.clear();
+}
+
+function startNativeRenderer() {
+  if (remoteSession.role === "client") return nativeRendererStatus;
+  writeStartupLog(`startNativeRenderer() called; executable=${bundledNativeRendererPath() ?? "missing"}`);
+  if (nativeRenderer) return nativeRendererStatus;
+  const executable = bundledNativeRendererPath();
+  if (!executable) return setNativeRendererStatus(false, "native renderer 未构建，无法播放");
+  try {
+    nativeRenderer = spawn(executable, [], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, SDA_OUTPUT_SETTINGS: JSON.stringify(savedOutputSettings()), SDA_HRTF_ROOT: path.join(path.dirname(executable), "hrtf-assets"), SDA_PERSONAL_HRTF_ROOT: personalHrtfDirectory() },
+    });
+  } catch (error) {
+    nativeRenderer = null;
+    return setNativeRendererStatus(false, `native renderer 启动失败: ${error.message}`);
+  }
+  // The first prebuffer must not wait for the 30-second process-tree refresh.
+  if (nativeRenderer.pid) {
+    try {
+      os.setPriority(nativeRenderer.pid, os.constants.priority.PRIORITY_HIGH);
+      writeStartupLog("native renderer process priority=high");
+    } catch (error) {
+      writeStartupLog(`native renderer priority unchanged: ${error.message}`);
+    }
+  }
+  nativeRendererWritable = true;
+  nativeRenderer.stdout.setEncoding("utf8");
+  nativeRenderer.stdout.on("data", consumeNativeRendererOutput);
+  nativeRenderer.stdin.on("drain", () => {
+    nativeRendererWritable = true;
+    // Preserve each frame's own backend ACK; a writable pipe is not an ACK.
+    for (const queued of nativeRendererBatchQueue.splice(0)) {
+      nativeRendererBatch(queued.start, queued.entries, queued.events).then(queued.resolve);
+    }
+  });
+  // A pipe can close between a writable check and write(); swallow EPIPE here
+  // and transition the renderer into the explicit stopped state instead of
+  // letting Node surface an uncaught main-process exception.
+  nativeRenderer.stdin.on("error", (error) => {
+    if (nativeRenderer) nativeRenderer = null;
+    clearNativeRendererSession(`native renderer pipe error: ${error.code ?? error.message}`);
+    setNativeRendererStatus(false, `native renderer 管道已关闭: ${error.code ?? error.message}`);
+  });
+  nativeRendererHealthTimer = setInterval(() => {
+    if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed) return;
+    nativeRendererCommand({ type: "health" });
+  }, 100).unref();
+  nativeRenderer.stderr.setEncoding("utf8");
+  nativeRenderer.stderr.on("data", (chunk) => writeStartupLog(`[SDA native renderer] ${String(chunk).trim()}`));
+  nativeRenderer.once("error", (error) => {
+    nativeRenderer = null;
+    clearNativeRendererSession(`native renderer error: ${error.message}`);
+    setNativeRendererStatus(false, `native renderer 异常: ${error.message}`);
+  });
+  nativeRenderer.once("exit", (code) => {
+    nativeRenderer = null;
+    clearNativeRendererSession("native renderer exited");
+    setNativeRendererStatus(false, `native renderer 已退出${code === null ? "" : ` (${code})`}，播放已停止`);
+  });
+  nativeRendererCommand({ type: "hello", protocol: NATIVE_RENDERER_PROTOCOL });
+  writeStartupLog("native renderer hello sent");
+  return setNativeRendererStatus(false, "native renderer 启动中，等待 HRTF");
+}
+
+function stopNativeRenderer() {
+  const renderer = nativeRenderer;
+  if (renderer) {
+    try { nativeRendererCommand({ type: "shutdown" }); } catch {}
+    nativeRenderer = null;
+    setTimeout(() => { if (!renderer.killed) renderer.kill(); }, 500).unref();
+  }
+  clearNativeRendererSession("native renderer stopped");
+  return setNativeRendererStatus(false, "已停止，桌面播放不可用");
+}
+
+function remoteBroadcast(channel, value) {
+  for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(channel, value);
+}
+let remoteSleepBlocker = null;
+let remoteLifecycle = "";
+function publishRemoteStatus(value) {
+  // A remote desktop disconnect may turn off the display or lock the session.
+  // Keep audio hosting alive without forcing the monitor to stay on.
+  if (value.role !== "off" && remoteSleepBlocker === null) {
+    remoteSleepBlocker = powerSaveBlocker.start("prevent-app-suspension");
+  } else if (value.role === "off" && remoteSleepBlocker !== null) {
+    powerSaveBlocker.stop(remoteSleepBlocker);
+    remoteSleepBlocker = null;
+  }
+  const lifecycle = `${value.role}/${value.phase}: ${value.detail}`;
+  if (lifecycle !== remoteLifecycle) {
+    remoteLifecycle = lifecycle;
+    writeStartupLog(`[remote] ${lifecycle}`);
+  }
+  remoteBroadcast("sda:remote-status", value);
+}
+const remoteMedia = require("./remote-media.cjs").createRemoteMedia({readSettings,isMediaFile});
+let remotePlaybackOrigin="local";
+function effectiveRemoteLocalMute(preference=readSettings().remoteLocalMuted!==false){return preference&&remotePlaybackOrigin==="remote";}
+async function setRemotePlaybackOrigin(origin){
+  if(origin!=="local"&&origin!=="remote")throw Error("无效播放来源");
+  if(nativeRenderer&&!await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:(readSettings().remoteLocalMuted!==false)&&origin==="remote"},"setRemoteLocalMute"))throw Error("无法更新电脑输出静音状态");
+  remotePlaybackOrigin=origin;
+  remoteSession.publish();return remoteSession.status();
+}
+async function setRemoteLocalMute(muted) {
+  if(typeof muted!=="boolean")throw Error("无效静音设置");
+  if(nativeRenderer)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:effectiveRemoteLocalMute(muted)},"setRemoteLocalMute");
+  writeSettings({remoteLocalMuted:muted});
+  if(remoteSession.state)remoteSession.publishState({...remoteSession.state,artwork:remoteSession.artwork});
+  remoteSession.publish();return remoteSession.status();
+}
+const remoteSession = new RemoteSession({
+  gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;startNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
+  position:()=>Number(nativeRendererStatus.samplePos??0)/48000,
+  diagnostic:health=>writeStartupLog(`remote-receiver ${JSON.stringify(health)}`),
+  maxPeers:()=>readSettings().remoteMaxPeers??2,
+  readDevices:()=>readSettings().remoteAuthorizedDevices??[],
+  writeDevices:devices=>writeSettings({remoteAuthorizedDevices:devices}),
+  localMuted:()=>readSettings().remoteLocalMuted!==false,
+  hlsAllowed:()=>readSettings().remoteHlsAllowed===true,
+  savedPairingKey:()=>readSettings().remoteCustomPairingKey??"",
+  rememberPairingKey:pairingKey=>writeSettings({remoteCustomPairingKey:pairingKey}),
+  defaultKey: () => {
+    let key=readSettings().remoteGeneratedPairingKey;
+    if(typeof key!=="string"||!/^[a-f0-9]{64}$/.test(key)){key=crypto.randomBytes(32).toString("hex");writeSettings({remoteGeneratedPairingKey:key});}
+    return Buffer.from(key,"hex");
+  },
+  certificate: () => loadRemoteCertificate(path.join(app.getPath("userData"), "remote-certificate.json")),
+  executable: () => {
+    const executable = bundledNativeRendererPath();
+    if (!executable) throw Error("内置原生音频接收器未构建");
+    return executable;
+  },
+  status: publishRemoteStatus,
+  control: value => {
+    if(value.action==="localMute")void setRemoteLocalMute(value.value).then(()=>remoteSession.completeControl(value.id),error=>remoteSession.completeControl(value.id,String(error)));
+    else if(value.action==="mediaList")void remoteMedia.list(value.value).then(data=>remoteSession.completeControl(value.id,null,data),()=>remoteSession.completeControl(value.id,"无法读取目录，请确认它仍在收藏或最近记录中且可以访问"));
+    else if(value.action==="mediaOpen")void remoteMedia.open(value.value).then(paths=>remoteBroadcast("sda:remote-control",{...value,action:"mediaPaths",value:paths}),()=>remoteSession.completeControl(value.id,"无法打开媒体，请在主机检查目录与文件"));
+    else remoteBroadcast("sda:remote-control", value);
+  },
+  result: value => remoteBroadcast("sda:remote-result", value),
+  disconnected: () => {
+    remotePlaybackOrigin="local";
+    // Losing a receiver must not pause the independent local playback.
+    if(nativeRenderer)return nativeRendererCommandAck({type:"setRemoteOutput",address:null,token:null},"setRemoteOutput").catch(()=>{});
+  },
+  route: async ({address,token}) => {
+    if (!address && !nativeRenderer) return true;
+    startNativeRenderer();
+    if(address)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:effectiveRemoteLocalMute()},"setRemoteLocalMute");
+    const changed=nativeRendererCommandAck({type:"setRemoteOutput",address,token},"setRemoteOutput",15000);
+    // Ending remote output succeeds even when no physical endpoint is available.
+    return address?changed:changed.then(()=>true,()=>true);
+  },
+  prepareClient: async () => {
+    remoteBroadcast("sda:remote-suspend", {replaceOutput:true});
+    const renderer = nativeRenderer;
+    if (!renderer) return;
+    const exited = new Promise(resolve => { renderer.once("exit",resolve); setTimeout(resolve,2000).unref(); });
+    stopNativeRenderer(); await exited;
+  },
+});
+ipcMain.handle("sda:remote-pairing-key", () => readSettings().remoteCustomPairingKey??"");
+ipcMain.handle("sda:remote-status", () => remoteSession.status());
+let remoteOperation = Promise.resolve();
+ipcMain.handle("sda:remote-session", (_event, action, value) => {
+  const task = remoteOperation.then(() => {
+    writeStartupLog(`[remote] requested action=${String(action).slice(0, 20)}`);
+    if (["deviceApprove","deviceReject","deviceRevoke","devicePermission","deviceDisconnect"].includes(action))return remoteSession.manageDevice(action,value);
+    if (action === "maxPeers") {
+      if(!Number.isInteger(value)||value<1||value>16)throw Error("同时连接数须为 1–16 台");
+      writeSettings({remoteMaxPeers:value});remoteSession.publish();return remoteSession.status();
+    }
+    if (action === "hlsAllowed") {
+      if(typeof value!=="boolean")throw Error("无效 HLS 设置");
+      writeSettings({remoteHlsAllowed:value});
+      if(!value)remoteSession.web?.disableHls();
+      remoteSession.publish();return remoteSession.status();
+    }
+    if (action === "playbackOrigin") return setRemotePlaybackOrigin(value);
+    if (action === "localMute") return setRemoteLocalMute(value);
+    if (action === "host") return remoteSession.host(value);
+    if (action === "join") return remoteSession.join(value);
+    if (action === "stop") return remoteSession.stop();
+    throw Error("无效远程操作");
+  });
+  remoteOperation = task.catch(() => {}); return task;
+});
+ipcMain.handle("sda:remote-command", (_event, command) => remoteSession.command(command));
+ipcMain.on("sda:remote-scene", (_event, scene) => remoteSession.publishScene(scene));
+ipcMain.on("sda:remote-state", (_event, state) => remoteSession.publishState(state));
+ipcMain.on("sda:remote-complete", (_event, id, error) => remoteSession.completeControl(id,error));
+
+let headTrackingTimer = null;
+let headTrackingStartedAt = 0;
+let headTrackingHelper = null;
+let headTrackingSession = null;
+let headTrackingBuffer = "";
+let headTrackingHelloReceived = false;
+let headTrackingLastSequence = -1;
+let headTrackingLastPoseAt = 0;
+let headTrackingHelperSource = "bundled-helper";
+let headTrackingEnabled = false;
+let headTrackingStatus = { running: false, source: "bundled-helper", detail: "未启动" };
+
+function sendHeadTracking(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+function publishHeadTrackingStatus() {
+  sendHeadTracking("sda:head-tracking-status", headTrackingStatus);
+  return headTrackingStatus;
+}
+
+function helperConfiguration() {
+  const externalPath = readHeadTrackingHelperPath();
+  const bundledPath = bundledHeadTrackingHelperPath();
+  const helperPath = externalPath ?? bundledPath;
+  return {
+    configured: Boolean(helperPath),
+    fileName: helperPath ? path.basename(helperPath) : null,
+    bundledAvailable: Boolean(bundledPath),
+    usingBundled: Boolean(bundledPath && !externalPath),
+    externalSelected: Boolean(externalPath),
+    mockAvailable: isDev && process.env.SDA_HEAD_TRACKING_MOCK === "1",
+  };
+}
+
+function safeDiagnosticText(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  return text ? text.slice(0, HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS) : fallback;
+}
+
+function setHeadTrackingStatus(running, source, detail) {
+  headTrackingStatus = { running, source, detail: safeDiagnosticText(detail, "状态未知") };
+  return publishHeadTrackingStatus();
+}
+
+function helperCommand(type) {
+  if (!headTrackingHelper?.stdin || !headTrackingSession) return false;
+  try {
+    headTrackingHelper.stdin.write(`${JSON.stringify({ type, protocol: HEAD_TRACKING_PROTOCOL, session: headTrackingSession })}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validQuaternion(orientation) {
+  if (!orientation || typeof orientation !== "object") return null;
+  const values = [orientation.x, orientation.y, orientation.z, orientation.w];
+  if (!values.every(Number.isFinite)) return null;
+  const norm = Math.hypot(...values);
+  if (norm < 0.99 || norm > 1.01) return null;
+  return { x: values[0] / norm, y: values[1] / norm, z: values[2] / norm, w: values[3] / norm };
+}
+
+function processHeadTrackingMessage(message) {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    stopHeadTracking(true, "helper 消息无效");
+    return;
+  }
+  const knownTypes = ["hello", "pose", "status", "error"];
+  if (!knownTypes.includes(message.type)) return;
+  if (message.protocol !== HEAD_TRACKING_PROTOCOL || message.session !== headTrackingSession) {
+    stopHeadTracking(true, "helper 协议或会话无效");
+    return;
+  }
+  if (!headTrackingHelloReceived) {
+    if (
+      message.type !== "hello" ||
+      !["windows-airpods-experimental", "macos-airpods"].includes(message.source) ||
+      message.coordinateSystem !== "sda-adm-right-forward-up" ||
+      message.orientation !== "head-to-world-quaternion"
+    ) {
+      stopHeadTracking(true, "helper 握手无效");
+      return;
+    }
+    headTrackingHelloReceived = true;
+    setHeadTrackingStatus(true, headTrackingHelperSource, "已连接 helper，等待姿态");
+    return;
+  }
+  if (message.type === "hello") {
+    stopHeadTracking(true, "helper 重复握手");
+    return;
+  }
+  if (message.type === "pose") {
+    const orientation = validQuaternion(message.orientation);
+    const sequence = message.seq;
+    const timestampMs = message.timestampMs;
+    const now = Date.now();
+    if (
+      !orientation ||
+      !Number.isSafeInteger(sequence) || sequence <= headTrackingLastSequence ||
+      !Number.isFinite(timestampMs) || Math.abs(timestampMs - now) > 60_000
+    ) {
+      stopHeadTracking(true, "helper 姿态无效");
+      return;
+    }
+    if (now - headTrackingLastPoseAt < 1000 / HEAD_TRACKING_MAX_RATE_HZ) return;
+    headTrackingLastSequence = sequence;
+    headTrackingLastPoseAt = now;
+    if (!headTrackingEnabled) return;
+    const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
+    setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${platformLabel} helper）` : "追踪中（外部 helper）");
+    sendHeadTracking("sda:head-tracking-pose", { timestampMs, orientation });
+    return;
+  }
+  if (message.type === "status") {
+    if (!["connected", "disconnected", "unavailable"].includes(message.state)) {
+      stopHeadTracking(true, "helper 状态无效");
+      return;
+    }
+    if (headTrackingEnabled) {
+      setHeadTrackingStatus(true, headTrackingHelperSource, safeDiagnosticText(message.detail, message.state));
+    }
+    return;
+  }
+  const detail = safeDiagnosticText(message.message, safeDiagnosticText(message.code, "helper 错误"));
+  setHeadTrackingStatus(true, headTrackingHelperSource, detail);
+}
+
+function consumeHeadTrackingOutput(chunk) {
+  headTrackingBuffer += chunk;
+  if (Buffer.byteLength(headTrackingBuffer, "utf8") > HEAD_TRACKING_MAX_BUFFER_BYTES) {
+    stopHeadTracking(true, "helper 输出超出限制");
+    return;
+  }
+  for (;;) {
+    const newline = headTrackingBuffer.indexOf("\n");
+    if (newline < 0) return;
+    const line = headTrackingBuffer.slice(0, newline).replace(/\r$/, "");
+    headTrackingBuffer = headTrackingBuffer.slice(newline + 1);
+    if (!line) continue;
+    if (Buffer.byteLength(line, "utf8") > HEAD_TRACKING_MAX_LINE_BYTES) {
+      stopHeadTracking(true, "helper 消息过长");
+      return;
+    }
+    try {
+      processHeadTrackingMessage(JSON.parse(line));
+    } catch {
+      stopHeadTracking(true, "helper JSON 无效");
+      return;
+    }
+  }
+}
+
+function mockHeadPose() {
+  const elapsedSeconds = (Date.now() - headTrackingStartedAt) / 1000;
+  const yawRadians = Math.sin(elapsedSeconds * 0.7) * (Math.PI / 6);
+  return {
+    timestampMs: Date.now(),
+    orientation: { x: 0, y: 0, z: Math.sin(yawRadians / 2), w: Math.cos(yawRadians / 2) },
+  };
+}
+
+function startHeadTrackingMock() {
+  headTrackingStartedAt = Date.now();
+  setHeadTrackingStatus(true, "mock", "模拟 yaw 姿态（仅开发验证）");
+  headTrackingTimer = setInterval(() => sendHeadTracking("sda:head-tracking-pose", mockHeadPose()), HEAD_TRACKING_MOCK_INTERVAL_MS);
+  headTrackingTimer.unref();
+  return headTrackingStatus;
+}
+
+function startHeadTracking() {
+  if (headTrackingTimer || headTrackingHelper) {
+    headTrackingEnabled = true;
+    writeHeadTrackingEnabled(true);
+    const takeoverSent = takeoverHeadTracking();
+    const hasRecentPose = Date.now() - headTrackingLastPoseAt < 1000;
+    return setHeadTrackingStatus(
+      true,
+      headTrackingHelperSource,
+      takeoverSent
+        ? "Windows 正在强制接管整个 AirPods 连接"
+        : hasRecentPose
+        ? headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${process.platform === "darwin" ? "macOS" : "Windows"} helper）` : "追踪中（外部 helper）"
+        : "正在恢复 AirPods motion",
+    );
+  }
+  const resolvedHelper = resolvedHeadTrackingHelper();
+  if (!resolvedHelper) {
+    if (isDev && process.env.SDA_HEAD_TRACKING_MOCK === "1") return startHeadTrackingMock();
+    throw new Error("内置 AirPods 头追 helper 不存在，请重新安装或选择外部 helper");
+  }
+  const { helperPath, source } = resolvedHelper;
+  headTrackingHelperSource = source;
+  headTrackingEnabled = true;
+  writeHeadTrackingEnabled(true);
+  headTrackingSession = crypto.randomBytes(32).toString("hex");
+  headTrackingBuffer = "";
+  headTrackingHelloReceived = false;
+  headTrackingLastSequence = -1;
+  headTrackingLastPoseAt = 0;
+  try {
+    headTrackingHelper = spawn(helperPath, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  } catch (error) {
+    headTrackingHelper = null;
+    headTrackingSession = null;
+    writeHeadTrackingEnabled(false);
+    throw error;
+  }
+  headTrackingHelper.stdout.setEncoding("utf8");
+  headTrackingHelper.stdout.on("data", consumeHeadTrackingOutput);
+  headTrackingHelper.stderr.setEncoding("utf8");
+  headTrackingHelper.stderr.on("data", (chunk) => {
+    // Helper diagnostics are env-gated (SDA_HEAD_TRACKING_DEBUG=1); forward
+    // them to the Electron console in dev so reproduction logs are readable.
+    if (!isDev) return;
+    for (const line of chunk.split(/\r?\n/)) {
+      if (line) writeStartupLog(`[SDA helper] ${line}`);
+    }
+  });
+  headTrackingHelper.stdin.once("error", () => {
+    if (headTrackingHelper) stopHeadTracking(true, "helper 命令通道失败");
+  });
+  headTrackingHelper.once("error", (error) => stopHeadTracking(true, `helper 启动失败: ${error.message}`));
+  headTrackingHelper.once("exit", (code) => {
+    if (headTrackingHelper) stopHeadTracking(true, `helper 已退出${code === null ? "" : ` (${code})`}`);
+  });
+  helperCommand("start");
+  const takeoverSent = takeoverHeadTracking();
+  return setHeadTrackingStatus(
+    true,
+    headTrackingHelperSource,
+    takeoverSent ? "Windows 正在强制接管整个 AirPods 连接" : "正在连接 AirPods motion 通道",
+  );
+}
+
+function stopHeadTracking(persist = true, detail = "已停止") {
+  if (headTrackingTimer) clearInterval(headTrackingTimer);
+  headTrackingTimer = null;
+  const helper = headTrackingHelper;
+  if (helper) {
+    helperCommand("stop");
+    headTrackingHelper = null;
+    helper.removeAllListeners();
+    helper.stdout?.removeAllListeners();
+    helper.stderr?.removeAllListeners();
+    try { helper.kill(); } catch {}
+  }
+  headTrackingSession = null;
+  headTrackingBuffer = "";
+  headTrackingHelloReceived = false;
+  headTrackingEnabled = false;
+  if (persist) writeHeadTrackingEnabled(false);
+  return setHeadTrackingStatus(false, headTrackingHelperSource, detail);
+}
+
+async function stopHeadTrackingGracefully(persist = true, detail = "已停止") {
+  if (headTrackingTimer) return stopHeadTracking(persist, detail);
+  const helper = headTrackingHelper;
+  if (!helper) return stopHeadTracking(persist, detail);
+
+  // Let the helper send both AirPods stop packets and close L2CAP before a new
+  // helper is allowed to connect. Killing it immediately leaves the buds in a
+  // stale motion session and the next start waits forever for motion packets.
+  helperCommand("stop");
+  headTrackingHelper = null;
+  headTrackingEnabled = false;
+  headTrackingSession = null;
+  headTrackingBuffer = "";
+  headTrackingHelloReceived = false;
+  helper.stdout?.removeAllListeners("data");
+  helper.stderr?.removeAllListeners("data");
+  helper.stdin?.removeAllListeners("error");
+  helper.removeAllListeners("error");
+  helper.removeAllListeners("exit");
+
+  await new Promise((resolve) => {
+    let finished = false;
+    let killTimer;
+    let forceTimer;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(killTimer);
+      clearTimeout(forceTimer);
+      resolve();
+    };
+    helper.once("exit", finish);
+    helper.once("error", finish);
+    killTimer = setTimeout(() => {
+      try { helper.kill(); } catch { finish(); }
+    }, 750);
+    forceTimer = setTimeout(finish, 1500);
+    killTimer.unref();
+    forceTimer.unref();
+  });
+
+  if (persist) writeHeadTrackingEnabled(false);
+  return setHeadTrackingStatus(false, headTrackingHelperSource, detail);
+}
+
+function suspendHeadTracking() {
+  if (headTrackingTimer || !headTrackingHelper) return stopHeadTracking(true, "已停止");
+  headTrackingEnabled = false;
+  writeHeadTrackingEnabled(false);
+  return setHeadTrackingStatus(false, headTrackingHelperSource, "已关闭（保持 AirPods motion 连接）");
+}
+
+function recenterHeadTracking() {
+  if (!headTrackingTimer && !headTrackingHelper) throw new Error("head tracking is not running");
+  if (headTrackingTimer) {
+    headTrackingStartedAt = Date.now();
+    const pose = mockHeadPose();
+    sendHeadTracking("sda:head-tracking-recenter", pose);
+    return pose;
+  }
+  helperCommand("recenter");
+  // Renderer-side recenter remains available even for helpers without a command API.
+  sendHeadTracking("sda:head-tracking-recenter", null);
+  return null;
+}
+
+function takeoverHeadTracking() {
+  if (
+    !headTrackingEnabled ||
+    !headTrackingHelper ||
+    headTrackingHelperSource !== "bundled-helper"
+  ) return false;
+  const sent = helperCommand("takeover");
+  if (sent) setHeadTrackingStatus(true, headTrackingHelperSource, "Windows 正在强制接管整个 AirPods 连接");
+  return sent;
 }
 
 const webAssetRoots = () => [
@@ -224,10 +1187,17 @@ function readStoredProfile(id) {
 }
 
 function createWindow() {
+  const isMac = process.platform === "darwin";
   const win = new BrowserWindow({
+    icon: path.join(__dirname, "assets", process.platform === "win32" ? "icon.ico" : "icon.png"),
     width: 1440,
     height: 900,
-    backgroundColor: "#0c101c",
+    backgroundColor: "#171819",
+    // macOS: keep native traffic-light buttons, hide the rest of the title bar.
+    // Windows / Linux: fully frameless with custom renderer-side controls.
+    ...(isMac
+      ? { titleBarStyle: "hiddenInset", vibrancy: "sidebar" }
+      : { frame: false }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -238,12 +1208,20 @@ function createWindow() {
     },
   });
 
+  win.setMenu(null);
+  const publishWindowState = () => {
+    win.webContents.send("sda:window-state", { maximized: win.isMaximized(), fullscreen: win.isFullScreen() });
+  };
+  win.on("maximize", publishWindowState);
+  win.on("unmaximize", publishWindowState);
+  win.on("enter-full-screen", publishWindowState);
+  win.on("leave-full-screen", publishWindowState);
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
-    console.error(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
+    writeStartupLog(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
     dialog.showErrorBox("SDA 页面加载失败", `${errorDescription}\n${validatedURL}`);
   });
   win.webContents.on("render-process-gone", (_event, details) => {
-    console.error(`[SDA] renderer 退出: ${details.reason}${details.exitCode ? ` (${details.exitCode})` : ""}`);
+    writeStartupLog(`[SDA] renderer 退出: ${details.reason}${details.exitCode ? ` (${details.exitCode})` : ""}`);
     if (details.reason !== "clean-exit") {
       dialog.showErrorBox(
         "SDA 3D 渲染进程失败",
@@ -252,8 +1230,7 @@ function createWindow() {
     }
   });
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    if (level >= 2) console.warn(`[SDA renderer] ${sourceId}:${line} ${message}`);
-    else if (message.startsWith("[SDA]")) console.log(message);
+    logRenderer(level, sourceId, line, message);
   });
 
   if (isDev) {
@@ -284,6 +1261,15 @@ function createWindow() {
   }
 }
 
+ipcMain.handle("sda:window-state", event => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false);
+ipcMain.handle("sda:window-control", (event, action) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  if (action === "minimize") win.minimize();
+  else if (action === "maximize") win.isMaximized() ? win.unmaximize() : win.maximize();
+  else if (action === "close") win.close();
+});
+
 ipcMain.on("sda:get-output-latency-seconds", (event) => {
   event.returnValue = readOutputLatencySeconds();
 });
@@ -312,6 +1298,404 @@ ipcMain.on("sda:set-volume-balance-enabled", (event, enabled) => {
   }
 });
 
+ipcMain.handle("sda:head-tracking-status", () => headTrackingStatus);
+ipcMain.handle("sda:head-tracking-helper", () => helperConfiguration());
+ipcMain.handle("sda:head-tracking-select-helper", async (event) => {
+  if (headTrackingStatus.running) throw new Error("stop head tracking before selecting a helper");
+  if (headTrackingTimer || headTrackingHelper) await stopHeadTrackingGracefully(false);
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const options = {
+    title: "选择独立 AirPods 头追 helper",
+    filters: process.platform === "darwin"
+      ? [{ name: "macOS helper", extensions: ["*"] }]
+      : [{ name: "Windows helper", extensions: ["exe"] }],
+    properties: ["openFile"],
+  };
+  const { canceled, filePaths } = parent
+    ? await dialog.showOpenDialog(parent, options)
+    : await dialog.showOpenDialog(options);
+  if (canceled) return helperConfiguration();
+  const helperPath = path.resolve(filePaths[0]);
+  writeHeadTrackingHelperPath(helperPath);
+  if (!headTrackingStatus.running) setHeadTrackingStatus(false, "external-helper", `已配置 ${path.basename(helperPath)}`);
+  return helperConfiguration();
+});
+ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
+  if (headTrackingStatus.running) throw new Error("stop head tracking before changing helper");
+  if (headTrackingTimer || headTrackingHelper) await stopHeadTrackingGracefully(false);
+  writeHeadTrackingHelperPath(null);
+  const configuration = helperConfiguration();
+  if (!configuration.bundledAvailable) throw new Error("bundled head tracking helper is unavailable");
+  headTrackingHelperSource = "bundled-helper";
+  const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
+  setHeadTrackingStatus(false, "bundled-helper", `已选择内置 ${platformLabel} helper`);
+  return configuration;
+});
+ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
+ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
+ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
+ipcMain.handle("sda:output-devices", async () => {
+  startNativeRenderer();
+  const accepted = await nativeRendererCommandAck({type:"listOutputDevices"},"listOutputDevices");
+  if (!accepted) throw new Error("无法读取输出设备，请确认原生输出已启动");
+  return outputDevicesState;
+});
+ipcMain.handle("sda:set-output-device", (_event, value) => {
+  if (!validOutputSettings(value)) throw new Error("无效的输出设置");
+  const settings = normalizeOutputSettings(value);
+  const task = outputSettingsChain.then(async () => {
+    startNativeRenderer();
+    const accepted = await nativeRendererCommandAck({type:"setOutputDevice",...settings},"setOutputDevice",15000);
+    if (accepted) writeSettings({audioOutput:settings});
+    return {accepted, ...outputDevicesState};
+  });
+  outputSettingsChain = task.catch(() => {});
+  return task;
+});
+ipcMain.handle("sda:native-renderer-start", () => {
+  const status = startNativeRenderer();
+  writeStartupLog(`ipc startNativeRenderer -> ${JSON.stringify(status)}`);
+  return status;
+});
+ipcMain.handle("sda:native-renderer-stop", () => stopNativeRenderer());
+ipcMain.handle('sda:native-renderer-end',(_event,sample)=>Number.isSafeInteger(sample)&&sample>=0&&nativeRendererCommandAck({type:'setRemoteEnd',sample},'setRemoteEnd'));
+ipcMain.handle("sda:native-renderer-health", () => {
+  nativeRendererCommand({ type: "health" });
+  writeStartupLog(`health -> ${JSON.stringify(nativeRendererStatus)}`);
+  return nativeRendererStatus;
+});
+ipcMain.handle("sda:native-renderer-source", async (_event, source) => {
+  const id = source?.id;
+  const atSample = source?.atSample;
+  const bedLabel = source?.bedLabel;
+  const validId = /^((obj:\d+)|(bed:\d+))$/.test(id ?? "");
+  const validClock = Number.isSafeInteger(atSample) && atSample >= 0;
+  const validLabel = bedLabel === undefined || (typeof bedLabel === "string" && bedLabel.length > 0 && bedLabel.length <= 128);
+  const isObject = /^obj:\d+$/.test(id ?? "");
+  if (!validId || !validClock || !validLabel || (isObject && bedLabel !== undefined)) return false;
+  const accepted = await nativeRendererCommandAck(
+    { type: "addSource", id, at: atSample, bedLabel },
+    "addSource",
+  );
+  writeStartupLog(`addSource ${id}@${atSample}${bedLabel ? ` label=${bedLabel}` : ""} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-remove-source", async (_event, id, atSample) => {
+  if (!/^((obj:\d+)|(bed:\d+))$/.test(id ?? "") || !Number.isSafeInteger(atSample) || atSample < 0) return false;
+  const accepted = await nativeRendererCommandAck({ type: "removeSource", id, at: atSample }, "removeSource");
+  writeStartupLog(`removeSource ${id}@${atSample} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
+  const batches=eventBatches(events);
+  if(!batches)return false;
+  let accepted=true;
+  for(const batch of batches){
+    accepted=await nativeRendererCommandAck({type:"objectEvents",events:batch},"objectEvents");
+    if(!accepted)return false;
+  }
+  writeStartupLog(`objectEvents count=${events.length} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-reset", async (_event, origin) => {
+  if (!Number.isSafeInteger(origin) || origin < 0) return false;
+  const accepted = await nativeRendererCommandAck({ type: "reset", origin }, "reset");
+  if (accepted) publishNativeRendererObjectActivity([]);
+  writeStartupLog(`reset ${origin} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-muted", async (_event, id, muted, atSample) => {
+  if (!/^((obj:\d+)|(bed:\d+))$/.test(id ?? "") || typeof muted !== "boolean") return false;
+  if (atSample !== undefined && (!Number.isSafeInteger(atSample) || atSample < 0)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setMuted", id, muted, at: atSample }, "setMuted");
+  writeStartupLog(`setMuted ${id}=${muted}@${atSample ?? "now"} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-speaker-mutes", async (_event, names, focus) => {
+  if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(name))) return false;
+  const focusedNames = focus == null ? [] : typeof focus === "string" ? [focus] : focus;
+  if (!Array.isArray(focusedNames) || focusedNames.some(name => typeof name !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(name))) return false;
+  return nativeRendererCommandAck({ type: "setSpeakerMutes", names, focus: focusedNames }, "setSpeakerMutes");
+});
+ipcMain.handle("sda:native-renderer-lfe-muted", async (_event, muted) => {
+  if (typeof muted !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck({ type: "setLfeMuted", muted }, "setLfeMuted");
+  writeStartupLog(`setLfeMuted=${muted} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-volume", async (_event, volume) => {
+  if (!Number.isFinite(volume)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setVolume", volume }, "setVolume");
+  writeStartupLog(`setVolume=${volume} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-program-enabled", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck({ type: "setProgramEnabled", enabled }, "setProgramEnabled");
+  writeStartupLog(`setProgramEnabled=${enabled} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-program-gain", async (_event, gain, atSample) => {
+  if (!Number.isFinite(gain)) return false;
+  if (atSample !== undefined && (!Number.isSafeInteger(atSample) || atSample < 0)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setProgramGain", gain, at: atSample }, "setProgramGain");
+  writeStartupLog(`setProgramGain=${gain}@${atSample ?? "now"} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-binaural-eq", async (_event, bands, lowCut) => {
+  if (!bands || !Number.isFinite(bands.low) || !Number.isFinite(bands.mid) || !Number.isFinite(bands.high) || typeof lowCut !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck(
+    { type: "setBinauralEq", low: bands.low, mid: bands.mid, high: bands.high, lowCut },
+    "setBinauralEq",
+  );
+  writeStartupLog(`setBinauralEq low=${bands.low} mid=${bands.mid} high=${bands.high} lowCut=${lowCut} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id, sourceId) => exclusiveAudioUpdate(async () => {
+  if (id !== null && typeof id !== "string") return false;
+  if (id === null) {
+    const accepted = await nativeRendererCommandAck({ type: "clearHeadphoneCompensation" }, "clearHeadphoneCompensation");
+    if (accepted) exclusiveHeadphoneId = null;
+    writeStartupLog(`clearHeadphoneCompensation ACK -> ${accepted}`);
+    return accepted;
+  }
+  try {
+    let profile;
+    let left;
+    let right;
+    const bundled = BUNDLED_HEADPHONE_PROFILES.get(id);
+    if (bundled) {
+      const root = webAssetRoot();
+      if (!root) throw new Error("bundled headphone asset root missing");
+      left = fs.readFileSync(path.join(root, ...bundled.left.split("/")));
+      right = fs.readFileSync(path.join(root, ...bundled.right.split("/")));
+      profile = bundled;
+    } else {
+      const stored = readStoredProfile(id);
+      left = stored.leftFir;
+      right = stored.rightFir;
+      profile = { preampDb: stored.manifest.preampDb };
+    }
+    const requestedSource = sourceId ?? readSettings().headphoneSimulationSource ?? 'reference';
+    const source = requestedSource === 'airpods-pro-3-reference' ? 'reference' : requestedSource;
+    if(typeof source !== 'string')return false;
+    let sourceLeft=null,sourceRight=null;
+    if(!['reference','airpods-pro-3-reference'].includes(source)) {
+      const entry=BUNDLED_HEADPHONE_PROFILES.get(source);
+      if(entry){const root=webAssetRoot();sourceLeft=fs.readFileSync(path.join(root,...entry.left.split('/')));sourceRight=fs.readFileSync(path.join(root,...entry.right.split('/')));}
+      else {const stored=readStoredProfile(source);sourceLeft=stored.leftFir;sourceRight=stored.rightFir;}
+    }
+    const simulated=require('./headphone-simulation.cjs').simulate(sourceLeft,sourceRight,left,right);
+    left=simulated.left;right=simulated.right;
+    const preamp = simulated.preamp;
+    const saved = readSettings().cinema;
+    const settings = cinemaProfiles.validateSettings(saved?.settings ?? defaultCinemaSettings());
+    const bypass = {...settings, enabled:false, bassEnabled:false, monitor:{...settings.monitor, enabled:false,
+      hardware:{...settings.monitor.hardware, enabled:false}}};
+    const normalized = cinemaProfiles.validateSettings(bypass);
+    const roomId = saved?.profileId ?? null;
+    const roomPath = roomId ? readCinemaProfile(roomId).filePath : null;
+    if (!await nativeRendererCommandAck({type:"setCinema",settings:normalized,profile:roomPath},"setCinema",30000)) return false;
+    if (!await nativeRendererCommandAck({type:"setComparisonGain",gainDb:0},"setComparisonGain")) return false;
+    writeSettings({cinema:{...saved,settings:normalized,profileId:roomId}});
+    const accepted = await nativeRendererHeadphoneFir(preamp, left, right);
+    if (accepted) {exclusiveHeadphoneId = id;writeSettings({headphoneSimulationSource:source});}
+    writeStartupLog(`headphoneSimulation source=${source} target=${id} preamp=${preamp} taps=${left.byteLength / 4}/${right.byteLength / 4} ACK -> ${accepted}`);
+    return accepted;
+  } catch (error) {
+    writeStartupLog(`setHeadphoneFir profile=${id} failed: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}));
+ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
+  if (!Array.isArray(orientation) || orientation.length !== 4 || !orientation.every(Number.isFinite)) return false;
+  return nativeRendererCommand({ type: "headPose", orientation });
+});
+ipcMain.handle("sda:native-renderer-clear-pose", () => nativeRendererCommand({ type: "clearHeadPose" }));
+ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
+  if ((!/^hrtf(?:-dense(?:-raw)?|-raw|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
+  writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => exclusiveAudioUpdate(async () => {
+  if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6", "360RA-13", "22.2", "11.1.8"]).has(layout)) return false;
+  const saved=readSettings().cinema;
+  const {roomForLayout,rememberRoom}=require("./room-layout-follow.cjs");
+  const roomId=roomForLayout(saved,layout,readCinemaProfile,builtinRooms().list());
+  const room=roomId?readCinemaProfile(roomId):null;
+  const accepted = await nativeRendererCommandAck({ type: "setLayout", layout }, "setLayout");
+  if(accepted && room){
+    const settings=cinemaProfiles.validateSettings({...saved.settings,speakers:{}});
+    if(!await nativeRendererCommandAck({type:"setCinema",settings,profile:room.filePath},"setCinema",30000)) {
+      const previousLayout=readCinemaProfile(saved.profileId).profile.layout;
+      await nativeRendererCommandAck({type:"setLayout",layout:previousLayout},"setLayout");
+      writeStartupLog(`auto room layout ${layout} failed; restored ${previousLayout}`);
+      return false;
+    }
+    const previous=readCinemaProfile(saved.profileId).profile;
+    const memory=rememberRoom(saved,saved.profileId,previous.layout);
+    writeSettings({cinema:rememberRoom({...memory,settings},roomId,layout)});
+    for(const win of BrowserWindow.getAllWindows())if(!win.isDestroyed())win.webContents.send("sda:room-layout-applied",{layout,profileId:roomId});
+    writeStartupLog(`auto room layout ${layout} room=${roomId} applied`);
+  }
+  writeStartupLog(`setLayout ${layout} ACK -> ${accepted}`);
+  return accepted;
+}));
+ipcMain.handle("sda:native-renderer-stereo-mode", async (_event, mode) => {
+  if (!["original", "dry", "room"].includes(mode)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setStereoMode", mode }, "setStereoMode");
+  writeStartupLog(`setStereoMode ${mode} ACK -> ${accepted}`);
+  return accepted;
+});
+const cinemaProfileDirectory = () => path.join(app.getPath("userData"), "cinema-rooms");
+let exclusiveHeadphoneId = null;
+let exclusiveAudioQueue = Promise.resolve();
+function exclusiveAudioUpdate(action) {
+  const result = exclusiveAudioQueue.then(action);
+  exclusiveAudioQueue = result.catch(() => {});
+  return result;
+}
+let builtinRoomLibrary;
+const builtinRooms = () => builtinRoomLibrary ??= require("./builtin-rooms.cjs").createBuiltinRooms(
+  path.join(__dirname,"builtin-rooms"),path.join(app.getPath("userData"),"builtin-room-cache"));
+let roomLabService;
+const roomLab = () => roomLabService ??= createRoomLab({
+  runtimeFile: process.env.SDA_ROOM_RUNTIME ?? path.join(__dirname,"room-simulator","runtime.json"),
+  storeRoot:app.getPath("userData"),
+  assetsRoot:app.isPackaged ? path.join(__dirname,"web") : path.resolve(__dirname,"../web/public"),
+});
+ipcMain.handle("sda:room-lab-status",()=>roomLab().status());
+ipcMain.handle("sda:room-lab-generate",(_event,config)=>roomLab().generate(config));
+ipcMain.handle("sda:room-lab-cancel",()=>roomLab().cancel());
+app.on("before-quit",()=>roomLabService?.cancel());
+ipcMain.handle("sda:comparison-gain", async (_event,gainDb)=>{
+  if(!Number.isFinite(gainDb)||gainDb < -40||gainDb > 0)return false;
+  return nativeRendererCommandAck({type:"setComparisonGain",gainDb},"setComparisonGain");
+});
+const defaultCinemaSettings = () => cinemaProfiles.validateSettings({ enabled: false, directDb: 0, earlyDb: 0, lateDb: 0, earlyMs: 50,
+  bassEnabled: false, crossoverHz: 80, bassDb: 0, speakers: {} });
+function readCinemaProfile(id) {
+  if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("房间档案 ID 无效");
+  if (builtinRooms().has(id)) return builtinRooms().read(id);
+  const filePath = path.join(cinemaProfileDirectory(), `${id}.json`);
+  if (fs.statSync(filePath).size > 64 * 1024 * 1024) throw new Error("房间档案过大");
+  const bytes = fs.readFileSync(filePath);
+  if (cinemaProfiles.roomId(bytes) !== id) throw new Error("房间档案完整性校验失败");
+  return { filePath, profile: cinemaProfiles.validateRoom(JSON.parse(bytes.toString("utf8"))) };
+}
+ipcMain.handle("sda:cinema-settings", () => {
+  try {
+    const value = readSettings().cinema;
+    if (!value) return { settings: defaultCinemaSettings(), profileId: null };
+    const settings = cinemaProfiles.validateSettings(value.settings);
+    if (value.profileId) readCinemaProfile(value.profileId);
+    return { settings, profileId: value.profileId ?? null };
+  } catch (error) {
+    return { settings: defaultCinemaSettings(), profileId: null, error: String(error) };
+  }
+});
+ipcMain.handle("sda:cinema-rooms", () => {
+  const builtins=builtinRooms().list();
+  if (!fs.existsSync(cinemaProfileDirectory())) return builtins;
+  return [...builtins,...fs.readdirSync(cinemaProfileDirectory()).filter(name => /^[a-f0-9]{64}\.json$/.test(name)&&!builtinRooms().has(name.slice(0,-5))).flatMap(name => {
+    try { const id = name.slice(0, -5); return [cinemaProfiles.roomSummary(readCinemaProfile(id).profile, id)]; }
+    catch { return []; }
+  })];
+});
+ipcMain.handle("sda:cinema-import", async event => {
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: "导入实测房间档案", filters: [{ name: "SDA room profile", extensions: ["json"] }], properties: ["openFile"],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const filePath = result.filePaths[0];
+  if (fs.statSync(filePath).size > 64 * 1024 * 1024) throw new Error("房间档案超过 64 MB");
+  const profile = cinemaProfiles.validateRoom(JSON.parse(fs.readFileSync(filePath, "utf8")));
+  const bytes = Buffer.from(JSON.stringify(profile));
+  const id = cinemaProfiles.roomId(bytes);
+  fs.mkdirSync(cinemaProfileDirectory(), { recursive: true });
+  fs.writeFileSync(path.join(cinemaProfileDirectory(), `${id}.json`), bytes);
+  return cinemaProfiles.roomSummary(profile, id);
+});
+ipcMain.handle("sda:cinema-delete", (_event, id) => {
+  if (builtinRooms().has(id)) throw new Error("内置房间档案不可删除");
+  const { filePath } = readCinemaProfile(id);
+  if (readSettings().cinema?.profileId === id) throw new Error("请先应用其他房间档案");
+  fs.unlinkSync(filePath);
+  return true;
+});
+ipcMain.handle("sda:cinema-export-report", async (event, id) => {
+  const summary = cinemaProfiles.roomSummary(readCinemaProfile(id).profile, id);
+  const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: "导出测量报告", defaultPath: "SDA-room-report.json", filters: [{name:"JSON",extensions:["json"]}],
+  });
+  if (result.canceled || !result.filePath) return false;
+  fs.writeFileSync(result.filePath, JSON.stringify(summary, null, 2));
+  return true;
+});
+ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => exclusiveAudioUpdate(async () => {
+  const normalized = cinemaProfiles.validateSettings(settings);
+  if (exclusiveHeadphoneId && (normalized.enabled || normalized.monitor.enabled || normalized.monitor.hardware?.enabled)) {
+    throw new Error("请先关闭耳机模拟，再启用房间或监听处理");
+  }
+  const profile = profileId === null ? null : readCinemaProfile(profileId).filePath;
+  const accepted = !nativeRenderer?.stdin || await nativeRendererCommandAck({ type: "setCinema", settings: normalized, profile }, "setCinema", 30000);
+  if (accepted) {
+    const previous=readSettings().cinema;
+    const next={...previous,settings:normalized,profileId};
+    writeSettings({cinema:profileId?require("./room-layout-follow.cjs").rememberRoom(next,profileId,readCinemaProfile(profileId).profile.layout):next});
+  }
+  writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
+  return accepted;
+}));
+ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck({ type: "setObjectHrtf", enabled }, "setObjectHrtf");
+  writeStartupLog(`setObjectHrtf ${enabled} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-directional-hrtf", async (_event, enabled) => {
+  if(typeof enabled!=="boolean")return false;
+  const accepted=await nativeRendererCommandAck({type:"setDirectionalHrtf",enabled},"setDirectionalHrtf");
+  writeStartupLog(`setDirectionalHrtf enabled=${enabled} -> ${accepted}`);return accepted;
+});
+ipcMain.handle("sda:native-renderer-near-field", async (_event, settings) => {
+  if(typeof settings?.enabled!=="boolean"||!Number.isFinite(settings.metresPerUnit)||settings.metresPerUnit<0.25||settings.metresPerUnit>4)return false;
+  const accepted=await nativeRendererCommandAck({type:"setNearField",settings:{enabled:settings.enabled,metresPerUnit:settings.metresPerUnit}},"setNearField");
+  writeStartupLog(`setNearField enabled=${settings.enabled} metresPerUnit=${settings.metresPerUnit} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-source-extent", async (_event, settings) => {
+  if(typeof settings?.enabled!=="boolean"||![settings.width,settings.diffusion].every(v=>Number.isFinite(v)&&v>=0&&v<=1))return false;
+  const accepted=await nativeRendererCommandAck({type:"setSourceExtent",settings:{enabled:settings.enabled,width:settings.width,diffusion:settings.diffusion}},"setSourceExtent");
+  writeStartupLog(`setSourceExtent enabled=${settings.enabled} width=${settings.width} diffusion=${settings.diffusion} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-output-active", (_event, active) => {
+  return typeof active === "boolean" && nativeRendererCommand({ type: "setOutputActive", active });
+});
+ipcMain.handle("sda:native-renderer-start-at", async (_event, origin) => {
+  if (!Number.isSafeInteger(origin) || origin < 0) return false;
+  const accepted = await nativeRendererCommandAck({ type: "startAt", origin }, "startAt");
+  writeStartupLog(`startAt ${origin} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-pause", (_event, paused) => {
+  if (typeof paused !== "boolean") return false;
+  if (paused) publishNativeRendererObjectActivity([]);
+  return nativeRendererCommand({ type: "pause", paused });
+});
+ipcMain.handle("sda:native-renderer-frame", async (_event, samplePos, entries, events) => {
+  let result = await nativeRendererBatch(samplePos, entries, events);
+  if (!result.accepted && /unknown source|duplicate codec batch clock/i.test(result.reason ?? "")) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    result = await nativeRendererBatch(samplePos, entries, events);
+  }
+  writeStartupLog(`frame ${samplePos} entries=${entries?.length ?? 0} -> accepted=${result.accepted} samples=${result.samples} reason=${result.reason ?? ""}`);
+  return result;
+});
+ipcMain.handle("sda:head-tracking-recenter", () => recenterHeadTracking());
+
 ipcMain.handle("sda:pick-file", async (event) => {
   // 挂到发起窗口上：弹窗跟随主窗口置顶，不会跑到后台/其他显示器；
   // 且异步版本不会冻结主进程事件循环，播放中的 IPC 读文件不受影响。
@@ -337,6 +1721,35 @@ ipcMain.handle("sda:pick-file", async (event) => {
     }
   }
   return filePath;
+});
+
+const browseMedia = createMediaBrowser({app, readSettings, writeSettings, isMediaFile});
+ipcMain.handle("sda:media-browser", (_event, action, value) => browseMedia(action, value));
+const browsePersonalHrtf = createMediaBrowser({app, readSettings, writeSettings, isMediaFile: name => /\.(sofa|phrtf)$/i.test(name)});
+ipcMain.handle("sda:personal-hrtf-browser", (_event, action, value) => {
+  if (action === "folder") {if(typeof value!=="string"||!path.isAbsolute(value)||!fs.statSync(value).isDirectory())throw new Error("请选择导出目录");return [value];}
+  return browsePersonalHrtf(action, value);
+});
+ipcMain.handle("sda:list-personal-hrtf", () => personalHrtf.listPersonal(personalHrtfDirectory()));
+let personalHrtfImportBusy = false;
+ipcMain.handle("sda:rename-personal-hrtf", (_event,id,name) => require("./personal-hrtf-library.cjs").rename(personalHrtfDirectory(),id,name));
+ipcMain.handle("sda:personal-hrtf-archive", async (_event,action,id,value) => {
+  if(!["copy","export"].includes(action))throw new Error("未知档案操作");
+  if(personalHrtfImportBusy)throw new Error("个人档案正在处理");personalHrtfImportBusy=true;
+  try{return await personalHrtf.importInWorker(null,personalHrtfDirectory(),{kind:"archive",action,id,...(action==="copy"?{name:value}:{directory:value})});}
+  finally{personalHrtfImportBusy=false;}
+});
+ipcMain.handle("sda:generate-personal-hrtf", async (_event, parameters, assessment) => {
+  if (personalHrtfImportBusy) throw new Error("个人 HRTF 正在处理");
+  personalHrtfImportBusy = true;
+  try { return await personalHrtf.importInWorker(null, personalHrtfDirectory(), { parameters, assessment }); }
+  finally { personalHrtfImportBusy = false; }
+});
+ipcMain.handle("sda:import-personal-hrtf", async (_event, sourcePath) => {
+  if (personalHrtfImportBusy) throw new Error("已有 SOFA 正在导入");
+  personalHrtfImportBusy = true;
+  try { return await personalHrtf.importInWorker(sourcePath, personalHrtfDirectory()); }
+  finally { personalHrtfImportBusy = false; }
 });
 
 ipcMain.handle("sda:pick-folder", async (event) => {
@@ -365,19 +1778,19 @@ ipcMain.handle("sda:open-path", (_e, filePath) => {
   return { id, size: stat.size, name: path.basename(filePath) };
 });
 
-ipcMain.handle("sda:read-slice", (_e, id, offset, length) => {
+ipcMain.handle("sda:read-slice", async (_e, id, offset, length) => {
   const filePath = openFiles.get(id);
   if (!filePath) throw new Error("unknown file id");
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > MAX_SLICE_BYTES) {
     throw new Error("invalid file slice");
   }
-  const fd = fs.openSync(filePath, "r");
+  const file = await fs.promises.open(filePath, "r");
   try {
     const buf = Buffer.alloc(length);
-    const read = fs.readSync(fd, buf, 0, length, offset);
-    return buf.subarray(0, read);
+    const { bytesRead } = await file.read(buf, 0, length, offset);
+    return buf.subarray(0, bytesRead);
   } finally {
-    fs.closeSync(fd);
+    await file.close();
   }
 });
 
@@ -403,12 +1816,13 @@ ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
   if (typeof assetPath !== "string" || !BUNDLED_HRTF_PATTERN.test(assetPath)) {
     throw new Error("内置 HRTF 路径无效");
   }
-  const root = webAssetRoot();
-  if (!root) throw new Error("找不到内置 HRTF 资产目录");
-  const hrtfRoot = path.resolve(root, "hrtf");
+  const setDir = assetPath.split("/")[0];
+  const root = personalHrtf.PERSONAL_SET.test(setDir) ? personalHrtfDirectory() : webAssetRoot();
+  if (!root) throw new Error("找不到 HRTF 资产目录");
+  const hrtfRoot = path.resolve(root, setDir);
   const filePath = path.resolve(root, ...assetPath.split("/"));
   if (path.dirname(filePath) !== hrtfRoot) throw new Error("内置 HRTF 路径越界");
-  if (assetPath.endsWith("hrtf-set.json")) console.log("[SDA] 从 Electron 内置资源加载 HRTF");
+  if (assetPath.endsWith("hrtf-set.json")) writeStartupLog("[SDA] 从 Electron 内置资源加载 HRTF");
   return fs.readFileSync(filePath);
 });
 
@@ -464,14 +1878,25 @@ ipcMain.handle("sda:delete-headphone-profile", (_e, id) => {
 });
 
 app.whenReady().then(() => {
+  for (const event of ["lock-screen", "unlock-screen", "suspend", "resume"]) {
+    powerMonitor.on(event, () => {
+      writeStartupLog(`[remote] system=${event} role=${remoteSession.role} phase=${remoteSession.phase}`);
+    });
+  }
   boostProcessTreePriority();
   setInterval(boostProcessTreePriority, 30_000).unref();
   createWindow();
+  if (readHeadTrackingEnabled() && resolvedHeadTrackingHelper()) {
+    try { startHeadTracking(); } catch (error) { console.warn("[SDA] 头部追踪自动启动失败:", error); }
+  }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-app.on("window-all-closed", () => {
+app.on("window-all-closed", async () => {
+  await remoteSession.stop();
+  await stopHeadTrackingGracefully(false);
+  stopNativeRenderer();
   if (process.platform !== "darwin") app.quit();
 });

@@ -1,3 +1,5 @@
+import AvatarSkinControl from "./AvatarSkinControl";
+import { type HrtfTestVisual, testVisualPosition } from "../phrtf";
 /**
  * Live 3D object visualization — the spiritual successor to Omniphony
  * Studio's OSC view: every audio object is a glowing dot moving through a
@@ -5,12 +7,16 @@
  * 7.1.4 virtual layout used by the renderer.
  */
 
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, RoundedBox } from "@react-three/drei";
+import { Html, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
-import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
+import { ImmersiveCamera, immersiveInputTarget, type ImmersiveView } from "./ImmersiveCamera";
+import { Maximize, Minimize, PersonStanding, Plane, Eye } from "lucide-react";
+import { sphericalToWebAudio } from "../../../../packages/renderer/src/coords";
+import type { VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
+import { speakerLabel } from "../speaker-labels";
 export type { VisualObject };
 
 const ROOM = 2; // half-extent of the room footprint in scene units
@@ -25,24 +31,20 @@ export type Theme = "dark" | "light";
 /** 房间配色：深色 / 浅色两套 */
 const PALETTE = {
   dark: {
-    bg: "#0c101c",
-    floor: "#101a30",
-    wallSide: "#0d1628",
-    wallFront: "#12203c",
-    gridMain: "#223344",
-    gridWall: "#141d33",
-    outline: "#26304d",
-    floorGrid: "#1a2338",
+    bg: "#171819",
+    floor: "#242827",
+    gridMain: "#4c5851",
+    gridWall: "#333b36",
+    outline: "#637168",
+    floorGrid: "#343d37",
   },
   light: {
-    bg: "#e9edf4",
-    floor: "#dde4ef",
-    wallSide: "#d0d9e8",
-    wallFront: "#e2e9f4",
-    gridMain: "#a8b5cd",
-    gridWall: "#c3cddd",
-    outline: "#9dabc5",
-    floorGrid: "#c8d1e2",
+    bg: "#eceeed",
+    floor: "#dce2dd",
+    gridMain: "#9aab9f",
+    gridWall: "#b8c5bc",
+    outline: "#879c8e",
+    floorGrid: "#b9c8be",
   },
 } as const;
 
@@ -50,6 +52,24 @@ type Palette = (typeof PALETTE)[Theme];
 
 type RequestFrame = () => void;
 const RequestFrameContext = createContext<RequestFrame>(() => {});
+
+function ViewportFraming({mobile=false}:{mobile?:boolean}) {
+  const { camera, size, invalidate } = useThree();
+  useEffect(() => {
+    camera.zoom = Math.min(1, size.width / Math.max(1, size.height) / (mobile ? .85 : 1.5));
+    camera.updateProjectionMatrix();
+    invalidate();
+  }, [camera, size.width, size.height, invalidate, mobile]);
+  return null;
+}
+
+function ObjectListRefresh({ objects }: { objects: readonly VisualObject[] }) {
+  const requestFrame = useContext(RequestFrameContext);
+  // Removing the last dot also removes its useFrame callback. Repaint the
+  // cleared scene explicitly, including while playback/camera are paused.
+  useEffect(() => requestFrame(), [objects, requestFrame]);
+  return null;
+}
 
 function FrameScheduler({ children, maxFps }: { children: ReactNode; maxFps: number | null }) {
   const invalidate = useThree((state) => state.invalidate);
@@ -92,7 +112,7 @@ function GenelecSpeaker() {
   return (
     <group>
       {/* 圆角箱体（Polar White 极地白） */}
-      <RoundedBox args={[0.13, 0.18, 0.11]} radius={0.03} smoothness={2}>
+      <RoundedBox userData={{ immersiveCabinet: true }} args={[0.13, 0.18, 0.11]} radius={0.03} smoothness={2}>
         <meshStandardMaterial color="#e8eaec" roughness={0.4} metalness={0.15} />
       </RoundedBox>
       {/* 正面大椭圆波导（DCW，覆盖整个前障板） */}
@@ -118,7 +138,7 @@ function GenelecSpeaker() {
 function GenelecSub() {
   return (
     <group>
-      <RoundedBox args={[0.24, 0.22, 0.2]} radius={0.04} smoothness={2}>
+      <RoundedBox userData={{ immersiveCabinet: true }} args={[0.24, 0.22, 0.2]} radius={0.04} smoothness={2}>
         <meshStandardMaterial color="#e8eaec" roughness={0.4} metalness={0.15} />
       </RoundedBox>
       {/* 正面低音单元（纸盆）—— 前移避开与箱体面板的 z-fighting */}
@@ -142,7 +162,62 @@ function GenelecSub() {
   );
 }
 
-const SpeakerRing = memo(function SpeakerRing({ layout }: { layout: readonly VirtualSpeaker[] }) {
+function FocusSpeaker({ speaker, dimmed, focused, onFocus, interactive = true }: {
+  interactive?: boolean;
+  speaker: { name: string; isLfe?: boolean; position: THREE.Vector3; quaternion: THREE.Quaternion };
+  dimmed: boolean;
+  focused: boolean;
+  onFocus?: (name: string) => void;
+}) {
+  const group = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
+  const { gl, invalidate } = useThree();
+  useEffect(() => {
+    group.current?.traverse(object => {
+      if (!(object instanceof THREE.Mesh) || object.userData.focusHitbox) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        material.transparent = dimmed;
+        material.opacity = dimmed ? 0.22 : 1;
+        material.depthWrite = !dimmed;
+        material.needsUpdate = true;
+      }
+    });
+    invalidate();
+  }, [dimmed, invalidate]);
+  useEffect(() => {
+    if (!interactive || !hovered) return;
+    gl.domElement.style.cursor = onFocus ? "pointer" : "not-allowed";
+    return () => { gl.domElement.style.cursor = ""; };
+  }, [hovered, gl, onFocus, interactive]);
+  return <group ref={group} name={`speaker:${speaker.name}`} position={speaker.position} quaternion={speaker.quaternion}
+    userData={{ speakerName: speaker.name, focused, dimmed }}
+    onClick={interactive ? event => {
+      if (event.delta > 4) return;
+      event.stopPropagation();
+      onFocus?.(speaker.name);
+    } : undefined}
+    onPointerOver={interactive ? event => { event.stopPropagation(); setHovered(true); } : undefined}
+    onPointerOut={interactive ? () => setHovered(false) : undefined}>
+    {speaker.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
+    {interactive && <mesh userData={{ focusHitbox: true }}>
+      <boxGeometry args={speaker.isLfe ? [0.3, 0.3, 0.27] : [0.22, 0.28, 0.2]} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+    </mesh>}
+    {interactive && hovered && <Html position={[0, 0.23, 0]} center style={{ pointerEvents: "none" }}>
+      <span className="speaker-tooltip">{speakerLabel(speaker.name)} · {!onFocus ? "请先取消声道静音和独奏" : focused ? "取消聚焦" : "聚焦"}</span>
+    </Html>}
+  </group>;
+}
+
+const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeakerFocus, hiddenSpeakerNames, interactive = true }: {
+  interactive?: boolean;
+  layout: readonly VirtualSpeaker[];
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
+  testVisual?: HrtfTestVisual|null;
+}) {
   const speakers = useMemo(
     () =>
       layout.map((s) => {
@@ -161,10 +236,9 @@ const SpeakerRing = memo(function SpeakerRing({ layout }: { layout: readonly Vir
   );
   return (
     <group>
-      {speakers.map((s) => (
-        <group key={s.name} position={s.position} quaternion={s.quaternion}>
-          {s.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
-        </group>
+      {speakers.filter(s => !hiddenSpeakerNames?.has(s.name)).map((s) => (
+        <FocusSpeaker key={s.name} interactive={interactive} speaker={s} dimmed={!!focusedSpeakers?.size && !focusedSpeakers.has(s.name)}
+          focused={focusedSpeakers?.has(s.name) ?? false} onFocus={onSpeakerFocus} />
       ))}
     </group>
   );
@@ -180,18 +254,6 @@ const Room = memo(function Room({ p }: { p: Palette }) {
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, FLOOR_Y + 0.001, 0]}>
         <planeGeometry args={[ROOM * 2, ROOM * 2]} />
         <meshBasicMaterial color={p.floor} transparent opacity={0.45} depthWrite={false} />
-      </mesh>
-      {/* 两面实体侧墙（-x / -z），半透明，不挡对象。
-          depthWrite=false 是关键：透明墙若写深度，按对象中心排序的透明队列里
-          墙先画时会把其后绘制的对象光晕沿墙面直线切掉一块（遮挡假象）。 */}
-      <mesh rotation={[0, Math.PI / 2, 0]} position={[-ROOM + 0.001, WALL_MID_Y, 0]}>
-        <planeGeometry args={[ROOM * 2, WALL_H]} />
-        <meshBasicMaterial color={p.wallSide} transparent opacity={0.75} depthWrite={false} />
-      </mesh>
-      {/* 正面墙（听者朝向，-z）颜色稍亮以示区分 */}
-      <mesh position={[0, WALL_MID_Y, -ROOM + 0.001]}>
-        <planeGeometry args={[ROOM * 2, WALL_H]} />
-        <meshBasicMaterial color={p.wallFront} transparent opacity={0.85} depthWrite={false} />
       </mesh>
       {/* 墙面参考网格（4 × WALL_H，压扁局部高度轴） */}
       <gridHelper
@@ -215,13 +277,50 @@ const Room = memo(function Room({ p }: { p: Palette }) {
   );
 });
 
+/** MPEG-H OAM uses full-sphere directions, including negative elevation. */
+const SphericalRoom = memo(function SphericalRoom({ p }: { p: Palette }) {
+  const geometry = useMemo(() => {
+    const points: number[] = [];
+    const segment = (a: number[], b: number[]) => points.push(...a, ...b);
+    for (const elevation of [-60, -30, 0, 30, 60]) {
+      const angle = elevation * Math.PI / 180;
+      const radius = ROOM * Math.cos(angle), y = ROOM * Math.sin(angle);
+      for (let i = 0; i < 96; i++) {
+        const a = i * Math.PI / 48, b = (i + 1) * Math.PI / 48;
+        segment([radius * Math.cos(a), y, radius * Math.sin(a)], [radius * Math.cos(b), y, radius * Math.sin(b)]);
+      }
+    }
+    for (let meridian = 0; meridian < 6; meridian++) {
+      const az = meridian * Math.PI / 6;
+      for (let i = 0; i < 96; i++) {
+        const a = i * Math.PI / 48, b = (i + 1) * Math.PI / 48;
+        segment([ROOM * Math.cos(a) * Math.cos(az), ROOM * Math.sin(a), ROOM * Math.cos(a) * Math.sin(az)],
+          [ROOM * Math.cos(b) * Math.cos(az), ROOM * Math.sin(b), ROOM * Math.cos(b) * Math.sin(az)]);
+      }
+    }
+    return new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+  }, []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <group name="mpegh-spherical-field">
+    <lineSegments geometry={geometry}><lineBasicMaterial color={p.outline} transparent opacity={0.55} depthWrite={false}/></lineSegments>
+    <Html position={[0, ROOM + 0.2, 0]} center style={{ pointerEvents: "none", whiteSpace: "nowrap", color: p.outline, fontSize: 11 }}>上方 +90°</Html>
+    <Html position={[0, -ROOM - 0.2, 0]} center style={{ pointerEvents: "none", whiteSpace: "nowrap", color: p.outline, fontSize: 11 }}>下方 −90°</Html>
+  </group>;
+});
+
 /** 听者：仿纽曼 KU 100 人头麦 —— 光滑无五官的蛋形头、两侧硅胶耳廓、
  *  平直颈部切口 + 话筒立杆。耳廓中心对齐 y=0（ADM 耳位）。 */
 const Listener = memo(function Listener() {
-  const gray = "#8a93a6";
-  const grayDark = "#767e91";
+  const gray = "#a3a3a3";
+  const grayDark = "#898989";
   return (
-    <group position={[0, 0, 0]}>
+    <group
+      name="listener"
+      position={[0, 0, 0]}
+      onClick={(event) => event.stopPropagation()}
+      onPointerOver={(event) => event.stopPropagation()}
+      onPointerMove={(event) => event.stopPropagation()}
+    >
       {/* 头：蛋形（略高、前后稍扁） */}
       <mesh scale={[0.85, 1.08, 0.92]}>
         <sphereGeometry args={[0.16, 16, 16]} />
@@ -268,28 +367,49 @@ const Listener = memo(function Listener() {
       {/* 立杆 + 落地脚盘 */}
       <mesh position={[0, -0.43, 0]}>
         <cylinderGeometry args={[0.014, 0.014, 0.37, 12]} />
-        <meshStandardMaterial color="#3d4457" roughness={0.4} metalness={0.4} />
+        <meshStandardMaterial color="#484848" roughness={0.4} metalness={0.4} />
       </mesh>
       <mesh position={[0, FLOOR_Y + 0.016, 0]}>
         <cylinderGeometry args={[0.09, 0.11, 0.024, 32]} />
-        <meshStandardMaterial color="#3d4457" roughness={0.5} metalness={0.3} />
+        <meshStandardMaterial color="#484848" roughness={0.5} metalness={0.3} />
       </mesh>
     </group>
   );
 });
 
+function ObjectName({id,theme}:{id:number;theme:Theme}) {
+  const texture=useMemo(()=>{
+    const canvas=document.createElement("canvas");canvas.width=256;canvas.height=64;
+    const ctx=canvas.getContext("2d")!;
+    ctx.fillStyle=theme==="light"?"rgba(255,255,255,.92)":"rgba(24,28,30,.9)";
+    ctx.beginPath();ctx.roundRect(2,2,252,60,16);ctx.fill();
+    ctx.fillStyle=theme==="light"?"#18332a":"#f0f5f2";
+    ctx.font="500 28px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(`对象 ${id}`,128,33);
+    const value=new THREE.CanvasTexture(canvas);value.colorSpace=THREE.SRGBColorSpace;return value;
+  },[id,theme]);
+  useEffect(()=>()=>texture.dispose(),[texture]);
+  return <sprite position={[0,.18,0]} scale={[.64,.16,1]} renderOrder={13}><spriteMaterial map={texture} transparent depthTest={false} depthWrite={false} toneMapped={false}/></sprite>;
+}
+
 const ObjectDot = memo(function ObjectDot({
   obj,
+  showName=false,
   muted,
   sounding,
+  theme,
 }: {
+  showName?:boolean;
   obj: VisualObject;
   muted: boolean;
   sounding: boolean;
+  theme: Theme;
 }) {
   const ref = useRef<THREE.Group>(null);
+  const initialPosition = useMemo(() => admToScene(obj.pos), []);
   const target = useMemo(() => new THREE.Vector3(), []);
   const requestFrame = useContext(RequestFrameContext);
+  useEffect(() => requestFrame(), [requestFrame, obj.pos[0], obj.pos[1], obj.pos[2]]);
   useFrame((_, dt) => {
     if (!ref.current) return;
     // Smooth toward the latest event position (renderer ramps audio; we ease
@@ -302,30 +422,38 @@ const ObjectDot = memo(function ObjectDot({
   });
   const height = obj.pos[2]; // ADM z = up
   const color = useMemo(
-    () => new THREE.Color().setHSL(0.55 - height * 0.25, 0.9, 0.6),
-    [height],
+    () => theme === "light"
+      ? new THREE.Color().setHSL(0.55 - height * 0.25, 0.78, 0.32, THREE.SRGBColorSpace)
+      : new THREE.Color().setHSL(0.55 - height * 0.25, 0.9, 0.6),
+    [height, theme],
   );
   // ADM size[0]（宽度 0..1）→ 半透明扩散光晕半径
   const spread = Math.min(1, Math.max(0, obj.size?.[0] ?? 0));
   // 静音对象：调暗（保留轮廓可辨识位置，区别于有声对象）
-  const dotOpacity = muted ? 0.18 : 1;
+  const dotOpacity = muted ? (theme === "light" ? 0.35 : 0.18) : 1;
   return (
-    <group ref={ref} renderOrder={10}>
+    <group ref={ref} position={initialPosition} renderOrder={10}>
+      {showName&&<ObjectName id={obj.id} theme={theme}/>}
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
       <mesh renderOrder={10}>
         <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
         <meshBasicMaterial color={color} transparent opacity={muted ? 0.03 : sounding ? 0.18 : 0.1} depthTest={false} depthWrite={false} />
       </mesh>
-      <mesh renderOrder={11}>
+      {theme === "light" && <mesh renderOrder={11}>
+        <sphereGeometry args={[0.069, 12, 12]} />
+        <meshBasicMaterial color="#173d40" transparent opacity={muted ? 0.3 : 0.9} toneMapped={false} depthTest={false} depthWrite={false} />
+      </mesh>}
+      <mesh renderOrder={12}>
         <sphereGeometry args={[0.06, 10, 10]} />
-        <meshBasicMaterial color={color} transparent opacity={dotOpacity} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={dotOpacity} toneMapped={theme !== "light"} depthTest={false} depthWrite={false} />
       </mesh>
     </group>
   );
 }, (prev, next) => {
   const a = prev.obj;
   const b = next.obj;
-  return prev.muted === next.muted
+  return prev.showName === next.showName && prev.muted === next.muted
+    && prev.theme === next.theme
     && prev.sounding === next.sounding
     && a.id === b.id
     && a.pos[0] === b.pos[0]
@@ -337,13 +465,45 @@ const ObjectDot = memo(function ObjectDot({
     && a.gainDb === b.gainDb;
 });
 
+function HrtfTestMarker({visual,layout}:{visual:HrtfTestVisual;layout:readonly VirtualSpeaker[]}) {
+ const ref=useRef<THREE.Group>(null),requestFrame=useContext(RequestFrameContext);
+ useEffect(()=>{requestFrame();},[visual,requestFrame]);
+ useFrame(()=>{
+  if(!ref.current)return;
+  const t=visual.elapsed();ref.current.visible=t>=0&&t<=visual.duration;
+  const [x,y,z]=testVisualPosition(visual.trial,t/visual.duration);
+  ref.current.position.set(x*ROOM,y*ROOM,z*ROOM);ref.current.lookAt(0,0,0);
+  if(t<visual.duration)requestFrame();
+ });
+ const moving=visual.trial.kind==="motion";
+ const position=testVisualPosition(visual.trial,0);
+ const existing=!moving&&layout.find(s=>!s.isLfe&&sphericalToWebAudio(s).every((v,i)=>Math.abs(v-position[i]!)<.001));
+ return <group ref={ref} visible={false}>
+  {moving?<mesh><sphereGeometry args={[.085,24,16]}/><meshBasicMaterial color="#ffb020"/></mesh>:existing?null:<GenelecSpeaker/>}
+  <mesh><sphereGeometry args={[moving?.14:.25,24,16]}/><meshBasicMaterial color="#ffb020" transparent opacity={.22} depthWrite={false}/></mesh>
+  <Html center position={[0,.32,0]} style={{pointerEvents:"none",whiteSpace:"nowrap",color:"#fff",background:"#684200",border:"1px solid #ffb020",borderRadius:8,padding:"4px 8px",fontSize:12}}>{moving?"测试 OBJ":existing?`${existing.name} · 测试中`:"测试音箱"}</Html>
+ </group>;
+}
+
 export function ObjectView({
+  spherical = false,
+  immersive = false,
+  mobile = false,
+  showObjectNames = false,
   objects,
   layout,
   theme = "dark",
   mutedIds,
   soundingIds,
+  focusedSpeakers,
+  onSpeakerFocus,
+  hiddenSpeakerNames,
+  testVisual,
 }: {
+  spherical?: boolean;
+  immersive?: boolean;
+  mobile?: boolean;
+  showObjectNames?:boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
@@ -351,14 +511,32 @@ export function ObjectView({
   mutedIds?: ReadonlySet<number>;
   /** Worklet-confirmed post-gain/post-mute object signal IDs. */
   soundingIds?: ReadonlySet<number>;
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
+  testVisual?: HrtfTestVisual|null;
 }) {
   const p = PALETTE[theme];
+  const shell=useRef<HTMLDivElement>(null);
+  const [view,setView]=useState<ImmersiveView>("first"),[flying,setFlying]=useState(false);
+  const [fullscreen,setFullscreen]=useState(false),[navigationError,setNavigationError]=useState("");
+  useEffect(()=>{
+    if(!immersive)return;
+    const host=shell.current;
+    const key=(e:KeyboardEvent)=>{if(e.code!=="F5")return;e.preventDefault();e.stopPropagation();if(!e.repeat&&!immersiveInputTarget(e.target))setView(v=>v==="first"?"second":v==="second"?"third":"first");};
+    const change=()=>setFullscreen(document.fullscreenElement===shell.current);
+    change();
+    window.addEventListener("keydown",key,true);document.addEventListener("fullscreenchange",change);
+    return()=>{window.removeEventListener("keydown",key,true);document.removeEventListener("fullscreenchange",change);if(host&&document.fullscreenElement===host)void document.exitFullscreen().catch(()=>{});};
+  },[immersive]);
+  const toggleFullscreen=async()=>{try{setNavigationError("");if(document.fullscreenElement===shell.current)await document.exitFullscreen();else await shell.current?.requestFullscreen();}catch{setNavigationError("无法进入全屏，请重试。");}};
   const rendererMode = window.sdaDesktop?.rendererMode;
-  const isSwiftShader = rendererMode === "swiftshader";
+  const isSwiftShader = mobile || rendererMode === "swiftshader";
   return (
+    <div data-field-shape={spherical ? "sphere" : "room"} ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
     <Canvas
       frameloop="demand"
-      camera={{ position: [0, 1.3, 4.2], fov: 55 }}
+      camera={{ position: [5, 4.2, 6], fov: 50 }}
       style={{ background: p.bg }}
       // SwiftShader is software rasterization: render one device pixel per CSS
       // pixel and skip MSAA to avoid multiplying the fill cost.
@@ -370,27 +548,43 @@ export function ObjectView({
           software rasterization competing with the audio renderer for CPU —
           keeps a 30 fps display-aligned cap. */}
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
-        <Room p={p} />
-        <SpeakerRing layout={layout} />
-        <Listener />
+        <ObjectListRefresh objects={objects} />
+        {testVisual&&<HrtfTestMarker visual={testVisual} layout={layout.filter(s=>!hiddenSpeakerNames?.has(s.name))}/>}
+        {immersive ? <ImmersiveCamera view={view} onFlightChange={setFlying}/> : <ViewportFraming mobile={mobile} />}
+        {!immersive && (spherical ? <SphericalRoom p={p} /> : <Room p={p} />)}
+        <SpeakerRing interactive={!mobile} layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
+        {!immersive && <Listener />}
         {objects.map((o) => (
-          <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
+          <ObjectDot showName={showObjectNames} key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
         ))}
-        <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />
+        {!immersive && !spherical && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
         {/* 听者半身像的光照 */}
         <ambientLight intensity={0.75} />
         <directionalLight position={[2.5, 4, 2]} intensity={1.2} />
         {/* 左键拖动旋转视角 / 右键拖动平移 / 滚轮缩放空间 */}
-        <OrbitControls
+        {!immersive && <OrbitControls
           makeDefault
+          target={[0, spherical ? 0 : 0.5, 0]}
           enableDamping={!isSwiftShader}
           dampingFactor={0.08}
           rotateSpeed={0.9}
           minDistance={0.5}
           maxDistance={12}
-        />
+        />}
       </FrameScheduler>
     </Canvas>
+    {immersive&&<div className="immersive-hud">
+      <div className="immersive-toolbar">
+        <AvatarSkinControl/>
+        <span className={`immersive-motion${flying?" flying":""}`} role="status">{flying?<Plane size={15}/>:<PersonStanding size={15}/>} {flying?"飞行中":"步行"}</span>
+        <button onClick={()=>setView(v=>v==="first"?"second":v==="second"?"third":"first")} aria-label="切换第一、第二或第三人称视角"><Eye size={15}/>{view==="first"?"第一人称":view==="second"?"第二人称":"第三人称"}<kbd>F5</kbd></button>
+        <button onClick={()=>void toggleFullscreen()} aria-label={fullscreen?"退出全屏":"进入全屏"}>{fullscreen?<Minimize size={16}/>:<Maximize size={16}/>}</button>
+      </div>
+      <p>{fullscreen?"按住 Alt 显示鼠标 · 松开恢复转向 · Esc 释放鼠标":"按住画面拖动转向 · 松手停止"} · WASD 移动 · Shift 加速</p>
+      <p>空格跳跃 · 双击空格切换飞行 · F6 返回原点{flying?" · 空格上升 · Ctrl 下降":""}</p>
+      {navigationError&&<p role="alert">{navigationError}</p>}
+    </div>}
+    </div>
   );
 }
 

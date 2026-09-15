@@ -35,17 +35,16 @@
   --mp-track: rgba(255, 255, 255, 0.16);
   --mp-shimmer: rgba(230, 240, 255, 0.85);
   --mp-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  /* A stable navy tint stops the animated 3D backdrop from colouring the player. */
+  /* Neutral translucent glass lets the scene supply the colour. */
   --mp-glass-bg: linear-gradient(
     135deg,
-    rgba(20, 24, 35, 0.8),
-    rgba(10, 13, 21, 0.74)
+    rgba(255, 255, 255, 0.08),
+    rgba(0, 0, 0, 0.12)
   );
-  --mp-glass-line: rgba(235, 242, 255, 0.12);
+  --mp-glass-line: rgba(255, 255, 255, 0.08);
   --mp-glass-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 12px 30px rgba(0, 0, 0, 0.38),
-    0 2px 8px rgba(0, 0, 0, 0.2);
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    0 8px 24px rgba(0, 0, 0, 0.22);
   --mp-sheen: none;
 }
 
@@ -83,14 +82,13 @@
   --mp-text-shadow: none;
   --mp-glass-bg: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.88),
-    rgba(238, 243, 252, 0.8)
+    rgba(255, 255, 255, 0.24),
+    rgba(255, 255, 255, 0.08)
   );
-  --mp-glass-line: rgba(55, 75, 115, 0.14);
+  --mp-glass-line: rgba(255, 255, 255, 0.20);
   --mp-glass-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 12px 30px rgba(30, 45, 80, 0.14),
-    0 2px 8px rgba(30, 45, 80, 0.08);
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 8px 24px rgba(0, 0, 0, 0.12);
   --mp-sheen: none;
 }
 
@@ -182,7 +180,13 @@ h1 {
 .controls {
   display: flex;
   gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  align-items: center;
 }
+.controls > * { flex-shrink: 0; white-space: nowrap; }
+.controls > select { max-width: 310px; }
+header > h1 { flex-shrink: 0; white-space: nowrap; margin-right: 12px; }
 
 .settings-toggle,
 .settings-close {
@@ -509,6 +513,9 @@ aside {
 .float-buttons {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100vw - 28px);
   gap: 8px;
   order: -1;
 }
@@ -536,11 +543,157 @@ aside {
   border-color: var(--drag-border);
 }
 
+.float-buttons .head-tracking-toggle {
+  border-color: color-mix(in srgb, #27a86b 55%, var(--border));
+  color: #42c982;
+  font-weight: 600;
+}
+
 .float-panel {
   width: min(320px, calc(100vw - 28px));
   max-height: 72vh;
   overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.head-tracking-panel {
+  width: min(340px, calc(100vw - 28px));
+}
+
+.telemetry-heading,
+.telemetry-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.telemetry-heading h2 {
+  margin: 0;
+}
+
+.telemetry-heading > span {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.telemetry-heading .telemetry-live {
+  color: #42c982;
+}
+
+.telemetry-heading .telemetry-live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.telemetry-note {
+  margin: 8px 0 11px;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.telemetry-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  background: var(--border);
+}
+
+.telemetry-value {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+  padding: 8px;
+  background: var(--panel);
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-value span {
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.telemetry-value strong {
+  overflow: hidden;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.telemetry-value small {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.axis-x { color: #e15b64; }
+.axis-y { color: #42b878; }
+.axis-z { color: #4f8fe8; }
+
+.telemetry-chart {
+  display: block;
+  width: 100%;
+  height: 116px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 68%, var(--panel));
+}
+
+.telemetry-zero,
+.telemetry-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.telemetry-grid {
+  opacity: 0.55;
+}
+
+.telemetry-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.telemetry-scale {
+  margin-top: 4px;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.telemetry-orientation {
+  display: grid;
+  grid-template-columns: repeat(6, auto);
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-orientation dt {
+  color: var(--dim);
+}
+
+.telemetry-orientation dd {
+  margin: 0;
+  color: var(--text);
 }
 
 .playlist-head {
@@ -718,6 +871,7 @@ aside {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow-wrap: anywhere;
   line-height: 1.35;
 }
 
@@ -735,9 +889,92 @@ aside {
 }
 
 /* 对象级 mute/solo 按钮 */
+.speaker-group-tabs {
+  display: grid;
+  grid-template-columns: 0.8fr 0.8fr 1.2fr 1.2fr;
+  gap: 2px;
+  margin: 8px 0;
+  border-bottom: 1px solid #64748b55;
+}
+.cinema-panel { width: min(480px, calc(100vw - 28px)); }
+.cinema-tabs { grid-template-columns: repeat(3, 1fr); }
+.monitor-panel .cinema-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.monitor-panel .cinema-tabs button { white-space: nowrap; }
+.cinema-enable { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.cinema-profile { display: grid; gap: 6px; font-size: 12px; }
+.cinema-profile select { width: 100%; min-width: 0; }
+.cinema-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.cinema-actions button, .cinema-footer button { font-size: 12px; padding: 5px 8px; }
+.cinema-band { border-top: 1px solid var(--border); padding: 10px 0; margin-top: 10px; }
+.cinema-number { display: grid; grid-template-columns: 1fr 80px 24px; gap: 8px; align-items: center; margin: 7px 0; font-size: 12px; }
+.cinema-number input, .cinema-calibration-row input { min-width: 0; width: 100%; box-sizing: border-box; padding: 5px 3px; color: var(--text); background: var(--btn-bg); border: 1px solid var(--border); border-radius: 4px; }
+.cinema-status, .cinema-source { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+.cinema-warning { color: var(--error); font-size: 12px; overflow-wrap: anywhere; }
+.cinema-calibration-head, .cinema-calibration-row { display: grid; grid-template-columns: minmax(70px, 1.5fr) repeat(4, minmax(42px, 1fr)); gap: 5px; align-items: center; padding: 6px 0; font-size: 11px; border-bottom: 1px solid var(--border); }
+.cinema-calibration-row > span { overflow-wrap: anywhere; }
+.cinema-report-table { overflow-x: auto; }
+.cinema-report-table table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; }
+.cinema-report-table th, .cinema-report-table td { padding: 6px 3px; border-bottom: 1px solid var(--border); }
+.cinema-footer { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--border); }
+.cinema-footer > span { margin-right: auto; font-size: 12px; color: var(--dim); }
+.room-lab { width:min(460px,calc(100vw - 28px)); }
+.room-lab-tabs { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin:8px 0 14px; }
+.room-lab-stages { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.room-animation-speed { display:flex; align-items:center; gap:12px; margin:10px 0; font-size:12px; }
+.room-animation-speed span { flex:0 0 90px; }
+.room-animation-speed input { flex:1; min-width:0; }
+.room-lab-stages button { min-height:44px; padding:6px 4px; font-size:12px; }
+.room-lab-tabs button[aria-pressed="true"],.room-lab-compare button[aria-pressed="true"] { border-color:#71b6b0; background:#263d44; }
+.room-lab-fields { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0; }
+.room-lab-fields label { display:grid;gap:5px;font-size:12px; }
+.room-lab-fields input { width:100%;min-width:0;box-sizing:border-box; }
+.room-lab-compare { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:16px 0; }
+.room-lab-compare button { padding:10px 3px;white-space:normal;font-size:12px; }
+.room-lab-compare small { display:block;margin-top:8px;color:var(--dim); }
+.room-layout-memories>div { display:grid;grid-template-columns:1fr auto auto;gap:8px;border-bottom:1px solid var(--border);padding:16px 0; }
+.room-layout-memories span { grid-column:1/-1;font-size:12px;color:var(--dim); }
+.speaker-group-tabs button {
+  min-width: 0;
+  padding: 7px 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0.65;
+}
+.speaker-group-tabs button[aria-pressed="true"] {
+  border-bottom-color: #73a9e8;
+  opacity: 1;
+}
+.speaker-group-empty { padding: 16px 8px; opacity: 0.65; font-size: 12px; }
+.speaker-pair-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.speaker-pair-controls strong,
+.speaker-channel-label strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.speaker-pair-controls small,
+.speaker-channel-label small {
+  font-size: 11px;
+  color: var(--subtle);
+}
+
 .obj-ms {
   margin-left: auto;
   display: inline-flex;
+  flex-shrink: 0;
   gap: 4px;
 }
 
@@ -757,7 +994,12 @@ aside {
   transition: filter 0.15s ease;
 }
 
-.obj-ms-btn:hover {
+.obj-ms-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.obj-ms-btn:hover:not(:disabled) {
   filter: brightness(1.4);
 }
 
@@ -804,20 +1046,28 @@ aside {
   }
 }
 
-/* 中性深色 tint 先稳定动态背景，再以轻度磨砂保留玻璃层次。 */
+/* Keep the centre clear; the inset rim gives the surface its glass thickness. */
 .mp-glass {
   position: relative;
   border: 1px solid var(--mp-glass-line);
   border-radius: 22px;
   overflow: hidden;
-  background: var(--mp-glass-bg);
-  backdrop-filter: blur(16px) saturate(80%) contrast(92%);
-  -webkit-backdrop-filter: blur(16px) saturate(80%) contrast(92%);
+  background: transparent;
   box-shadow: var(--mp-glass-shadow);
 }
 
+.mp-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.035), transparent 45%, rgba(255, 255, 255, 0.015));
+}
+
 /* SwiftShader would resample and blur the moving WebGL canvas every frame. */
-.miniplayer.software-renderer .mp-glass {
+.miniplayer.software-renderer .mp-refraction {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -1189,6 +1439,9 @@ aside {
 .flat-speaker {
   width: 8px;
   height: 8px;
+  padding: 0;
+  border: 0;
+  cursor: pointer;
   background: var(--subtle);
   box-shadow: 0 0 0 3px rgba(130, 155, 205, 0.16);
 }
@@ -1264,4 +1517,105 @@ aside {
     flex-direction: column;
     gap: 3px;
   }
+}
+
+/* 耳廓/人头麦选择面板 */
+.pinna-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mp-filter-defs { position: absolute; pointer-events: none; }
+.mp-refraction {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: var(--mp-glass-bg);
+}
+.mp-glass > .mp-bar { z-index: 2; }
+.speaker-tooltip {
+  display: block;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pinna-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel, #141a2b) 60%, transparent);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pinna-option:hover {
+  border-color: color-mix(in srgb, #4d7cfe 55%, var(--border));
+}
+
+.pinna-option.active {
+  border-color: #4d7cfe;
+  background: color-mix(in srgb, #4d7cfe 16%, var(--panel, #141a2b));
+}
+
+.pinna-option b {
+  font-size: 13px;
+}
+
+.pinna-option small {
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pinna-current {
+  align-self: flex-end;
+  color: #42c982;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pinna-section-title {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.monitor-table { overflow-x: auto; margin: 12px 0; }
+.monitor-table table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.monitor-table th, .monitor-table td { padding: 7px 3px; text-align: center; border-bottom: 1px solid #293342; }
+.monitor-table th:first-child, .monitor-table td:first-child { text-align: left; width: 29%; overflow-wrap: anywhere; }
+.monitor-table th:nth-last-child(-n+2) { width: 12%; }
+.monitor-table input[type=number] { width: 100%; min-width: 0; box-sizing: border-box; background: #1b2638; color: #e1e7ef; border: 1px solid #35435b; border-radius: 4px; height: 28px; padding: 3px; }
+.monitor-panel > .settings-switch { margin: 12px 0; }
+.monitor-panel .cinema-band .settings-switch { margin: 12px 0; }
+.room-lab-fields input { background: #1b2638; color: #e1e7ef; border: 1px solid #35435b; border-radius: 4px; padding: 6px; min-width: 0; width: 100%; box-sizing: border-box; }
+.room-lab-fields input:disabled { color: #b6c5d6; opacity: 1; }
+.app input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  font-variant-numeric: tabular-nums;
+}
+.app input[type="number"]::-webkit-inner-spin-button,
+.app input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.app input[type="number"]:focus-visible {
+  outline: 2px solid #619fe6;
+  outline-offset: 2px;
+  border-color: #619fe6;
 }

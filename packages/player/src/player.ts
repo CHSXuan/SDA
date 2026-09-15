@@ -1,3 +1,5 @@
+import { isStereoMasterFrame } from "./stereo-master.js";
+import { masterBalanceGainDb } from "./bs1770.js";
 /**
  * SdaPlayer — glues everything together:
  *
@@ -15,21 +17,29 @@
 
 import {
   SpatialRenderer,
+  HeadPoseTracker,
+  LAYOUTS,
   getBinauralIrSet,
   headphoneProfileById,
   registerLocalHeadphoneCompensation,
   unregisterLocalHeadphoneCompensation,
   type LocalHeadphoneCompensationData,
   type BinauralMode,
+  type BinauralIrSet,
   type BinauralEqBands,
   type BinauralLowFrequencyDiagnostic,
   type BinauralHealthTelemetry,
+  type HeadPose,
+  type HeadPoseOptions,
   type OutputMode,
+  type LayoutId,
   type VirtualSpeaker,
 } from "@sda/renderer";
 import type { DecodedFrameData, FrameLoudness, ObjectChannelDecl, ObjectEvent, ProgramLoudnessMetadata } from "@sda/core";
-import type { BinauralRenderMetadata } from "@sda/demux";
+import { BwfDemuxer, readBwfMetadata, type BwfMetadata, type BinauralRenderMetadata } from "@sda/demux";
 import { placeholderVisualObject, sameObjectTarget, visualObjectFromEvent, withoutPendingObjectEvents } from "./control.js";
+import { NativeFrameQueue } from "./native-frame-queue.js";
+import { PresentationClock } from "./presentation-clock.js";
 
 export interface VisualObject {
   id: number;
@@ -92,8 +102,8 @@ export type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 export interface PlayerCallbacks {
   /** Measured-loudness balance converged (or applied from cache) for the
    *  current track; the UI persists it so replays balance from sample 0. */
-  onMeasuredLoudness?: (integratedLufs: number) => void;
-  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
+  onMeasuredLoudness?: (integratedLufs: number, peakDbfs?: number) => void;
+  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; artist?: string; album?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   /** Program-level DBMD metadata. It never follows the sample event timeline. */
   onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
   /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
@@ -110,16 +120,74 @@ export interface PlayerCallbacks {
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
 }
 
+export interface NativeRendererSourceDeclaration {
+  id: string;
+  atSample: number;
+  /** Present only for fixed bed channels. The native renderer uses this label
+   * to select a room-locked virtual-speaker route or the dedicated LFE path. */
+  bedLabel?: string;
+}
+
+/** Optional mirror transport to the native Rust sidecar. The player continues
+ * feeding Web Audio until a later native-output mode explicitly takes ownership. */
+export interface NativeRendererSink {
+  /** Resolves only after the sidecar has created or rebound the source route. */
+  addSource(source: NativeRendererSourceDeclaration): void | Promise<void>;
+  removeSource(id: string, atSample: number): void | Promise<void>;
+  setMuted(id: string, muted: boolean, atSample?: number): void | Promise<void>;
+  setLfeMuted(muted: boolean): void | Promise<void>;
+  setSpeakerMutes?(names: string[], focus?: string[]): void | Promise<void>;
+  setVolume(volume: number): void | Promise<void>;
+  setProgramEnabled(enabled: boolean): void | Promise<void>;
+  setProgramGainDb(gainDb: number | null, atSample?: number): void | Promise<void>;
+  setBinauralEq(bands: BinauralEqBands, lowCut: boolean): void | Promise<void>;
+  setHeadphoneProfile(id: string | null): void | Promise<void>;
+  events(events: readonly ObjectEvent[]): void | Promise<void>;
+  /** Resolves only once the sidecar accepted or rejected the entire codec batch. */
+  frame(samplePos: number, entries: readonly { id: string; samples: Float32Array }[]): void | Promise<{ accepted: boolean; samples: number; reason?: string }>;
+  frameWithEvents?(samplePos: number, entries: readonly { id: string; samples: Float32Array }[], events: readonly ObjectEvent[], sources: readonly NativeRendererSourceDeclaration[]): Promise<{ accepted: boolean; samples: number; reason?: string }>;
+  reset(origin: number): void | Promise<void>;
+  setHeadPose(pose: HeadPose): void | Promise<void>;
+  clearHeadPose(): void | Promise<void>;
+  startAt(origin: number): void | Promise<boolean>;
+  pause(paused: boolean): void | Promise<boolean>;
+  /** Selects the master-defined virtual physical speaker layout. */
+  setLayout(layout: LayoutId): void | Promise<void>;
+  /** Optional native DAC consumption cursor on the codec sample clock. */
+  getConsumedSamples?(): number;
+  getPrebufferSeconds?(): number;
+  endAt?(sample:number):void|Promise<unknown>;
+  /** Subscribe to native consumption cursor updates; returns an optional unsubscribe. */
+  onConsumedSamples?(callback: (sample: number) => void): void | (() => void);
+  /** DAC-aligned post-source-gain/post-mute object activity from the native worker. */
+  onObjectActivity?(callback: (ids: readonly number[]) => void): void | (() => void);
+}
+
+export type OutputBackend = "web-audio" | "native-sidecar";
+
 export interface SdaPlayerOptions {
   /** Validated output FIFO setting to use when this player creates its first
    * AudioContext. Invalid values safely fall back to 100ms. */
   initialOutputLatencySeconds?: number;
+  /** Device-neutral head-pose filtering policy passed to the renderer. */
+  headPose?: HeadPoseOptions;
+  headPoseStabilized?: boolean;
+  /** 逐对象精确方向双耳渲染（实验性）：对象 VBAP 到密集球面而非床层环。 */
+  denseBinauralObjects?: boolean;
+  /** 密集球面 IR 集地址（hrtf-dense）；开启 denseBinauralObjects 时必填。 */
+  denseBinauralBaseUrl?: string;
+  /** Selects the audible PCM owner. `web-audio` remains the default. */
+  outputBackend?: OutputBackend;
+  /** Native PCM transport. It is a best-effort mirror in Web Audio mode and the
+   * authoritative batch ACK/startup clock in native-sidecar mode. */
+  nativeRendererSink?: NativeRendererSink;
 }
 
 /** 按码流内容推断渲染布局（自动布局模式）。返回 null = 保持当前布局。 */
 export type LayoutResolver = (
   bedLabels: readonly string[],
   hasDynamics: boolean,
+  codec?: string,
 ) => readonly VirtualSpeaker[] | null;
 
 /** 解码前瞻：环形缓冲约 5.3s，前瞻 4s 可吞掉弹窗/后台切换造成的秒级供给抖动。 */
@@ -133,14 +201,10 @@ const STARTUP_AHEAD_SECONDS = 0.5;
 const INITIAL_OUTPUT_LATENCY_SECONDS = 0.1;
 const OUTPUT_LATENCY_STEPS_SECONDS = [0.1, 0.2, 0.3] as const;
 
-/** Dolby's music delivery loudness target (Dolby Atmos Music: −18 LKFS
- *  integrated per BS.1770-4). Content without codec loudness metadata —
- *  ALAC, PCM, AAC-LC stereo — is balanced toward it, attenuation-only just
- *  like dialnorm. */const MEASURED_LOUDNESS_TARGET_LUFS = -18;
-/** Balance applies once ≥6 s (150 × 400 ms blocks) of gated audio has been
+/** Balance applies once ≥6 s (57 overlapping 400 ms blocks at 100 ms hops) of gated audio has been
  *  observed; replays use the persisted measurement instead and balance from
  *  sample 0. */
-const MEASURED_LOUDNESS_MIN_BLOCKS = 150;
+const MEASURED_LOUDNESS_MIN_BLOCKS = 57;
 /** The settle is a gentle staircase: ≤0.75 dB per 250 ms scheduled step. */
 const MEASURED_LOUDNESS_STEP_DB = 0.75;
 const MEASURED_LOUDNESS_STEP_SECONDS = 0.25;
@@ -163,8 +227,28 @@ const CALLBACK_GAP_DISTRIBUTED_EVENT_THRESHOLD = 4;
 const CALLBACK_GAP_DISTRIBUTED_TICK_THRESHOLD = 3;
 const ACTIVE_RECREATE_MIN_AHEAD_SECONDS = 0.5;
 const MAX_IN_FLIGHT_BATCHES = 32;
-const MAX_IN_FLIGHT_SECONDS = 0.25;
-const CHUNK_SIZE = 1 << 20; // 1 MiB reads
+/** Native sidecar transport needs enough lead to survive IPC/control scheduling;
+ * its source rings retain at most ten seconds per source. */
+const MAX_IN_FLIGHT_SECONDS = 1;
+const COMPRESSED_DECODE_CHUNK_SIZE = 1 << 15;
+const PCM_DECODE_CHUNK_SIZE = 1 << 20;
+
+function layoutIdFor(layout: readonly VirtualSpeaker[]): LayoutId {
+  for (const [id, candidate] of Object.entries(LAYOUTS) as [LayoutId, readonly VirtualSpeaker[]][]) {
+    if (
+      candidate.length === layout.length &&
+      candidate.every((speaker, index) => {
+        const current = layout[index];
+        return current !== undefined
+          && current.name === speaker.name
+          && current.azimuth === speaker.azimuth
+          && current.elevation === speaker.elevation
+          && current.isLfe === speaker.isLfe;
+      })
+    ) return id;
+  }
+  throw new Error("native renderer only supports SDA preset speaker layouts");
+}
 
 export class SdaPlayer {
   /** 当前活跃实例。防止 HMR / 异常路径泄漏的旧 AudioContext 继续发声：
@@ -176,17 +260,39 @@ export class SdaPlayer {
 
   private worker: Worker;
   private renderer: SpatialRenderer | null = null;
+  private readonly headPoseOptions: HeadPoseOptions | undefined;
+  private readonly outputBackend: OutputBackend;
+  /** Non-audible stage-one mirror in Web Audio mode; authoritative PCM owner in native-sidecar mode. */
+  private readonly nativeRendererSink: NativeRendererSink | undefined;
+  private nativeConsumedSamples = 0;
+  private nativeFrames = new NativeFrameQueue();
+  private nativeConsumedUnsubscribe: (() => void) | undefined;
+  private nativeObjectActivityUnsubscribe: (() => void) | undefined;
+  /** 逐对象精确方向双耳渲染开关与密集 IR 集地址；renderer 重建时恢复。 */
+  private denseBinauralObjects: boolean;
+  private denseBinauralBaseUrl: string | undefined;
+  private latestHeadPose: HeadPose | null = null;
+  private readonly headPoseStabilized: boolean;
+  private readonly nativeHeadTracker: HeadPoseTracker;
+  private nativeHeadTimer: ReturnType<typeof setInterval> | null = null;
+  private nativeHeadSent: HeadPose | null = null;
   private cb: PlayerCallbacks;
   private readyResolve!: () => void;
   private ready: Promise<void>;
   private objectChannels = new Map<number, number>(); // object id → PCM channel
   private decodedFormatKey = "";
+  private trackCodec = "";
   private trackReported = false;
   private knownBedLabels: string[] = [];
+  private mutedBedLabels = new Set<string>();
+  private soloBedLabels = new Set<string>();
+  private mutedSpeakers = new Set<string>();
+  private focusedSpeakers = new Set<string>();
   private acceptedEndSample = 0;
   private startupOrigin: number | null = null;
   private startupAcceptedEnd = 0;
   private playbackStarted = false;
+  private nativeStartPending = false;
   private nextBatchSequence = 1;
   /** Increments before every renderer replacement so old worklets cannot mutate
    * the active queue through delayed acks or consumed ticks. */
@@ -218,6 +324,7 @@ export class SdaPlayer {
   private soundingObjectIdsDirty = false;
   private visualSnapshotDirty = true;
   private visualTimer: ReturnType<typeof setInterval> | null = null;
+  private presentationClock = new PresentationClock();
   private ended = false;
   /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
   private initArgs: {
@@ -240,6 +347,8 @@ export class SdaPlayer {
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
   private volumeBalanceEnabled = false;
+  private stereoBalanceEligible = false;
+  private nonStereoProgrammeSeen = false;
   private programLoudness: ProgramLoudnessMetadata | null = null;
   private programLoudnessGainDb: number | null = null;
   private scheduledProgramLoudnessGainDb: number | null | undefined;
@@ -248,8 +357,10 @@ export class SdaPlayer {
   private measuredLoudnessBlocks = 0;
   /** Measurement balance for this track has been scheduled (or found unnecessary). */
   private measuredLoudnessSettled = false;
+  private balancedLoudnessBlocks = 0;
   /** Persisted measurement for the upcoming track, set by the UI per track. */
   private cachedMeasuredLufs: number | null = null;
+  private cachedMeasuredPeakDbfs: number | null = null;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
    *  UI 固定"近"，mid/far 暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
@@ -283,6 +394,16 @@ export class SdaPlayer {
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
+    this.headPoseOptions = options.headPose;
+    this.headPoseStabilized=options.headPoseStabilized===true;
+    this.nativeHeadTracker = new HeadPoseTracker({...options.headPose,fixedForward:true});
+    this.outputBackend = options.outputBackend ?? "web-audio";
+    this.nativeRendererSink = options.nativeRendererSink;
+    if (this.outputBackend === "native-sidecar" && !this.nativeRendererSink) {
+      throw new Error("native-sidecar outputBackend requires nativeRendererSink");
+    }
+    this.denseBinauralObjects = options.denseBinauralObjects === true;
+    this.denseBinauralBaseUrl = options.denseBinauralBaseUrl;
     this.pendingOutputLatencySeconds = validatedOutputLatencySeconds(options.initialOutputLatencySeconds);
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health = this.createHealthSnapshot();
@@ -293,29 +414,57 @@ export class SdaPlayer {
     this.worker.onmessageerror = () => this.handleWorkerFailure("解码 worker 消息传输失败");
   }
 
-  async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[], binauralBaseUrl = "/hrtf", layoutResolver?: LayoutResolver): Promise<void> {
+  async init(
+    mode: OutputMode,
+    workletUrl: string | URL,
+    layout?: readonly VirtualSpeaker[],
+    binauralBaseUrl = "/hrtf",
+    layoutResolver?: LayoutResolver,
+    initialAutoLayout = true,
+  ): Promise<void> {
     console.log(`[SDA] player#${this.id} init (active=#${SdaPlayer.active?.id ?? "-"})`);
     // The UI publishes a fully initialized player atomically. Do not dispose a
     // different instance here: overlapping play requests may still be preparing
     // one, and the older request must never tear down the latest audible player.
     SdaPlayer.active = this;
     this.initArgs = { mode, workletUrl, layout, binauralBaseUrl, layoutResolver };
+    this.autoLayoutEnabled = initialAutoLayout;
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health.requestedOutputLatencySeconds = this.requestedOutputLatencySeconds;
     this.health.nextRecommendedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.initialRendererReady = false;
     this.initialRendererRate = null;
     try {
+      if (this.outputBackend === "native-sidecar") {
+        this.installNativeConsumedClock();
+        this.installNativeObjectActivity();
+        await this.nativeRendererSink?.setLayout(layoutIdFor(layout ?? LAYOUTS["7.1.4"]));
+        // A replacement native session starts with its LFE group unmuted. Replay
+        // the player's retained state before decoded source declarations arrive.
+        this.setLfeMuted(this.lfeMuted);
+        this.syncSpeakerMutes(this.mutedSpeakers, this.focusedSpeakers);
+        this.setVolume(this.lastVolume);
+        this.setVolumeBalance(this.volumeBalanceEnabled);
+        this.setNativeProgramGainDb(this.programLoudnessGainDb);
+        this.setHeadphoneCompensation(this.headphoneProfileId);
+        this.initialRendererReady = true;
+        this.worker.postMessage({ type: "init" });
+        await this.ready;
+        return;
+      }
       const ctx = new AudioContext({ latencyHint: this.requestedOutputLatencySeconds });
       const generation = this.rendererGeneration;
       this.renderer = new SpatialRenderer(ctx, {
         mode,
         layout,
+        denseBinauralObjects: this.denseBinauralObjects,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
         onObjectActivity: (ids) => this.handleObjectActivity(generation, ids),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
+        headPose: this.headPoseOptions,
       });
       await this.renderer.init(workletUrl);
+      if (this.latestHeadPose) this.renderer.setHeadPose(this.latestHeadPose);
       this.observeWorkletHealth(this.renderer, generation);
       this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
       this.renderer.setBinauralEqBands(this.binauralEqBands);
@@ -329,13 +478,21 @@ export class SdaPlayer {
     }
   }
 
-  /** 加载双耳 IR 集（SADIE II KU100）并注入渲染器。播放和采样率重建
-   * 都等待同一份资产完成，避免启动在浏览器 HRTF、随后异步切到卷积图。 */
+  /** 加载双耳 IR 集并注入渲染器。播放和采样率重建都等待同一份资产完成，
+   * 避免启动在浏览器 HRTF、随后异步切到卷积图。 */
   private async attachBinauralIrs(r: SpatialRenderer): Promise<void> {
     const baseUrl = this.initArgs?.binauralBaseUrl;
     if (!baseUrl) throw new Error("双耳 IR 资产地址缺失");
-    const set = await getBinauralIrSet(baseUrl);
+    const wantDense = this.denseBinauralObjects && this.denseBinauralBaseUrl;
+    const [set, dense] = await Promise.all([
+      getBinauralIrSet(baseUrl),
+      wantDense ? getBinauralIrSet(this.denseBinauralBaseUrl!) : Promise.resolve(null),
+    ]);
     if (this.disposed || this.renderer !== r) return;
+    this.assertCompleteBinauralHeadSet(baseUrl, set);
+    // Inject the dense set first so the graph build below mounts dense fill IRs
+    // directly instead of building the snapped fallback convolvers first.
+    if (dense) r.setDenseBinauralIrSet(dense);
     r.setBinauralData(set);
     if (!r.hasBinauralData) throw new Error("双耳 IR 图未就绪");
     r.setBinauralMode(this.binauralMode);
@@ -348,6 +505,16 @@ export class SdaPlayer {
     if (manual) this.autoLayoutEnabled = false;
     this.initArgs.layout = layout;
     this.renderer?.setLayout(layout);
+    if (this.outputBackend === "native-sidecar") {
+      try {
+        const result = this.nativeRendererSink?.setLayout(layoutIdFor(layout));
+        if (result instanceof Promise) void result.catch((error) => {
+          console.warn(`[SDA] player#${this.id} native layout update failed:`, error);
+        });
+      } catch (error) {
+        console.warn(`[SDA] player#${this.id} native layout update failed:`, error);
+      }
+    }
     this.emitHealth();
   }
 
@@ -357,7 +524,7 @@ export class SdaPlayer {
     if (!resolver) return;
     this.autoLayoutEnabled = true;
     const hasDyn = this.objectChannels.size > 0;
-    const next = resolver(this.knownBedLabels, hasDyn);
+    const next = resolver(this.knownBedLabels, hasDyn, this.trackCodec);
     if (next) this.setLayout(next, false);
     this.layoutChecked = true;
     this.layoutHadDynamics = hasDyn;
@@ -375,10 +542,99 @@ export class SdaPlayer {
     return this.renderer?.outputMode ?? this.initArgs?.mode ?? null;
   }
 
+  /** Forward a calibrated canonical ADM head-to-world orientation. This is a
+   * real-time control, not codec metadata; it never recreates playback state. */
+  setHeadPose(pose: HeadPose): boolean {
+    this.latestHeadPose = pose;
+    if (this.disposed) return false;
+    if(this.nativeRendererSink && this.headPoseStabilized){
+      void Promise.resolve(this.nativeRendererSink.setHeadPose(pose)).catch(error=>console.warn("[SDA] session head pose failed",error));
+    } else if (this.nativeRendererSink && this.nativeHeadTracker.set(pose, performance.now())) {
+      if (this.nativeHeadTimer === null) {
+        this.flushNativeHeadPose();
+        this.nativeHeadTimer = setInterval(()=>this.flushNativeHeadPose(),20);
+      }
+    }
+    return this.renderer?.setHeadPose(pose) ?? true;
+  }
+
+  private flushNativeHeadPose(): void {
+    if (this.disposed || !this.nativeRendererSink) return;
+    const pose=this.nativeHeadTracker.currentPose(performance.now());
+    if (!pose) {
+      if (this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
+      this.nativeHeadTimer=null;
+      if(this.nativeHeadSent) void Promise.resolve(this.nativeRendererSink.clearHeadPose()).catch(error=>console.warn("[SDA] native stale pose clear failed",error));
+      this.nativeHeadSent=null;
+      return;
+    }
+    if(this.nativeHeadSent && Math.abs(pose.orientation.reduce((sum,v,i)=>sum+v*this.nativeHeadSent!.orientation[i]!,0))>1-1e-10)return;
+    this.nativeHeadSent=pose;
+    void Promise.resolve(this.nativeRendererSink.setHeadPose(pose)).catch(error=>console.warn("[SDA] native stabilized pose failed",error));
+  }
+
+  clearHeadPose(): void {
+    if (this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
+    this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
+    this.latestHeadPose = null;
+    try { this.nativeRendererSink?.clearHeadPose(); } catch (error) {
+      console.warn(`[SDA] player#${this.id} native clear head pose mirror failed:`, error);
+    }
+    this.renderer?.clearHeadPose();
+  }
+
+  recenterHeadPose(): boolean {
+    const native = this.nativeHeadTracker.recenter();
+    if (native) this.flushNativeHeadPose();
+    return this.renderer?.recenterHeadPose() ?? native;
+  }
+
   /** 切换杜比近/中/远（播放中实时生效）。 */
   setBinauralMode(mode: BinauralMode): void {
     this.binauralMode = mode;
     this.renderer?.setBinauralMode(mode);
+    this.emitHealth();
+  }
+
+  private assertCompleteBinauralHeadSet(baseUrl: string, set: BinauralIrSet): void {
+    const setDirectory = new URL(baseUrl, "http://sda.local").pathname.split("/").filter(Boolean).at(-1);
+    if (!setDirectory || setDirectory.startsWith("hrtf-ku100-")) {
+      throw new Error("拒绝 KU100 与其他 subject 的 hybrid HRTF 资产");
+    }
+    const requestedSubject = setDirectory.match(/^hrtf-(d2|h(?:[3-9]|1[0-9]|20))$/)?.[1] ?? null;
+    if (requestedSubject && (!set.calibrated || !set.completeSubject || set.subjectId !== requestedSubject)) {
+      throw new Error(`拒绝不完整或未校准的 ${requestedSubject.toUpperCase()} HRTF 测量集`);
+    }
+  }
+
+  /** 切换完整人头/subject HRTF（播放中实时生效，不重建解码器/worklet/缓冲）。 */
+  async setBinauralHead(baseUrl: string): Promise<void> {
+    if (this.initArgs) this.initArgs.binauralBaseUrl = baseUrl;
+    const r = this.renderer;
+    if (!r) return;
+    const set = await getBinauralIrSet(baseUrl);
+    this.assertCompleteBinauralHeadSet(baseUrl, set);
+    if (this.disposed || this.renderer !== r) return;
+    r.setBinauralData(set);
+    r.setBinauralMode(this.binauralMode);
+    this.emitHealth();
+  }
+
+  /** 逐对象精确方向双耳渲染开关（播放中实时生效）。
+   *  首次开启时按需加载密集球面 IR 集；renderer 重建后由 attachBinauralIrs 恢复。 */
+  async setDenseBinauralObjects(enabled: boolean, denseBaseUrl?: string): Promise<void> {
+    const changedSet = !!denseBaseUrl && denseBaseUrl !== this.denseBinauralBaseUrl;
+    if (denseBaseUrl) this.denseBinauralBaseUrl = denseBaseUrl;
+    this.denseBinauralObjects = enabled;
+    const r = this.renderer;
+    if (!r) return;
+    if (enabled && (changedSet || !r.hasDenseBinauralData)) {
+      if (!this.denseBinauralBaseUrl) throw new Error("密集双耳 IR 资产地址缺失");
+      const dense = await getBinauralIrSet(this.denseBinauralBaseUrl);
+      if (this.disposed || this.renderer !== r) return;
+      r.setDenseBinauralIrSet(dense);
+    }
+    r.setDenseBinauralObjects(enabled);
     this.emitHealth();
   }
 
@@ -401,6 +657,14 @@ export class SdaPlayer {
     }
     this.headphoneProfileId = profileId;
     this.renderer?.setHeadphoneCompensation(profileId);
+    try {
+      const result = this.nativeRendererSink?.setHeadphoneProfile(profileId);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native headphone profile update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native headphone profile update failed:`, error);
+    }
   }
 
   get headphoneCompensationProfileId(): string | null {
@@ -411,6 +675,17 @@ export class SdaPlayer {
   setBinauralEqBands(bands: BinauralEqBands): void {
     this.binauralEqBands = bands;
     this.renderer?.setBinauralEqBands(bands);
+    try {
+      const result = this.nativeRendererSink?.setBinauralEq(
+        bands,
+        this.binauralLowFrequencyDiagnosticMode === "low-cut",
+      );
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native binaural EQ update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native binaural EQ update failed:`, error);
+    }
   }
 
   get binauralEq(): Readonly<BinauralEqBands> {
@@ -421,6 +696,17 @@ export class SdaPlayer {
   setBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
     this.binauralLowFrequencyDiagnosticMode = mode;
     this.renderer?.setBinauralLowFrequencyDiagnostic(mode);
+    try {
+      const result = this.nativeRendererSink?.setBinauralEq(
+        this.binauralEqBands,
+        mode === "low-cut",
+      );
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native low-frequency diagnostic update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native low-frequency diagnostic update failed:`, error);
+    }
   }
 
   get binauralLowFrequencyDiagnostic(): BinauralLowFrequencyDiagnostic {
@@ -433,9 +719,18 @@ export class SdaPlayer {
   setObjectMuted(objectId: number, muted: boolean): void {
     if (muted) this.mutedObjects.add(objectId);
     else this.mutedObjects.delete(objectId);
-    if (!this.renderer || !this.objectChannels.has(objectId)) return;
-    if (!this.renderer.setSourceMuted(`obj:${objectId}`, muted)) {
-      this.cb.onError?.(`静音未命中：obj:${objectId} 已声明但渲染器无此声源`);
+    if (!this.objectChannels.has(objectId)) return;
+    const sourceId = `obj:${objectId}`;
+    if (this.renderer && !this.renderer.setSourceMuted(sourceId, muted)) {
+      this.cb.onError?.(`静音未命中：${sourceId} 已声明但渲染器无此声源`);
+    }
+    try {
+      const result = this.nativeRendererSink?.setMuted(sourceId, muted);
+      if (result instanceof Promise) {
+        void result.catch((error) => console.warn(`[SDA] player#${this.id} native object mute failed:`, error));
+      }
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native object mute failed:`, error);
     }
   }
 
@@ -444,7 +739,51 @@ export class SdaPlayer {
   syncObjectMutes(mutedIds: ReadonlySet<number>): void {
     this.mutedObjects = new Set(mutedIds);
     for (const id of this.objectChannels.keys()) {
-      if (this.renderer) this.renderer.setSourceMuted(`obj:${id}`, mutedIds.has(id));
+      const sourceId = `obj:${id}`;
+      this.renderer?.setSourceMuted(sourceId, mutedIds.has(id));
+      try {
+        const result = this.nativeRendererSink?.setMuted(sourceId, mutedIds.has(id));
+        if (result instanceof Promise) void result.catch((error) => {
+          console.warn(`[SDA] player#${this.id} native object mute sync failed:`, error);
+        });
+      } catch (error) {
+        console.warn(`[SDA] player#${this.id} native object mute sync failed:`, error);
+      }
+    }
+  }
+
+  syncSpeakerMutes(names: ReadonlySet<string>, focus: ReadonlySet<string> = new Set()): void {
+    this.mutedSpeakers = focus.size > 0 ? new Set() : new Set(names);
+    this.focusedSpeakers = new Set(focus);
+    if (!this.nativeRendererSink?.setSpeakerMutes) {
+      if (names.size > 0 || focus.size > 0) this.cb.onError?.("当前输出后端不支持音箱监听控制");
+      return;
+    }
+    try {
+      const result = this.nativeRendererSink?.setSpeakerMutes?.([...this.mutedSpeakers], [...this.focusedSpeakers]);
+      if (result instanceof Promise) void result.catch(error => this.cb.onError?.(`音箱静音同步失败：${error}`));
+    } catch (error) { this.cb.onError?.(`音箱静音同步失败：${error}`); }
+  }
+
+  syncBedMix(muted: ReadonlySet<string>, solo: ReadonlySet<string>): void {
+    this.mutedBedLabels = new Set(muted);
+    this.soloBedLabels = new Set(solo);
+    this.knownBedLabels.forEach((label, channel) => {
+      if (!label.startsWith("Obj_")) this.applyBedMute(`bed:${channel}`, label);
+    });
+  }
+
+  private applyBedMute(id: string, label: string, atSample?: number): void {
+    const muted = this.mutedBedLabels.has(label)
+      || (this.soloBedLabels.size > 0 && !this.soloBedLabels.has(label));
+    this.renderer?.setSourceMuted(id, muted);
+    try {
+      const result = this.nativeRendererSink?.setMuted(id, muted, atSample);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] native bed mute failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] native bed mute failed:`, error);
     }
   }
 
@@ -452,13 +791,28 @@ export class SdaPlayer {
   setLfeMuted(muted: boolean): void {
     this.lfeMuted = muted;
     this.renderer?.setLfeMuted(muted);
+    try {
+      const result = this.nativeRendererSink?.setLfeMuted(muted);
+      if (result instanceof Promise) {
+        void result.catch((error) => console.warn(`[SDA] player#${this.id} native LFE mute failed:`, error));
+      }
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native LFE mute failed:`, error);
+    }
   }
 
   /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）
    *  重建 AudioContext —— 否则按错误速率播放 = 变慢/降调。
    *  只在音轨发现/首帧时调用一次，此时环形缓冲还没喂数据，切换无损。 */
   private ensureStreamRate(rate: number): void {
-    if (this.rateChecked || !this.renderer || !this.initArgs) return;
+    if (this.rateChecked || !this.initArgs) return;
+    if (this.outputBackend === "native-sidecar") {
+      this.rateChecked = true;
+      this.initialRendererReady = true;
+      this.pumpPcm();
+      return;
+    }
+    if (!this.renderer) return;
     this.rateChecked = true;
     if (!Number.isFinite(rate) || rate <= 0) {
       this.initialRendererReady = true;
@@ -519,11 +873,14 @@ export class SdaPlayer {
       const r = new SpatialRenderer(ctx, {
         mode,
         layout,
+        denseBinauralObjects: this.denseBinauralObjects,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
         onObjectActivity: (ids) => this.handleObjectActivity(generation, ids),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
+        headPose: this.headPoseOptions,
       });
       await r.init(workletUrl);
+      if (this.latestHeadPose) r.setHeadPose(this.latestHeadPose);
       this.observeWorkletHealth(r, generation);
       if (this.disposed) {
         await r.close();
@@ -532,7 +889,7 @@ export class SdaPlayer {
       r.setVolume(this.lastVolume);
       r.setProgramLoudnessGainDb(this.programLoudnessGainDb);
       this.scheduledProgramLoudnessGainDb = undefined;
-      r.setVolumeBalance(this.volumeBalanceEnabled);
+      r.setVolumeBalance(this.volumeBalanceEnabled && this.stereoBalanceEligible);
       r.setHeadphoneCompensation(this.headphoneProfileId);
       r.setBinauralEqBands(this.binauralEqBands);
       r.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
@@ -586,36 +943,48 @@ export class SdaPlayer {
   }
 
   /** Play a File/Blob (browser) end-to-end. */
-  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "dts" = "auto"): Promise<void> {
-    if (!this.renderer) throw new Error("call init() first");
-    await this.renderer.ctx.resume();
+  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto"): Promise<void> {
+    if (this.outputBackend === "web-audio" && !this.renderer) throw new Error("call init() first");
+    await this.renderer?.ctx.resume();
     if (this.disposed) return;
     console.log(`[SDA] player#${this.id} playFile`);
-    this.resetOutputLatencyProtection(true);
-    this.resetHealth();
-    this.worker.postMessage({ type: "open", codec });
-
-    // Audio/object events stay sample-accurate; diagnostics redraw at 10 Hz so
-    // the React/Three scene cannot contend with object-heavy Atmos playback.
-    this.visualTimer = setInterval(() => this.emitVisual(), 100);
+    await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
+    if (this.disposed) return;
 
     const stream = file.stream();
     const reader = stream.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done || this.disposed) break;
-      await this.pushWorkerChunk(value.buffer);
-      await this.pace();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done || this.disposed) break;
+        await this.push(value);
+      }
+      if (!this.disposed) this.worker.postMessage({ type: "flush" });
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
     }
-    if (!this.disposed) this.worker.postMessage({ type: "flush" });
+  }
+
+  /** Read BWF metadata before PCM, including ADM chunks after a multi-GB data chunk. */
+  async openSeekable(
+    readRange: (offset: number, length: number) => Promise<Uint8Array>,
+    size: number,
+    codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
+  ): Promise<void> {
+    const header = await readRange(0, Math.min(12, size));
+    const metadata = BwfDemuxer.sniffs(header) ? await readBwfMetadata(readRange, size) : undefined;
+    if (!this.disposed) this.open(codec, metadata);
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "dts" = "auto"): void {
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+    this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
+    for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", codec });
-    this.visualTimer ??= setInterval(() => this.emitVisual(), 100);
+    this.worker.postMessage({ type: "open", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
+    this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
   private pushWorkerChunk(chunk: ArrayBuffer): Promise<void> {
@@ -627,10 +996,16 @@ export class SdaPlayer {
     });
   }
 
+  private decodeChunkSize = COMPRESSED_DECODE_CHUNK_SIZE;
+
   async push(chunk: Uint8Array): Promise<void> {
-    const copy = Uint8Array.from(chunk).buffer;
-    await this.pushWorkerChunk(copy);
-    await this.pace();
+    // Bound decode bursts independently of filesystem/network read sizes.
+    // Pace each part so queued PCM cannot hide a multi-second decode gap.
+    for (let offset = 0; offset < chunk.length && !this.disposed; offset += this.decodeChunkSize) {
+      const copy = Uint8Array.from(chunk.subarray(offset, offset + this.decodeChunkSize)).buffer;
+      await this.pushWorkerChunk(copy);
+      await this.pace();
+    }
   }
 
   /** Signal end of a manually pushed stream and drain remaining demuxed PCM. */
@@ -643,20 +1018,30 @@ export class SdaPlayer {
     if (this.visualTimer) clearInterval(this.visualTimer);
     this.visualTimer = null;
     this.renderer?.resetBuffers();
-    // addSource 对同一曲目内的稀疏重声明必须幂等；曲目边界则显式删除源，
-    // 避免下一首复用相同 bed:ch/obj:id 时继承上一首的位置、增益或床标签。
+    // The sidecar is a process-wide shared output. A player instance never
+    // clears it during stop/dispose: delayed cleanup from an old player can
+    // otherwise erase a still-playing or newly-prebuffered session. The next
+    // createPlayer() owns the sole reset boundary before declaring its sources.
     this.knownBedLabels.forEach((label, channel) => {
       if (!label.startsWith("Obj_")) this.renderer?.removeSource(`bed:${channel}`);
     });
-    for (const id of this.objectChannels.keys()) this.renderer?.removeSource(`obj:${id}`);
+    for (const id of this.objectChannels.keys()) {
+      this.renderer?.removeSource(`obj:${id}`);
+    }
     this.knownBedLabels = [];
     this.soundingObjectIds.clear();
     this.soundingObjectIdsDirty = true;
     // 若暂停中停止，同时解除 worklet 静音和时钟挂起，避免卡死
     this.pausedState = false;
     this.renderer?.setPaused(false);
+    // Do not resume the shared native sidecar from an outgoing instance; the
+    // owning replacement session establishes its own start/pause state.
+    if (this.outputBackend !== "native-sidecar") {
+      try { void this.nativeRendererSink?.pause(false); } catch {}
+    }
     void this.renderer?.ctx.resume();
     this.objects.clear();
+    this.presentationClock.reset();
     this.visualSnapshotDirty = true;
     this.binauralMetadata = null;
     this.pendingVisualEvents = [];
@@ -666,6 +1051,7 @@ export class SdaPlayer {
     this.decodedFormatKey = "";
     this.emitVisual();
     this.acceptedEndSample = 0;
+    this.nativeConsumedSamples = 0;
     this.inFlight.clear();
     this.submittedFrames.clear();
     this.batchResults.clear();
@@ -675,11 +1061,16 @@ export class SdaPlayer {
     this.queuedSamples = 0;
     this.containerDurationSec = null;
     this.trackReported = false;
+    this.trackCodec = "";
     this.programLoudness = null;
     this.programLoudnessGainDb = null;
     this.scheduledProgramLoudnessGainDb = undefined;
+    this.stereoBalanceEligible = false;
+    this.nonStereoProgrammeSeen = false;
+    this.setVolumeBalance(this.volumeBalanceEnabled);
     this.measuredLoudness = null;
     this.measuredLoudnessBlocks = 0;
+    this.balancedLoudnessBlocks = 0;
     this.measuredLoudnessSettled = false;
     this.cachedMeasuredLufs = null;
     this.renderer?.setProgramLoudnessGainDb(null);
@@ -704,9 +1095,18 @@ export class SdaPlayer {
     this.pausedState = true;
     this.soundingObjectIds.clear();
     this.soundingObjectIdsDirty = true;
+    if (this.outputBackend === "native-sidecar") {
+      try { await this.nativeRendererSink?.pause(true); } catch (error) {
+        console.warn(`[SDA] player#${this.id} native pause failed:`, error);
+      }
+      return;
+    }
     if (!this.renderer) return;
     console.log(`[SDA] player#${this.id} pause @${this.renderer.consumedSeconds().toFixed(2)}s`);
     this.renderer.setPaused(true);
+    try { await this.nativeRendererSink?.pause(true); } catch (error) {
+      console.warn(`[SDA] player#${this.id} native pause failed:`, error);
+    }
     try {
       await this.renderer.ctx.suspend();
     } catch {
@@ -716,9 +1116,22 @@ export class SdaPlayer {
 
   async resume(): Promise<void> {
     this.pausedState = false;
+    if (this.outputBackend === "native-sidecar") {
+      if (!this.playbackStarted) {
+        this.startPlaybackIfReady();
+        return;
+      }
+      try { await this.nativeRendererSink?.pause(false); } catch (error) {
+        console.warn(`[SDA] player#${this.id} native resume failed:`, error);
+      }
+      return;
+    }
     if (!this.renderer) return;
     console.log(`[SDA] player#${this.id} resume`);
     this.renderer.setPaused(false);
+    try { await this.nativeRendererSink?.pause(false); } catch (error) {
+      console.warn(`[SDA] player#${this.id} native resume failed:`, error);
+    }
     try {
       await this.renderer.ctx.resume();
     } catch {
@@ -728,7 +1141,16 @@ export class SdaPlayer {
 
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;
-    this.renderer?.setVolumeBalance(enabled);
+    const effective = enabled && this.stereoBalanceEligible;
+    this.renderer?.setVolumeBalance(effective);
+    try {
+      const result = this.nativeRendererSink?.setProgramEnabled(effective);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
+    }
   }
 
   /** 码流携带的节目响度元数据（Dolby dialnorm），无元数据时为 null。 */
@@ -738,37 +1160,66 @@ export class SdaPlayer {
 
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
-  setMeasuredLoudness(integratedLufs: number | null): void {
+  setMeasuredLoudness(integratedLufs: number | null, peakDbfs: number | null = null): void {
+    this.cachedMeasuredPeakDbfs = peakDbfs;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
       : null;
     this.measuredLoudnessSettled = false;
   }
 
-  /** Schedule the measured balance as a gentle staircase so the settle is
-   *  inaudible; attenuation-only, matching the dialnorm contract. */
-  private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number): void {
-    this.cb.onMeasuredLoudness?.(integratedLufs);
-    const gainDb = Math.min(0, MEASURED_LOUDNESS_TARGET_LUFS - integratedLufs);
-    if (gainDb > -0.05 || !this.renderer) return;
-    const steps = Math.ceil(-gainDb / MEASURED_LOUDNESS_STEP_DB);
-    const stepSamples = Math.round(MEASURED_LOUDNESS_STEP_SECONDS * this.sampleRate);
+  /** Send one linked programme gain to either output backend. */
+  private setNativeProgramGainDb(gainDb: number | null, atSample?: number): void {
+    try {
+      const result = this.nativeRendererSink?.setProgramGainDb(gainDb, atSample);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native program gain failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native program gain failed:`, error);
+    }
+  }
+
+  private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number, peakDbfs: number | null = null): void {
+    const gainDb = masterBalanceGainDb(integratedLufs, peakDbfs);
+    const previous = this.scheduledProgramLoudnessGainDb ?? 0;
+    this.scheduledProgramLoudnessGainDb = gainDb;
+    this.programLoudnessGainDb = gainDb;
+    if (Math.abs(gainDb - previous) < 0.05) return;
+    const steps = Math.ceil(Math.abs(gainDb - previous) / MEASURED_LOUDNESS_STEP_DB);
+    const stepSamples = Math.round(Math.min(MEASURED_LOUDNESS_STEP_SECONDS, 4 / steps) * this.sampleRate);
     for (let i = 1; i <= steps; i++) {
-      this.renderer.setProgramLoudnessGainDb((gainDb * i) / steps, atSample + i * stepSamples);
+      const target = i === steps ? gainDb : previous + ((gainDb - previous) * i) / steps;
+      this.renderer?.setProgramLoudnessGainDb(target, atSample + i * stepSamples);
+      this.setNativeProgramGainDb(target, atSample + i * stepSamples);
     }
   }
 
   setVolume(v: number): void {
     this.lastVolume = v;
     this.renderer?.setVolume(v);
+    try {
+      const result = this.nativeRendererSink?.setVolume(v);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native volume update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native volume update failed:`, error);
+    }
   }
 
   async dispose(): Promise<void> {
     console.log(`[SDA] player#${this.id} dispose`);
     this.disposed = true;
+    if(this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
+    this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
     this.rejectPendingWorkerPushes("player disposed");
     this.stop();
     this.worker.terminate();
+    this.nativeConsumedUnsubscribe?.();
+    this.nativeConsumedUnsubscribe = undefined;
+    this.nativeObjectActivityUnsubscribe?.();
+    this.nativeObjectActivityUnsubscribe = undefined;
     await this.renderer?.close();
     if (SdaPlayer.active === this) SdaPlayer.active = null;
   }
@@ -779,6 +1230,10 @@ export class SdaPlayer {
    *  rendering silence blocks and its counter would otherwise run past the
    *  end of the song. */
   positionSeconds(): number {
+    if (this.outputBackend === "native-sidecar") {
+      const origin = this.startupOrigin ?? 0;
+      return Math.min(Math.max(0, this.consumedSamples() - origin) / this.sampleRate, this.durationSeconds());
+    }
     if (!this.renderer) return 0;
     // 听觉位置补偿：worklet 已渲染的样本还要经过 peak guard lookahead（5ms）
     // 和输出级 FIFO（baseLatency，100–300ms 自适应请求）才到达 DAC。
@@ -786,6 +1241,11 @@ export class SdaPlayer {
     const outputLatency = (this.renderer.ctx.baseLatency || 0) + 0.005;
     const audible = Math.max(0, this.renderer.consumedSeconds() - outputLatency);
     return Math.min(audible, this.durationSeconds());
+  }
+
+  /** Startup readiness uses confirmed output, not decoded or visual-clock time. */
+  hasStartedOutput(): boolean {
+    return this.playbackStarted && this.positionSeconds() > 0;
   }
 
   durationSeconds(): number {
@@ -982,13 +1442,59 @@ export class SdaPlayer {
     this.startupOrigin = null;
     this.startupAcceptedEnd = 0;
     this.playbackStarted = false;
+    this.nativeStartPending = false;
   }
 
   private startPlaybackIfReady(force = false): void {
-    if (!this.initialRendererReady || this.playbackStarted || this.startupOrigin === null) return;
-    const required = Math.min(STARTUP_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? STARTUP_AHEAD_SECONDS) * this.sampleRate;
+    if (
+      !this.initialRendererReady
+      || this.playbackStarted
+      || this.nativeStartPending
+      || this.startupOrigin === null
+      || this.pausedState
+    ) return;
+    const startupAhead = this.outputBackend === "native-sidecar" && this.knownBedLabels.length >= 64 ? 1.5 : STARTUP_AHEAD_SECONDS;
+    const required = Math.min(startupAhead, this.renderer?.maxBufferedSeconds() ?? startupAhead) * this.sampleRate;
     if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
+    if (this.outputBackend === "native-sidecar") {
+      const origin = this.startupOrigin;
+      this.nativeStartPending = true;
+      const begin = performance.now();
+      const attemptStart = (): void => {
+        Promise.resolve(this.nativeRendererSink!.startAt(origin)).then((accepted) => {
+          if (this.disposed || this.startupOrigin !== origin) return;
+          if (accepted === true) {
+            this.nativeStartPending = false;
+            this.playbackStarted = true;
+            this.updateNativeConsumedCursor(this.nativeRendererSink!.getConsumedSamples?.() ?? origin);
+            this.pumpPcm();
+            return;
+          }
+          if (performance.now() - begin < 5_000) {
+            setTimeout(attemptStart, 50);
+            return;
+          }
+          this.nativeStartPending = false;
+          this.cb.onError?.("native sidecar rejected playback start");
+        }).catch((error) => {
+          this.nativeStartPending = false;
+          this.cb.onError?.(`native sidecar start failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      };
+      attemptStart();
+      return;
+    }
     this.renderer?.startAt(this.startupOrigin);
+    try {
+      const nativeStart = this.nativeRendererSink?.startAt(this.startupOrigin);
+      if (nativeStart instanceof Promise) {
+        void nativeStart.then((accepted) => {
+          if (!accepted) console.warn(`[SDA] player#${this.id} native startAt was rejected; Web Audio remains owner`);
+        }).catch((error) => console.warn(`[SDA] player#${this.id} native startAt failed:`, error));
+      }
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native startAt failed:`, error);
+    }
     this.playbackStarted = true;
   }
 
@@ -1025,10 +1531,51 @@ export class SdaPlayer {
     this.resetStartupGate();
   }
 
-  /** Drop acknowledged PCM only after the active worklet has rendered it. */
+  private installNativeConsumedClock(): void {
+    this.nativeConsumedUnsubscribe?.();
+    this.nativeConsumedUnsubscribe = undefined;
+    const sink = this.nativeRendererSink;
+    if (!sink) return;
+    this.nativeConsumedSamples = sink.getConsumedSamples?.() ?? 0;
+    const unsubscribe = sink.onConsumedSamples?.((sample) => this.updateNativeConsumedCursor(sample));
+    if (typeof unsubscribe === "function") this.nativeConsumedUnsubscribe = unsubscribe;
+  }
+
+  private installNativeObjectActivity(): void {
+    this.nativeObjectActivityUnsubscribe?.();
+    this.nativeObjectActivityUnsubscribe = undefined;
+    const sink = this.nativeRendererSink;
+    if (!sink) return;
+    const generation = this.rendererGeneration;
+    const unsubscribe = sink.onObjectActivity?.((ids) => this.handleObjectActivity(generation, ids));
+    if (typeof unsubscribe === "function") this.nativeObjectActivityUnsubscribe = unsubscribe;
+  }
+
+  /** Native-sidecar cursor updates drive queue reclamation, pacing, end detection,
+   * and the sample-clock visual timeline without creating an AudioContext. */
+  private updateNativeConsumedCursor(sample: number): void {
+    if (this.outputBackend !== "native-sidecar" || !Number.isFinite(sample)) return;
+    this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(sample));
+    this.consumeAcceptedFrames();
+    this.pumpPcm();
+    this.emitHealth();
+  }
+
+  private consumedSamples(): number {
+    if (this.outputBackend === "native-sidecar") {
+      const reported = this.nativeRendererSink?.getConsumedSamples?.();
+      if (typeof reported === "number" && Number.isFinite(reported)) {
+        this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(reported));
+      }
+      return this.nativeConsumedSamples;
+    }
+    return this.renderer?.consumedSamples ?? 0;
+  }
+
+  /** Drop acknowledged PCM only after the active output backend has rendered it. */
   private consumeAcceptedFrames(): void {
-    if (!this.renderer || !this.playbackStarted) return;
-    const consumed = this.renderer.consumedSamples;
+    if (!this.playbackStarted) return;
+    const consumed = this.consumedSamples();
     while (this.acceptedFrames.length > 0) {
       const frame = this.acceptedFrames[0]!;
       if (frame.samplePos + (frame.channels[0]?.length ?? 0) > consumed) break;
@@ -1048,7 +1595,8 @@ export class SdaPlayer {
       const samples = frame.channels[0]?.length ?? 0;
       this.queuedSamples -= samples;
       if (!result.accepted) {
-        this.cb.onError?.(`PCM frame 被 worklet 跳过：${result.reason ?? "unknown"}`);
+        const backend = this.outputBackend === "native-sidecar" ? "native sidecar" : "worklet";
+        this.cb.onError?.(`PCM frame 被 ${backend} 跳过：${result.reason ?? "unknown"}`);
         continue;
       }
       const accepted = result.samples === samples
@@ -1098,6 +1646,16 @@ export class SdaPlayer {
     this.inFlight.delete(result.sequence);
     if (!result.accepted && result.reason === "ring-full") {
       this.submittedFrames.delete(pending.frame);
+    } else if (
+      !result.accepted &&
+      this.outputBackend === "native-sidecar" &&
+      /unknown source|source ring capacity/i.test(result.reason ?? "") &&
+      pending.frame.samplePos + pending.samples <= this.consumedSamples()
+    ) {
+      // The sidecar already consumed an earlier copy of this frame and the ACK
+      // was lost; the retry raced the codec clock. The audio is committed, so
+      // treat the replay as accepted instead of dropping the frame audibly.
+      this.batchResults.set(pending.frame, { accepted: true, samples: pending.samples });
     } else {
       this.batchResults.set(pending.frame, result);
     }
@@ -1106,7 +1664,8 @@ export class SdaPlayer {
   }
 
   private targetAheadSeconds(): number {
-    return Math.min(TARGET_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? TARGET_AHEAD_SECONDS);
+    const target=this.nativeRendererSink?.getPrebufferSeconds?.()??TARGET_AHEAD_SECONDS;
+    return Math.min(target, this.renderer?.maxBufferedSeconds() ?? target);
   }
 
   private observeWorkletHealth(renderer: SpatialRenderer, generation: number): void {
@@ -1192,10 +1751,11 @@ export class SdaPlayer {
         break;
       case "track": {
         this.trackReported = true;
-        const track = msg.track as { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } };
+        const track = msg.track as { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; artist?: string; album?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } };
         if (track.durationSec && Number.isFinite(track.durationSec)) {
           this.containerDurationSec = track.durationSec;
         }
+        this.trackCodec = track.codec;
         this.ensureStreamRate(track.sampleRate);
         console.log(
           `[SDA] player#${this.id} 轨道 ${track.container}/${track.codec} ${track.sampleRate}Hz ${track.channels}ch` +
@@ -1221,8 +1781,20 @@ export class SdaPlayer {
         else pending.resolve();
         break;
       }
+      case "loudness-complete":
+        this.measuredLoudness = msg.loudness as FrameLoudness;
+        this.measuredLoudnessBlocks = this.measuredLoudness.blocks;
+        break;
       case "flushed":
+        // Only a complete decode is a track measurement. A stopped intro must
+        // never replace a complete cached value or freeze the next playback.
+        if (this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+            && this.measuredLoudness?.integratedLufs != null
+            && Number.isFinite(this.measuredLoudness.integratedLufs)) {
+          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.peakDbfs);
+        }
         this.ended = true;
+        {let end=this.submittedEndSample();for(const frame of this.pcmQueue)end=Math.max(end,frame.samplePos+(frame.channels[0]?.length??0));void this.nativeRendererSink?.endAt?.(end);}
         this.startPlaybackIfReady(true);
         this.checkEnded();
         break;
@@ -1239,19 +1811,27 @@ export class SdaPlayer {
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
+    if (!isStereoMasterFrame(frame)) this.nonStereoProgrammeSeen = true;
+    const eligible = !this.nonStereoProgrammeSeen && isStereoMasterFrame(frame);
+    if (eligible !== this.stereoBalanceEligible) {
+      this.stereoBalanceEligible = eligible;
+      this.setVolumeBalance(this.volumeBalanceEnabled);
+    }
     if (frame.programLoudness) {
       this.programLoudness = frame.programLoudness;
-      this.programLoudnessGainDb = Math.min(0, frame.programLoudness.gainDb);
+
     }
     if (frame.loudness) {
       this.measuredLoudness = frame.loudness;
       this.measuredLoudnessBlocks = frame.loudness.blocks;
+
     }
 
     // Raw elementary streams never fire the demuxer's onTrack — derive the
     // panel info from the first decoded frame instead.
     if (!this.trackReported) {
       this.trackReported = true;
+      this.trackCodec = frame.codec;
       this.ensureStreamRate(frame.sampleRate);
       this.cb.onTrack?.({
         codec: frame.codec,
@@ -1277,13 +1857,13 @@ export class SdaPlayer {
 
   private submittedBufferedSeconds(): number {
     const origin = this.startupOrigin ?? this.pcmQueue[0]?.samplePos ?? 0;
-    const cursor = this.playbackStarted ? (this.renderer?.consumedSamples ?? origin) : origin;
+    const cursor = this.playbackStarted ? this.consumedSamples() : origin;
     return Math.max(0, this.submittedEndSample() - cursor) / this.sampleRate;
   }
 
   /** 把队列里的帧泵入 worklet 环形缓冲，保持喂入量领先播放头 ~TARGET 秒。 */
   private pumpPcm(): void {
-    if (!this.renderer || !this.initialRendererReady || this.recreatePending > 0) return;
+    if ((this.outputBackend === "web-audio" && !this.renderer) || !this.initialRendererReady || this.recreatePending > 0) return;
     let outstandingSamples = [...this.inFlight.values()].reduce((sum, pending) => sum + pending.samples, 0);
     while (
       this.inFlight.size < MAX_IN_FLIGHT_BATCHES &&
@@ -1293,21 +1873,26 @@ export class SdaPlayer {
       const frame = this.pcmQueue.find((candidate) => !this.submittedFrames.has(candidate));
       if (!frame) break;
       const frameSamples = frame.channels[0]?.length ?? 0;
-      if (frame.programLoudness) {
-        const gainDb = Math.min(0, frame.programLoudness.gainDb);
-        if (gainDb !== this.scheduledProgramLoudnessGainDb) {
+      const renderer = this.renderer;
+      if (this.stereoBalanceEligible) {
+        const stereoMaster = true;
+        if (this.cachedMeasuredLufs != null && !this.measuredLoudnessSettled) {
+          // A cached complete-track measurement applies from the first submitted sample.
+          const gainDb = masterBalanceGainDb(this.cachedMeasuredLufs, stereoMaster ? this.cachedMeasuredPeakDbfs : null);
           this.scheduledProgramLoudnessGainDb = gainDb;
-          this.renderer.setProgramLoudnessGainDb(gainDb, frame.samplePos);
-        }
-      } else if (!this.measuredLoudnessSettled) {
-        // Metadata-less content (ALAC/PCM/AAC stereo): balance from a persisted
-        // measurement immediately, or from the live BS.1770-4 estimate once it
-        // has enough gated audio to be trustworthy.
-        const integrated = this.cachedMeasuredLufs
-          ?? (this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS ? this.measuredLoudness?.integratedLufs ?? null : null);
-        if (integrated != null) {
+          this.programLoudnessGainDb = gainDb;
+          renderer?.setProgramLoudnessGainDb(gainDb, frame.samplePos);
+          this.setNativeProgramGainDb(gainDb, frame.samplePos);
           this.measuredLoudnessSettled = true;
-          this.applyMeasuredLoudnessBalance(integrated, frame.samplePos);
+        } else if (this.cachedMeasuredLufs == null && frame.loudness
+            && frame.loudness.blocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+            && (!this.measuredLoudnessSettled || frame.loudness.blocks >= this.balancedLoudnessBlocks + 50)
+            && frame.loudness.integratedLufs != null && Number.isFinite(frame.loudness.integratedLufs)) {
+          // Follow cumulative measurements at most every five seconds; a quiet
+          // intro must not freeze the correction for the whole programme.
+          this.measuredLoudnessSettled = true;
+          this.balancedLoudnessBlocks = frame.loudness.blocks;
+          this.applyMeasuredLoudnessBalance(frame.loudness.integratedLufs, frame.samplePos, stereoMaster ? frame.loudness.peakDbfs ?? null : null);
         }
       }
 
@@ -1318,13 +1903,23 @@ export class SdaPlayer {
         previousLabels.forEach((label, ch) => {
           const next = frame.labels[ch];
           if (!label.startsWith("Obj_") && (!next || next.startsWith("Obj_"))) {
-            this.renderer!.retireSourceAt(`bed:${ch}`, frame.samplePos);
+            renderer?.retireSourceAt(`bed:${ch}`, frame.samplePos);
+            try { this.nativeRendererSink?.removeSource(`bed:${ch}`, frame.samplePos); } catch (error) {
+              console.warn(`[SDA] player#${this.id} native renderer source removal mirror failed:`, error);
+            }
           }
         });
         this.knownBedLabels = frame.labels;
         frame.labels.forEach((label, ch) => {
           if (!label.startsWith("Obj_")) {
-            this.renderer!.rebindBedSource(`bed:${ch}`, label, frame.samplePos);
+            const id = `bed:${ch}`;
+            renderer?.rebindBedSource(id, label, frame.samplePos);
+            try {
+              this.nativeRendererSink?.addSource({ id, atSample: frame.samplePos, bedLabel: label });
+            } catch (error) {
+              console.warn(`[SDA] player#${this.id} native renderer bed rebind mirror failed:`, error);
+            }
+            this.applyBedMute(id, label, frame.samplePos);
           }
         });
       }
@@ -1334,21 +1929,16 @@ export class SdaPlayer {
       // drop old object routes so a later bed PCM channel cannot inherit a stale
       // moving-object binding after an invalid/missing JOC↔OAMD mapping.
       const hasObjectLabels = frame.labels.some((label) => label.startsWith("Obj_"));
-      let visualChanged = false;
-      if (!hasObjectLabels) {
-        for (const id of this.objectChannels.keys()) {
-          this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
-          this.discardPendingVisualEvents(id);
-        }
-        this.objectChannels.clear();
-        if (this.objects.size > 0) {
-          this.objects.clear();
-          this.visualSnapshotDirty = true;
-          visualChanged = true;
-        }
-      }
-
-      const declarations = frame.objectChannels as ObjectChannelDecl[];
+      const declaredObjects = frame.objectChannels as ObjectChannelDecl[];
+      // JOC declarations are intentionally sparse. A decoder can omit the
+      // unchanged declaration while still carrying the same Obj_* PCM channels;
+      // recover that durable mapping from labels so those channels can never be
+      // rebound as `bed:*` during a sparse metadata update.
+      const labelObjects: ObjectChannelDecl[] = frame.labels.flatMap((label, channel) => {
+        const id = /^Obj_(\d+)$/.exec(label)?.[1];
+        return id === undefined ? [] : [{ id: Number(id), channel }];
+      });
+      const declarations = declaredObjects.length > 0 ? declaredObjects : labelObjects;
       const bedLabels = frame.labels.filter((label) => !label.startsWith("Obj_"));
       // Object declarations are sparse after their first frame. Labels remain on
       // every PCM frame, so they are the durable decoded-format signal for UI.
@@ -1358,13 +1948,18 @@ export class SdaPlayer {
         this.decodedFormatKey = decodedFormatKey;
         this.cb.onDecodedFormat?.({ rawBedLabels: frame.rawBedLabels, bedLabels, objectChannels: objectChannelCount });
       }
+      let visualChanged = false;
       if (declarations.length > 0) {
         // A non-empty sparse declaration is the complete replacement mapping,
         // not a patch. Retire removed sources on the codec sample boundary.
         const nextIds = new Set(declarations.map((declaration) => declaration.id));
         for (const id of this.objectChannels.keys()) {
           if (!nextIds.has(id)) {
-            this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
+            const sourceId = `obj:${id}`;
+            renderer?.retireSourceAt(sourceId, frame.samplePos);
+            try { this.nativeRendererSink?.removeSource(sourceId, frame.samplePos); } catch (error) {
+              console.warn(`[SDA] player#${this.id} native renderer object retirement mirror failed:`, error);
+            }
             this.discardPendingVisualEvents(id);
           }
         }
@@ -1373,10 +1968,11 @@ export class SdaPlayer {
         for (const decl of declarations) {
           declaredIds.add(decl.id);
           this.objectChannels.set(decl.id, decl.channel);
-          this.renderer.addSource(`obj:${decl.id}`, { atSample: frame.samplePos });
+          renderer?.addSource(`obj:${decl.id}`, { atSample: frame.samplePos });
           // 声明可能是整组重放；addSource 对已有 id 幂等，此处只同步独立
           // mute 包络，不触碰该源已经排队/生效的位置、增益等元数据。
-          this.renderer.setSourceMuted(`obj:${decl.id}`, this.mutedObjects.has(decl.id));
+          const objectSourceId = `obj:${decl.id}`;
+          renderer?.setSourceMuted(objectSourceId, this.mutedObjects.has(decl.id));
           if (!this.objects.has(decl.id)) {
             // OAMD events may arrive in a later frame. Expose the object now so
             // the first opened file does not appear to have no objects.
@@ -1392,6 +1988,24 @@ export class SdaPlayer {
             visualChanged = true;
           }
         }
+      } else if (!hasObjectLabels) {
+        // No object labels on this frame means the decoded programme really is a
+        // pure bed now; do not retire objects merely because the frame carried a
+        // sparse declaration with no changes.
+        for (const id of this.objectChannels.keys()) {
+          const sourceId = `obj:${id}`;
+          renderer?.retireSourceAt(sourceId, frame.samplePos);
+          try { this.nativeRendererSink?.removeSource(sourceId, frame.samplePos); } catch (error) {
+            console.warn(`[SDA] player#${this.id} native renderer source removal mirror failed:`, error);
+          }
+          this.discardPendingVisualEvents(id);
+        }
+        this.objectChannels.clear();
+        if (this.objects.size > 0) {
+          this.objects.clear();
+          this.visualSnapshotDirty = true;
+          visualChanged = true;
+        }
       }
       const channelToObject = new Map<number, number>();
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
@@ -1403,7 +2017,7 @@ export class SdaPlayer {
       if (this.autoLayoutEnabled && resolver && (!this.layoutChecked || (!this.layoutHadDynamics && hasDyn))) {
         this.layoutChecked = true;
         this.layoutHadDynamics = hasDyn;
-        const next = resolver(frame.labels, hasDyn);
+        const next = resolver(frame.labels, hasDyn, frame.codec);
         const cur = this.initArgs?.layout;
         const same =
           next && cur && next.length === cur.length && next.every((s, i) => s.name === cur[i]!.name);
@@ -1419,26 +2033,66 @@ export class SdaPlayer {
       // messages are FIFO, so the first sample can never render with a future
       // or stale object position merely because the player prebuffers ~2 s.
       const events = frame.events as ObjectEvent[];
-      this.renderer.applyEvents(events);
+      renderer?.applyEvents(events);
       this.queueVisualEvents(events);
 
       // Enqueue every channel of the decoded frame atomically on the codec's
       // absolute sample clock. Per-source feed messages allowed the worklet to
       // consume a partial frame and permanently desynchronise late objects.
-      const entries = frame.channels.map((samples, ch) => {
+      const sourceDeclarations = frame.channels.map((_, ch) => {
         const objectId = channelToObject.get(ch);
         const id = objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`;
-        if (objectId === undefined) {
-          this.renderer!.addSource(id, { bedLabel: frame.labels[ch] ?? `Bed_${ch}`, atSample: frame.samplePos });
+        const bedLabel = objectId === undefined ? frame.labels[ch] ?? `Bed_${ch}` : undefined;
+        if (bedLabel !== undefined) {
+          renderer?.addSource(id, { bedLabel, atSample: frame.samplePos });
         }
-        return { id, samples };
+        return { id, atSample: frame.samplePos, bedLabel } satisfies NativeRendererSourceDeclaration;
       });
+      const entries = frame.channels.map((samples, ch) => ({ id: sourceDeclarations[ch]!.id, samples }));
       const sequence = this.nextBatchSequence++;
       const pending = { sequence, frame, samples: frameSamples };
       this.inFlight.set(sequence, pending);
       this.submittedFrames.add(frame);
       outstandingSamples += frameSamples;
-      this.renderer.feedBatch(sequence, frame.samplePos, entries);
+      if (this.outputBackend === "native-sidecar") {
+        const generation=this.rendererGeneration;
+        const current=()=>!this.disposed&&generation===this.rendererGeneration&&this.inFlight.has(sequence);
+        const submit = async () => {
+          if(!current())return;
+          let result;
+          if (this.nativeRendererSink!.frameWithEvents) {
+            result = await this.nativeRendererSink!.frameWithEvents(frame.samplePos, entries, events, sourceDeclarations);
+          } else {
+            if (events.length > 0) await this.nativeRendererSink!.events(events);
+            if(!current())return;
+            await Promise.all(sourceDeclarations.map((source) => this.nativeRendererSink!.addSource(source)));
+            if(!current())return;
+            result = await this.nativeRendererSink!.frame(frame.samplePos, entries);
+          }
+          if(!current())return;
+          this.handleBatchResult(this.rendererGeneration, result
+            ? { sequence, ...result }
+            : { sequence, accepted: false, samples: 0, reason: "native sidecar returned no batch ACK" });
+        };
+        void this.nativeFrames.submit(submit).catch((error) => {
+          if(!current())return;
+          this.handleBatchResult(this.rendererGeneration, {
+            sequence,
+            accepted: false,
+            samples: 0,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } else {
+        try {
+          for (const source of sourceDeclarations) this.nativeRendererSink?.addSource(source);
+          this.nativeRendererSink?.frame(frame.samplePos, entries);
+        } catch (error) {
+          console.warn(`[SDA] player#${this.id} native renderer frame mirror failed:`, error);
+        }
+        if (!this.renderer) return;
+        this.renderer.feedBatch(sequence, frame.samplePos, entries);
+      }
 
       if (visualChanged) this.emitVisual();
     }
@@ -1447,16 +2101,19 @@ export class SdaPlayer {
 
   /** 已喂入 worklet 但尚未播出的秒数（真实占着环形缓冲的部分）。 */
   private fedBufferedSeconds(): number {
-    if (!this.renderer || this.startupOrigin === null) return 0;
-    const cursor = this.playbackStarted ? this.renderer.consumedSamples : this.startupOrigin;
+    if ((this.outputBackend === "web-audio" && !this.renderer) || this.startupOrigin === null) return 0;
+    const cursor = this.playbackStarted ? this.consumedSamples() : this.startupOrigin;
     return Math.max(0, this.acceptedEndSample - cursor) / this.sampleRate;
   }
 
   private checkEnded(): void {
-    if (this.ended && this.pcmQueue.length === 0 && this.fedBufferedSeconds() <= 0.2) {
+    if (this.ended && this.pcmQueue.length === 0 && this.inFlight.size === 0 && this.fedBufferedSeconds() <= (this.outputBackend === "native-sidecar" ? 0 : 0.2)) {
       this.ended = false;
       if (this.visualTimer) clearInterval(this.visualTimer);
       this.visualTimer = null;
+      this.soundingObjectIds.clear();
+      this.soundingObjectIdsDirty = true;
+      this.emitVisual();
       this.cb.onEnded?.();
     }
   }
@@ -1480,7 +2137,17 @@ export class SdaPlayer {
   }
 
   private emitVisual(): void {
-    const streamTimeSec = this.positionSeconds();
+    if (this.outputBackend === "native-sidecar") {
+      const consumed = this.nativeRendererSink?.getConsumedSamples?.();
+      if (typeof consumed === "number" && Number.isFinite(consumed) && consumed > this.nativeConsumedSamples) {
+        this.updateNativeConsumedCursor(consumed);
+      }
+    }
+    const streamTimeSec = this.outputBackend === "native-sidecar"
+      ? Math.min(this.durationSeconds(), Math.max(0,
+          this.presentationClock.read(this.nativeConsumedSamples, performance.now(), this.sampleRate,
+            this.playbackStarted && !this.pausedState) - (this.startupOrigin ?? 0)) / this.sampleRate)
+      : this.positionSeconds();
     const playedSample = Math.floor(streamTimeSec * this.sampleRate);
     let changed = false;
     while (

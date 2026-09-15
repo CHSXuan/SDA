@@ -22,11 +22,15 @@
  * +10dB LFE 补偿，也不包含主声道的低频重定向。
  */
 
-import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
+import { admToSpherical, sphericalToAdm, sphericalToWebAudio, type Spherical } from "./coords.js";
+import { HeadPoseTracker, type HeadPose, type HeadPoseOptions } from "./head-pose.js";
+import { applyZoneExclusion } from "./adm-zone.js";
+import type { AdmZone } from "../../core/src/adm-zone.js";
 import {
   LAYOUT_7_1_4,
   LAYOUTS,
   RENDER_TOPOLOGY,
+  DENSE_BINAURAL_FILLS,
   positionForLabel,
   isLfeLabel,
   aliasLabel,
@@ -39,7 +43,7 @@ import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 
 type BinauralRenderMode = "off" | "near" | "mid" | "far" | "not-indicated";
 import { headphoneProfileById, getHeadphoneCompensationBuffers, type HeadphoneCompensationBuffers, type HeadphoneCompensationProfile } from "./headphone-compensation.js";
-import type { ObjectEvent } from "@sda/core";
+import { initCore, VbapBatchSolver, type ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
 
@@ -73,8 +77,6 @@ const BASS_MANAGEMENT_CROSSOVER_HZ = 85;
 const LFE_LOWPASS_HZ = 120;
 /** 双耳耳机路径不套用影院/音箱的 LFE +10dB 回放补偿，避免底鼓过量。 */
 const BINAURAL_LFE_INBAND_GAIN = 1;
-/** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
-const BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
 /** Shared stereo-linked lookahead sample-peak ceiling; no oversampling, so it is not true-peak limiting. */
 const BINAURAL_PEAK_GUARD_CEILING_DB = -1;
 const BINAURAL_PEAK_GUARD_LOOKAHEAD_S = 0.005;
@@ -87,6 +89,8 @@ const BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
 
 const BINAURAL_BANKS = ["off", "near", "mid", "far"] as const;
 export type BinauralBank = (typeof BINAURAL_BANKS)[number];
+/** Chromium/Electron caps a single AudioWorklet output at 32 channels. */
+const MAX_WORKLET_OUTPUT_CHANNELS = 32;
 const BINAURAL_NOT_INDICATED_DEFAULT: BinauralBank = "mid";
 const PCM_RING_SAMPLES = 1 << 18;
 
@@ -224,6 +228,12 @@ export interface RendererOptions {
   /** 预加载的双耳 IR 集（SADIE II KU100 派生）；也可 init 后 setBinauralData。
    *  缺省时双耳模式回退到浏览器内置 PannerNode HRTF。 */
   binauralIrSet?: BinauralIrSet;
+  /** 密集球面 IR 集（逐对象精确方向渲染用，可选开启）。 */
+  denseBinauralIrSet?: BinauralIrSet;
+  /** 开启后对象在密集球面上按精确方向落位（实验性，CPU 更高）。 */
+  denseBinauralObjects?: boolean;
+  /** Device-neutral ADM head-to-world pose processing policy. */
+  headPose?: HeadPoseOptions;
   /** worklet 每消耗约 1/8 秒回调一次 —— 播放器用它泵入更多 PCM（背压）。 */
   onConsumedTick?: (stats: RendererStats) => void;
   /** Throttled post-gain/post-mute object activity from the render worklet. */
@@ -244,11 +254,18 @@ interface ScheduledGainMessage {
   gain: number;
   lp: number;
   ramp: number;
+  /** A scheduled object route that live head tracking must not overwrite. */
+  poseControlled?: boolean;
+  /** A live pose refresh changes only the spatial route, not metadata gain. */
+  poseUpdate?: boolean;
 }
 
 interface SourceState {
   id: string;
   spread: number;
+  diffuse: number;
+  horizontalOnly?: boolean;
+  zoneExclusion?: AdmZone[];
   position: Spherical;
   gainDb: number;
   /** At least one codec object event has established this source's target. */
@@ -266,6 +283,34 @@ interface SourceState {
   binauralMode?: BinauralRenderMode;
   lifecycleEvents: { at: number; active: boolean; order: number }[];
   lifecycleEventOrder: number;
+  /** Canonical object targets keyed to codec time. Pose refreshes update both
+   * the currently audible route and already-buffered future route changes. */
+  objectPoseTimeline: {
+    at: number;
+    fromPosition: Spherical;
+    position: Spherical;
+    fromSpread: number;
+    spread: number;
+    fromDiffuse: number;
+    diffuse: number;
+    horizontalOnly?: boolean;
+    zoneExclusion?: AdmZone[];
+    gainDb: number;
+    rampSamples: number;
+  }[];
+}
+
+export function interpolateObjectPosition(from: Spherical, to: Spherical, progress: number): Spherical {
+  const amount = Math.min(1, Math.max(0, progress));
+  if (amount <= 0) return from;
+  if (amount >= 1) return to;
+  const start = sphericalToAdm(from);
+  const end = sphericalToAdm(to);
+  return admToSpherical([
+    start[0] + (end[0] - start[0]) * amount,
+    start[1] + (end[1] - start[1]) * amount,
+    start[2] + (end[2] - start[2]) * amount,
+  ]);
 }
 
 export class SpatialRenderer {
@@ -277,7 +322,8 @@ export class SpatialRenderer {
   /** Current logical-layout bus -> fixed worklet topology bus. Rebuilt only when
    * the layout changes, never while processing object motion. */
   private renderToTopology: Int16Array;
-  /** 固定的最大总线拓扑。AudioWorklet 保持存活；双耳后级只接当前布局使用的 bus。 */
+  /** 固定的最大总线拓扑。AudioWorklet 保持存活；双耳后级只接当前布局使用的 bus。
+   *  末尾追加的密集"双耳专用"总线仅服务逐对象精确方向渲染，立体声/多声道不映射它们。 */
   private readonly topology: readonly VirtualSpeaker[];
   mode: OutputMode;
   /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
@@ -290,6 +336,21 @@ export class SpatialRenderer {
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
+  private horizontalVbap?: { layout: readonly VirtualSpeaker[]; solver: VbapSolver; indices: number[] };
+  /** Optional Rust/WASM batch solver. The TypeScript solver remains the
+   * correctness fallback until the WASM core is loaded and for unsupported calls. */
+  private wasmVbap: VbapBatchSolver | null = null;
+  private wasmVbapLayoutRevision = 0;
+  /** 开启后对象在密集球面按精确方向落位（仅双耳输出）。 */
+  private denseBinauralObjects = false;
+  /** 密集球面 IR 集（hrtf-dense，61 个测量方向），仅密集模式挂载。 */
+  private denseIrSet: BinauralIrSet | null = null;
+  /** Pose changes only recompute source gain vectors; they never touch the graph. */
+  private readonly headPose: HeadPoseTracker;
+  private poseUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private poseStaleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPoseGainUpdateMs = Number.NEGATIVE_INFINITY;
+  private poseControlEnabled = false;
   private node: AudioWorkletNode | null = null;
   /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
   private peakGuard: AudioWorkletNode | null = null;
@@ -302,7 +363,7 @@ export class SpatialRenderer {
   /** Nodes owned only by the replaceable binaural bus graph. */
   private binauralBusNodes: AudioNode[] = [];
   /** Worklet output connections that must be explicitly detached on layout swap. */
-  private binauralBankSplitters = new Map<BinauralBank, ChannelSplitterNode>();
+  private binauralBankSplitters = new Map<BinauralBank, ReturnType<SpatialRenderer["createBankSplitter"]>>();
   /** Bus identity sequence that owns the current replaceable binaural graph. */
   private binauralBusKeySequence = "";
   private sources = new Map<string, SourceState>();
@@ -318,6 +379,7 @@ export class SpatialRenderer {
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
   /** 最终双耳回放补偿。无 profile 时是 literal bypass。 */
+  private headphoneLoadRevision = 0;
   private headphoneProfileId: string | null = null;
   /** User-controlled final 3-band EQ. Never affects stereo or physical multichannel output. */
   private binauralEqBands: BinauralEqBands = { low: 0, mid: 0, high: 0 };
@@ -351,10 +413,14 @@ export class SpatialRenderer {
     this.ctx = ctx;
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
-    this.topology = RENDER_TOPOLOGY;
+    this.denseBinauralObjects = options.denseBinauralObjects === true;
+    this.denseIrSet = options.denseBinauralIrSet ?? null;
+    this.topology = [...RENDER_TOPOLOGY, ...DENSE_BINAURAL_FILLS];
     this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
+    this.headPose = new HeadPoseTracker(options.headPose);
+    this.refreshWasmVbap();
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
     this.onObjectActivity = options.onObjectActivity;
@@ -427,8 +493,7 @@ export class SpatialRenderer {
     const nodes: AudioNode[] = [];
     const merger = this.ctx.createChannelMerger(3);
     BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(this.topology.length);
-      this.node!.connect(splitter, outputIndex);
+      const splitter = this.createBankSplitter(outputIndex);
       for (const [bus, outputChannel] of [[leftBus, 0], [rightBus, 1]] as const) {
         const [hpIn, hpOut] = this.lr4("highpass", BASS_MANAGEMENT_CROSSOVER_HZ);
         splitter.connect(hpIn, bus);
@@ -449,7 +514,7 @@ export class SpatialRenderer {
       splitter.connect(lfeIn, lfeBus);
       lfeOut.connect(subSum);
       subSum.connect(merger, 0, 2);
-      nodes.push(splitter, subSum, lfeIn, lfeOut);
+      nodes.push(...splitter.nodes, subSum, lfeIn, lfeOut);
     });
     const gain = this.ctx.createGain();
     gain.gain.value = initialGain;
@@ -469,15 +534,14 @@ export class SpatialRenderer {
     const nodes: AudioNode[] = [];
     const merger = this.ctx.createChannelMerger(layout.length);
     BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(this.topology.length);
-      this.node!.connect(splitter, outputIndex);
+      const splitter = this.createBankSplitter(outputIndex);
       physicalChannelOrder(layout).forEach((layoutBus, channel) => {
         const topologyBus = this.topology.findIndex(
           (speaker) => speakerBusKey(speaker) === speakerBusKey(layout[layoutBus]!),
         );
         if (topologyBus >= 0) splitter.connect(merger, topologyBus, channel);
       });
-      nodes.push(splitter);
+      nodes.push(...splitter.nodes);
     });
     const gain = this.ctx.createGain();
     gain.gain.value = initialGain;
@@ -511,14 +575,79 @@ export class SpatialRenderer {
       this.topology.map((speaker, index) => [speakerBusKey(speaker), index]),
     );
     return Int16Array.from(
-      this.renderLayout.map((speaker) => topologyByKey.get(speakerBusKey(speaker)) ?? -1),
+      this.renderLayout.map((speaker) => topologyByKey.get(speakerBusKey(speaker)) ?? this.topology.findIndex(bus => !bus.isLfe && bus.azimuth === speaker.azimuth && bus.elevation === speaker.elevation)),
     );
   }
 
+  /** Dense binaural render layout: logical layout speakers plus dense fills that
+   * are not already within ~10° of a layout speaker (so bed channels keep their
+   * exact buses while objects gain precise directions). Only used for binaural. */
+  private denseBinauralLayout(): readonly VirtualSpeaker[] {
+    const base = virtualLayoutForOutput(this.layout, "binaural");
+    const fills = DENSE_BINAURAL_FILLS.filter((fill) => !base.some((speaker) => {
+      if (speaker.isLfe) return false; // LFE has no direction; never evicts a fill.
+      const dAz = Math.abs(((speaker.azimuth - fill.azimuth + 540) % 360) - 180);
+      return dAz < 10 && Math.abs(speaker.elevation - fill.elevation) < 10;
+    }));
+    return [...base, ...fills];
+  }
+
+  /** Build the optional Rust/WASM geometry solver for the active logical layout.
+   * Layout revision guards keep a slow async core initialization from replacing a
+   * newer layout's solver. Any failure deliberately preserves the JS fallback. */
+  private refreshWasmVbap(): void {
+    const revision = ++this.wasmVbapLayoutRevision;
+    this.wasmVbap?.free();
+    this.wasmVbap = null;
+    const directions = new Float64Array(this.renderLayout.length * 3);
+    const lfeMask = new Uint8Array(this.renderLayout.length);
+    const azimuths = new Float64Array(this.renderLayout.length);
+    this.renderLayout.forEach((speaker, index) => {
+      const [x, y, z] = sphericalToAdm(speaker);
+      directions.set([x, y, z], index * 3);
+      lfeMask[index] = speaker.isLfe ? 1 : 0;
+      azimuths[index] = speaker.azimuth;
+    });
+    void initCore()
+      .then(() => {
+        if (revision !== this.wasmVbapLayoutRevision) return;
+        this.wasmVbap = new VbapBatchSolver(directions, lfeMask, azimuths);
+      })
+      .catch((error) => console.warn("[SDA] Rust VBAP 不可用，保持 TypeScript 回退:", error));
+  }
+
+  /** Batch spatial gain vectors for same-layout object metadata. Pose updates
+   * intentionally stay on the direct JS path because they are wall-clock live. */
+  private panObjectBatch(states: readonly SourceState[]): readonly Float32Array[] | null {
+    const solver = this.wasmVbap;
+    if (!solver || states.length === 0) return null;
+    try {
+      const positions = new Float64Array(states.length * 3);
+      const spreads = new Float64Array(states.length);
+      states.forEach((state, index) => {
+        const [x, y, z] = sphericalToAdm(state.position);
+        positions.set([x, y, z], index * 3);
+        spreads[index] = state.spread;
+      });
+      const packed = solver.panBatch(positions, spreads);
+      if (packed.length !== states.length * this.renderLayout.length) return null;
+      return states.map((_, index) => packed.subarray(
+        index * this.renderLayout.length,
+        (index + 1) * this.renderLayout.length,
+      ));
+    } catch (error) {
+      console.warn("[SDA] Rust VBAP 批处理失败，保持 TypeScript 回退:", error);
+      return null;
+    }
+  }
+
   private updateRenderLayout(): void {
-    this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.renderLayout = this.mode === "binaural" && this.denseBinauralObjects
+      ? this.denseBinauralLayout()
+      : virtualLayoutForOutput(this.layout, this.mode);
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
+    this.refreshWasmVbap();
     for (const state of this.sources.values()) {
       if (state.bedLabel && !state.isLfe) {
         state.snapBus = this.renderLayout.findIndex((speaker) => speaker.name === state.bedLabel);
@@ -541,16 +670,30 @@ export class SpatialRenderer {
     }
   }
 
+  private createBankSplitter(bank: number) {
+    const count = Math.ceil(this.topology.length / MAX_WORKLET_OUTPUT_CHANNELS);
+    const nodes = Array.from({length: count}, (_, chunk) => {
+      const node = this.ctx.createChannelSplitter(Math.min(MAX_WORKLET_OUTPUT_CHANNELS, this.topology.length - chunk * MAX_WORKLET_OUTPUT_CHANNELS));
+      this.node!.connect(node, bank * count + chunk);
+      return node;
+    });
+    return { nodes, connect: (destination: AudioNode, bus: number, input = 0) =>
+      nodes[Math.floor(bus / MAX_WORKLET_OUTPUT_CHANNELS)]!.connect(destination, bus % MAX_WORKLET_OUTPUT_CHANNELS, input),
+      disconnect: () => { for (const node of nodes) { this.node?.disconnect(node); node.disconnect(); } } };
+  }
+
   async init(workletModuleUrl: string | URL): Promise<void> {
+    const chunks = Math.ceil(this.topology.length / MAX_WORKLET_OUTPUT_CHANNELS);
     await this.ctx.audioWorklet.addModule(workletModuleUrl);
     this.master = this.ctx.createGain();
     this.master.connect(this.ctx.destination);
     this.node = new AudioWorkletNode(this.ctx, "sda-renderer", {
       numberOfInputs: 0,
-      numberOfOutputs: BINAURAL_BANKS.length,
-      outputChannelCount: BINAURAL_BANKS.map(() => this.topology.length),
-      processorOptions: { busCount: this.topology.length, epoch: this.epoch },
+      numberOfOutputs: BINAURAL_BANKS.length * chunks,
+      outputChannelCount: BINAURAL_BANKS.flatMap(() => Array.from({length: chunks}, (_, i) => Math.min(MAX_WORKLET_OUTPUT_CHANNELS, this.topology.length - i * MAX_WORKLET_OUTPUT_CHANNELS))),
+      processorOptions: { busCount: this.topology.length, outputChunkSize: MAX_WORKLET_OUTPUT_CHANNELS, epoch: this.epoch },
     });
+    if (this.poseControlEnabled) this.node.port.postMessage({ type: "headTracking", enabled: true });
     this.node.port.onmessage = (e: MessageEvent) => {
       if (e.data?.type === "ready") {
         console.log(`[SDA] audio worklet ${String(e.data.build ?? "unknown")} ring=${e.data.ringSize}`);
@@ -606,6 +749,42 @@ export class SpatialRenderer {
     return this.irSet !== null;
   }
 
+  /** 注入密集球面 IR 集（逐对象精确方向渲染）。密集模式已开启时强制重建双耳总线，
+   * 让填充方向从"最近床层方向"切到密集集里的精确方向。 */
+  setDenseBinauralIrSet(set: BinauralIrSet | null): void {
+    // Dense directions share the same final L/R merger as calibrated bed buses.
+    // Reject an uncalibrated set instead of mixing two incompatible direct/tail
+    // reference systems, which is especially destructive with many objects.
+    if (set && !set.calibrated && !(set.preserveMeasurements && set.subjectId === "ku100")) {
+      console.warn("[SDA] 拒绝未校准 dense HRTF：保持标准 KU100 双耳路径");
+      this.denseIrSet = null;
+      if (this.denseBinauralObjects) this.setDenseBinauralObjects(false);
+      return;
+    }
+    this.denseIrSet = set;
+    if (this.node && this.denseBinauralObjects) this.rebuildBinauralBusGraph(true);
+  }
+
+  get hasDenseBinauralData(): boolean {
+    return this.denseIrSet !== null;
+  }
+
+  /** 逐对象精确方向渲染开关（仅双耳输出生效）。开启后对象 VBAP 到密集球面：
+   * 落点不再吸附到床层扬声器方向，填充总线用密集 IR 集卷积；床层声道不变。 */
+  setDenseBinauralObjects(enabled: boolean): void {
+    if (enabled === this.denseBinauralObjects) return;
+    this.denseBinauralObjects = enabled;
+    this.updateRenderLayout();
+    this.rebuildBinauralBusGraph();
+    for (const state of this.sources.values()) {
+      this.applyGains(state, 2048);
+    }
+  }
+
+  get denseBinauralObjectsEnabled(): boolean {
+    return this.denseBinauralObjects;
+  }
+
   /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
    * 制作响度不变，播放不中断。 */
   setBinauralMode(mode: BinauralMode): void {
@@ -640,6 +819,7 @@ export class SpatialRenderer {
     if (profileId !== null && !headphoneProfileById(profileId)) {
       throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
     }
+    this.headphoneLoadRevision++;
     this.headphoneProfileId = profileId;
     if (!profileId) {
       this.headphoneBuffers = null;
@@ -734,6 +914,7 @@ export class SpatialRenderer {
     // A mode can select a different logical layout even when its speaker count
     // is unchanged. Rebuild only if the fixed bus identity sequence changed.
     this.rebuildBinauralBusGraph();
+    this.syncPoseControl(this.mode === "binaural" && this.headPose.isActive(performance.now()));
     // 床层扩展只属于物理多声道。输出模式切换后必须重推 gains，不能沿用
     // 旧模式的前宽/后环派生馈送。
     for (const state of this.sources.values()) this.applyGains(state, 2048);
@@ -743,9 +924,122 @@ export class SpatialRenderer {
     return this.mode;
   }
 
+  /** Apply a calibrated canonical ADM head-to-world pose. Pose updates use
+   * immediate worklet gain ramps, deliberately never rewriting codec-timeline
+   * metadata that may already be scheduled in the future. */
+  setHeadPose(pose: HeadPose): boolean {
+    const now = performance.now();
+    if (!this.headPose.set(pose, now)) return false;
+    this.syncPoseControl(this.mode === "binaural");
+    this.schedulePoseGainUpdate(now);
+    if (this.poseStaleTimer !== null) globalThis.clearTimeout(this.poseStaleTimer);
+    this.poseStaleTimer = globalThis.setTimeout(() => {
+      this.poseStaleTimer = null;
+      // isActive() clears a stale orientation; force one neutral gain refresh.
+      if (!this.headPose.isActive(performance.now())) this.schedulePoseGainUpdate(performance.now(), true);
+    }, this.headPose.options.staleAfterMs + 1);
+    return true;
+  }
+
+  /** Disable head tracking and smoothly return world-locked sources to neutral. */
+  clearHeadPose(): void {
+    if (this.poseStaleTimer !== null) {
+      globalThis.clearTimeout(this.poseStaleTimer);
+      this.poseStaleTimer = null;
+    }
+    if (!this.headPose.clear()) return;
+    this.syncPoseControl(false);
+    this.schedulePoseGainUpdate(performance.now(), true);
+  }
+
+  /** Set the current active head orientation as the neutral viewing direction. */
+  recenterHeadPose(): boolean {
+    if (!this.headPose.recenter()) return false;
+    this.schedulePoseGainUpdate(performance.now(), true);
+    return true;
+  }
+
+  private schedulePoseGainUpdate(now: number, force = false): void {
+    const interval = 1000 / this.headPose.options.updateHz;
+    const wait = force ? 0 : Math.max(0, interval - (now - this.lastPoseGainUpdateMs));
+    if (this.poseUpdateTimer !== null) return;
+    this.poseUpdateTimer = globalThis.setTimeout(() => {
+      this.poseUpdateTimer = null;
+      this.lastPoseGainUpdateMs = performance.now();
+      // Stale input automatically disables tracking here as well, so a provider
+      // disappearing returns to the unrotated world rather than freezing pose.
+      const trackingActive = this.mode === "binaural" && this.headPose.isActive(this.lastPoseGainUpdateMs);
+      this.syncPoseControl(trackingActive);
+      const futurePoseMessages: ScheduledGainMessage[] = [];
+      for (const state of this.sources.values()) {
+        if (state.isLfe) continue;
+        // Object events are often prebuffered seconds ahead. Select the last
+        // target due at the rendered codec cursor instead of using `state`'s
+        // newest (possibly future) scheduled metadata.
+        let immediate = state;
+        if (!state.bedLabel && state.objectPoseTimeline.length > 0) {
+          let dueIndex = -1;
+          for (let index = 0; index < state.objectPoseTimeline.length; index++) {
+            if (state.objectPoseTimeline[index]!.at > this.consumedSamples) break;
+            dueIndex = index;
+          }
+          if (dueIndex >= 0) {
+            if (dueIndex >= 64) {
+              state.objectPoseTimeline.splice(0, dueIndex);
+              dueIndex = 0;
+            }
+            const due = state.objectPoseTimeline[dueIndex]!;
+            const progress = due.rampSamples === 0 ? 1 : Math.min(1, Math.max(
+              0,
+              (this.consumedSamples - due.at) / due.rampSamples,
+            ));
+            immediate = {
+              ...state,
+              position: interpolateObjectPosition(due.fromPosition, due.position, progress),
+              spread: due.fromSpread + (due.spread - due.fromSpread) * progress,
+              diffuse: due.fromDiffuse + (due.diffuse - due.fromDiffuse) * progress,
+              horizontalOnly: due.horizontalOnly,
+              zoneExclusion: due.zoneExclusion,
+              gainDb: due.gainDb,
+            };
+          }
+          if (trackingActive) {
+            // Audio continues if Electron's main thread is briefly descheduled.
+            // Keep every already-buffered metadata boundary paired with a
+            // head-relative route so the worklet never waits on the next timer.
+            for (let index = dueIndex + 1; index < state.objectPoseTimeline.length; index++) {
+              const target = state.objectPoseTimeline[index]!;
+              const future = { ...state, position: target.position, spread: target.spread, diffuse: target.diffuse, horizontalOnly: target.horizontalOnly, zoneExclusion: target.zoneExclusion, gainDb: target.gainDb };
+              futurePoseMessages.push(this.gainMessage(future, target.rampSamples, target.at, true));
+            }
+          }
+          if (dueIndex < 0) continue;
+        }
+        // Keep a pose route ramp alive across several 120 Hz updates. Retargeting
+        // starts from the current sample-accurate gain, so even a 100-degree turn
+        // traverses the HRTF/VBAP field instead of switching between directions.
+        const poseRampSamples = Math.max(1, Math.round(this.ctx.sampleRate * 0.024));
+        this.applyGains(immediate, poseRampSamples, undefined, true);
+      }
+      if (futurePoseMessages.length === 1) this.node?.port.postMessage(futurePoseMessages[0]);
+      else if (futurePoseMessages.length > 1) {
+        this.node?.port.postMessage({ type: "scheduleGainsBatch", entries: futurePoseMessages });
+      }
+      // Continue convergence after a smoothed pose update even if the provider
+      // sends a lower-rate sample stream; staleness cancels this naturally.
+      if (trackingActive) this.schedulePoseGainUpdate(this.lastPoseGainUpdateMs);
+    }, wait);
+  }
+
+  private syncPoseControl(enabled: boolean): void {
+    if (enabled === this.poseControlEnabled) return;
+    this.poseControlEnabled = enabled;
+    this.node?.port.postMessage({ type: "headTracking", enabled });
+  }
+
   private teardownPostNodes(): void {
     this.outputGraphRevision++;
-    for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
+    for (const splitter of this.binauralBankSplitters.values()) splitter.disconnect();
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
     this.convs.clear();
@@ -822,6 +1116,7 @@ export class SpatialRenderer {
     this.buildMultichannelPath(n, createModeOutput("multichannel"));
     this.buildStereoPath(n, createModeOutput("stereo"));
     this.buildBinauralPath(createModeOutput("binaural"));
+    this.peakGuard?.disconnect();
     this.peakGuard?.connect(master);
     this.loadHeadphoneCompensation();
   }
@@ -834,8 +1129,7 @@ export class SpatialRenderer {
     const wetTarget = wet ? 1 : 0;
     for (const node of [...this.headphoneDry, ...this.headphoneWet]) {
       const target = this.headphoneDry.includes(node) ? dryTarget : wetTarget;
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.cancelAndHoldAtTime(now);
       node.gain.linearRampToValueAtTime(target, now + duration);
     }
   }
@@ -881,16 +1175,17 @@ export class SpatialRenderer {
 
     const now = this.ctx.currentTime;
     for (const node of this.headphoneDry) {
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.cancelAndHoldAtTime(now);
       node.gain.linearRampToValueAtTime(0, now + 0.05);
     }
     for (const node of oldWet ?? []) {
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.cancelAndHoldAtTime(now);
       node.gain.linearRampToValueAtTime(0, now + 0.05);
     }
-    for (const node of [wetLeft, wetRight]) node.gain.linearRampToValueAtTime(1, now + 0.05);
+    for (const node of [wetLeft, wetRight]) {
+      node.gain.setValueAtTime(0, now);
+      node.gain.linearRampToValueAtTime(1, now + 0.05);
+    }
 
     this.retirePostNodes(retired, 250);
   }
@@ -903,9 +1198,10 @@ export class SpatialRenderer {
       return;
     }
     const revision = this.outputGraphRevision;
+    const loadRevision = ++this.headphoneLoadRevision;
     void getHeadphoneCompensationBuffers(this.ctx, profile)
       .then((buffers) => {
-        if (this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
+        if (loadRevision !== this.headphoneLoadRevision || this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
         this.headphoneBuffers = buffers;
         this.installHeadphoneCompensation(buffers);
         console.log(`[SDA] 耳机补偿已启用: ${profile.id} (${buffers.left.length}/${buffers.right.length} taps)`);
@@ -913,7 +1209,7 @@ export class SpatialRenderer {
       .catch((error) => console.warn(`[SDA] 耳机补偿加载失败，保持 bypass: ${profile.id}`, error));
   }
 
-  /** Physical output keeps the 18-bus worklet topology internal, then compacts
+  /** Physical output keeps the worklet's full topology internal, then compacts
    * the selected layout into contiguous WASAPI-mask order. */
   private buildMultichannelPath(_n: number, output: GainNode): void {
     this.multichannelOutput = output;
@@ -924,10 +1220,12 @@ export class SpatialRenderer {
   private buildStereoPath(n: number, output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);
     BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(n);
-      this.node!.connect(splitter, outputIndex);
+      const splitter = this.createBankSplitter(outputIndex);
       for (let bus = 0; bus < n; bus++) {
         const spk = this.topology[bus]!;
+        // Dense binaural-only fills are not real speakers; they must never feed
+        // the stereo downmix.
+        if (spk.binauralOnly) continue;
         const gainL = this.ctx.createGain();
         const gainR = this.ctx.createGain();
         const [left, right] = stereoDownmixGains(spk);
@@ -939,7 +1237,7 @@ export class SpatialRenderer {
         gainR.connect(merger, 0, 1);
         this.postNodes.push(gainL, gainR);
       }
-      this.postNodes.push(splitter);
+      this.postNodes.push(...splitter.nodes);
     });
     merger.connect(output);
     this.postNodes.push(merger);
@@ -965,11 +1263,11 @@ export class SpatialRenderer {
   /** Disconnect only the replaceable bus branches. The worklet, source rings, and
    * final binaural processing remain connected, so a layout change cannot reset
    * the codec timeline or leak obsolete ConvolverNodes. */
-  private rebuildBinauralBusGraph(): void {
+  private rebuildBinauralBusGraph(force = false): void {
     if (!this.binauralMerger) return;
     const nextBusKeySequence = this.currentBinauralBusKeySequence();
-    if (nextBusKeySequence === this.binauralBusKeySequence) return;
-    for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
+    if (!force && nextBusKeySequence === this.binauralBusKeySequence) return;
+    for (const splitter of this.binauralBankSplitters.values()) splitter.disconnect();
     for (const node of this.binauralBusNodes) node.disconnect();
     const retired = new Set(this.binauralBusNodes);
     this.postNodes = this.postNodes.filter((node) => !retired.has(node));
@@ -1011,14 +1309,18 @@ export class SpatialRenderer {
   private buildBinauralBank(bank: BinauralBank): void {
     if (!this.node || !this.binauralMerger || this.convs.has(bank)) return;
     const outputIndex = BINAURAL_BANKS.indexOf(bank);
-    const splitter = this.ctx.createChannelSplitter(this.topology.length);
-    this.node.connect(splitter, outputIndex);
+    const splitter = this.createBankSplitter(outputIndex);
     this.binauralBankSplitters.set(bank, splitter);
     const convs = new Map<number, ConvolverNode | null>();
     const mode: BinauralMode = bank === "far" ? "far" : bank === "mid" ? "mid" : "near";
     // Build measured buffers from logical speaker geometry, then connect them to
     // their fixed worklet bus. This retains calibrated per-layout IR selection.
+    // Dense binaural-only fills take their IRs from the dense sphere set (exact
+    // 20°/45° grid directions); named bed speakers keep the calibrated set.
     const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.renderLayout, mode) : null;
+    const denseBusIrs = this.denseIrSet && bank !== "off" && this.denseBinauralObjects
+      ? buildBusIrs(this.ctx, this.denseIrSet, this.renderLayout, mode)
+      : null;
     for (const { topologyBus, speaker, layoutBus } of this.activeBinauralBuses()) {
       if (speaker.isLfe) {
         const lfeGain = this.ctx.createGain();
@@ -1041,7 +1343,7 @@ export class SpatialRenderer {
         convs.set(topologyBus, null);
         continue;
       }
-      const ir = busIrs?.get(layoutBus);
+      const ir = (speaker.binauralOnly ? denseBusIrs?.get(layoutBus) ?? busIrs?.get(layoutBus) : busIrs?.get(layoutBus));
       if (ir) {
         const conv = this.ctx.createConvolver();
         conv.normalize = false;
@@ -1074,15 +1376,13 @@ export class SpatialRenderer {
       }
     }
     this.convs.set(bank, convs);
-    this.trackBinauralBusNodes(splitter);
+    this.trackBinauralBusNodes(...splitter.nodes);
   }
 
-  /** Per-mode double-ear rendering. The worklet exposes four 18-channel
+  /** Per-mode double-ear rendering. The worklet exposes four topology-channel
    * outputs, avoiding the browser's single-node channel limit. */
   private buildBinauralPath(output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);
-    const makeup = this.ctx.createGain();
-    makeup.gain.value = BINAURAL_MAKEUP_GAIN;
     const peakGuard = this.peakGuard;
     if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
 
@@ -1177,9 +1477,8 @@ export class SpatialRenderer {
     diagnosticSplit.connect(diagnosticRight, 1);
     diagnosticRight.connect(diagnosticMerge, 0, 1);
     this.postNodes.push(eqHeadroom, eqSplit, eqMerge, diagnosticSplit, diagnosticLeft, diagnosticRight, diagnosticMerge);
-    diagnosticMerge.connect(makeup);
-    makeup.connect(output);
-    this.postNodes.push(merger, makeup);
+    diagnosticMerge.connect(output);
+    this.postNodes.push(merger);
   }
 
   rebindBedSource(id: string, bedLabel: string, atSample: number): void {
@@ -1223,6 +1522,7 @@ export class SpatialRenderer {
     const state: SourceState = {
       id,
       spread: 0,
+      diffuse: 0,
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       hasObjectMetadata: false,
@@ -1234,6 +1534,7 @@ export class SpatialRenderer {
       binauralMode: undefined,
       lifecycleEvents: [],
       lifecycleEventOrder: 0,
+      objectPoseTimeline: [],
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
@@ -1377,12 +1678,17 @@ export class SpatialRenderer {
   applyEvents(events: readonly ObjectEvent[]): number {
     if (!this.node || events.length === 0) return 0;
     const messages: ScheduledGainMessage[] = [];
+    const pending: { state: SourceState; ramp: number; at: number }[] = [];
+    let accepted = 0;
     for (const ev of events) {
       const state = this.sources.get(`obj:${ev.id}`);
       if (!state) continue;
       const nextPosition = ev.hasPos ? admToSpherical(ev.pos) : state.position;
       const nextSpread = ev.hasPos ? sizeToSpread(ev.size) : state.spread;
-      const ramp = ev.rampDuration || 128;
+      const nextDiffuse = Math.max(0, Math.min(1, ev.diffuse ?? 0));
+      const ramp = Number.isFinite(ev.rampDuration) && ev.rampDuration >= 0
+        ? Math.trunc(ev.rampDuration)
+        : 128;
       const at = Math.trunc(ev.samplePos);
       const unchanged = state.hasObjectMetadata
         && state.objectRampEndSample <= at
@@ -1390,18 +1696,68 @@ export class SpatialRenderer {
         && state.position.elevation === nextPosition.elevation
         && state.position.distance === nextPosition.distance
         && state.spread === nextSpread
+        && (state.diffuse ?? 0) === nextDiffuse
+        && !!state.horizontalOnly === !!ev.horizontalOnly
+        && JSON.stringify(state.zoneExclusion ?? []) === JSON.stringify(ev.zoneExclusion ?? [])
         && state.gainDb === ev.gainDb;
       if (unchanged) continue;
+      const previousPose = state.objectPoseTimeline.at(-1);
+      const previousProgress = previousPose && previousPose.rampSamples > 0
+        ? Math.min(1, Math.max(0, (at - previousPose.at) / previousPose.rampSamples))
+        : 1;
+      const fromPosition = previousPose
+        ? interpolateObjectPosition(previousPose.fromPosition, previousPose.position, previousProgress)
+        : state.position;
+      const fromSpread = previousPose
+        ? previousPose.fromSpread + (previousPose.spread - previousPose.fromSpread) * previousProgress
+        : state.spread;
       state.position = nextPosition;
+      const fromDiffuse = previousPose
+        ? previousPose.fromDiffuse + (previousPose.diffuse - previousPose.fromDiffuse) * previousProgress
+        : (state.diffuse ?? 0);
       state.spread = nextSpread;
+      state.diffuse = nextDiffuse;
+      state.horizontalOnly = !!ev.horizontalOnly;
+      state.zoneExclusion = ev.zoneExclusion;
       state.gainDb = ev.gainDb;
       state.hasObjectMetadata = true;
-      state.objectRampEndSample = at + Math.max(1, ramp);
-      messages.push(this.gainMessage(state, ramp, at));
+      state.objectRampEndSample = at + ramp;
+      state.objectPoseTimeline.push({
+        at,
+        fromPosition,
+        position: nextPosition,
+        fromSpread,
+        spread: nextSpread,
+        fromDiffuse,
+        diffuse: nextDiffuse,
+        horizontalOnly: state.horizontalOnly,
+        zoneExclusion: state.zoneExclusion,
+        gainDb: ev.gainDb,
+        rampSamples: ramp,
+      });
+      // Several events for one object can share a PCM batch. Keep each target
+      // stable while the live source advances to the last event in the batch.
+      pending.push({ state: { ...state }, ramp, at });
+      accepted++;
     }
+    // Prototype-level renderer tests and narrow control surfaces may provide only
+    // the legacy gainMessage surface; in that case keep the existing JS path.
+    const batchGains = typeof this.panObjectBatch === "function"
+      ? this.panObjectBatch(pending.map(({ state }) => state))
+      : null;
+    pending.forEach(({ state, ramp, at }, index) => {
+      messages.push(this.gainMessage(state, ramp, at, false, batchGains?.[index]));
+      // Prebuffer a head-relative route at the same codec boundary. Later pose
+      // ticks replace it in-place; this first copy covers a main-thread stall
+      // immediately after the decoder queues the frame. Head-relative routes
+      // remain on the direct JS solver because their pose is wall-clock live.
+      if (this.mode === "binaural" && this.headPose.isActive(performance.now())) {
+        messages.push(this.gainMessage(state, ramp, at, true));
+      }
+    });
     if (messages.length === 1) this.node.port.postMessage(messages[0]);
     else if (messages.length > 1) this.node.port.postMessage({ type: "scheduleGainsBatch", entries: messages });
-    return messages.length;
+    return accepted;
   }
 
   /** Queue one object event. Kept for control surfaces and focused tests. */
@@ -1414,8 +1770,47 @@ export class SpatialRenderer {
     state: SourceState,
     rampSamples: number,
     atSample?: number,
+    poseUpdate = false,
+    precomputedSpatialGains?: Float32Array,
   ): ScheduledGainMessage {
-    const gains = this.vbap.pan(state.position, state.spread);
+    // Codec metadata remains canonical world-space. Only immediate gain updates
+    // use the live wall-clock pose; scheduled events must retain their original
+    // codec-clock semantics and are followed by subsequent pose refreshes.
+    const poseNow = performance.now();
+    // Physical speaker and plain stereo outputs stay room-locked. The UI exposes
+    // tracking only for binaural playback, and this guard preserves that rule for
+    // programmatic callers as well.
+    const headTrackingActive = this.mode === "binaural"
+      && (atSample === undefined || poseUpdate)
+      && this.headPose.isActive(poseNow);
+    const spatialPosition = headTrackingActive
+      ? this.headPose.headRelative(state.position, poseNow)
+      : state.position;
+    // A codec-clock event may use the same-layout Rust batch result. Any live
+    // head-relative update keeps the direct JS calculation to avoid pose lag.
+    const gains = precomputedSpatialGains && !headTrackingActive
+      ? new Float32Array(precomputedSpatialGains)
+      : this.vbap.pan(spatialPosition, state.spread);
+
+    if (state.horizontalOnly) {
+      if (this.horizontalVbap?.layout !== this.renderLayout) {
+        const indices = this.renderLayout.flatMap((speaker, i) => !speaker.isLfe && Math.abs(speaker.elevation) < 1e-3 ? [i] : []);
+        this.horizontalVbap = { layout: this.renderLayout, indices, solver: new VbapSolver(indices.map(i => this.renderLayout[i]!)) };
+      }
+      gains.fill(0);
+      const local = this.horizontalVbap.solver.pan(spatialPosition, state.spread);
+      this.horizontalVbap.indices.forEach((index, i) => { gains[index] = local[i]!; });
+    }
+    if (state.diffuse > 0 && !state.isLfe && !state.bedLabel) {
+      const allowed = this.renderLayout.map(speaker => !speaker.isLfe && (!state.horizontalOnly || Math.abs(speaker.elevation) < 1e-3));
+      const count = allowed.filter(Boolean).length;
+      for (let i = 0; i < gains.length; i++) {
+        gains[i] = !allowed[i] ? 0
+          : Math.sqrt((1 - state.diffuse) * gains[i]! ** 2 + state.diffuse / Math.max(1, count));
+      }
+    }
+
+    applyZoneExclusion(gains, this.renderLayout, state.zoneExclusion ?? []);
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
     // 按 Apple inverse 距离定律衰减；不从没有明确物理米制语义的 ADM 半径
@@ -1436,12 +1831,14 @@ export class SpatialRenderer {
     if (state.isLfe) {
       // LFE bypasses spatial panning: straight to the LFE bus.
       gains.fill(0);
-      const lfeBus = this.renderLayout.findIndex((s) => s.isLfe);
+      const lfeBus = this.renderLayout.findIndex((s) => s.isLfe && s.name === state.bedLabel);
+      const fallbackLfe = this.renderLayout.findIndex(s => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
+      else if (fallbackLfe >= 0) gains[fallbackLfe] = 1;
       scalar = metadataGain;
       if (this.lfeMuted) scalar = 0;
       lp = 1;
-    } else if (state.snapBus >= 0) {
+    } else if (state.snapBus >= 0 && !headTrackingActive) {
       // 床声道吸附：直送同名音箱总线（AVR direct 语义）。
       // 上混扩展馈送仅用于多声道物理输出 —— 物理后环在真实房间里被房间
       // 反射去相关，听着是"填满"；而双耳/立体声里馈送是相干拷贝
@@ -1476,7 +1873,9 @@ export class SpatialRenderer {
       gains: topologyGains,
       gain: scalar,
       lp,
-      ramp: Math.max(1, rampSamples),
+      ramp: Math.max(0, rampSamples),
+      poseControlled: !state.bedLabel && !state.isLfe,
+      poseUpdate,
     };
   }
 
@@ -1485,8 +1884,9 @@ export class SpatialRenderer {
     state: SourceState,
     rampSamples: number,
     atSample?: number,
+    poseUpdate = false,
   ): void {
-    this.node?.port.postMessage(this.gainMessage(state, rampSamples, atSample));
+    this.node?.port.postMessage(this.gainMessage(state, rampSamples, atSample, poseUpdate));
   }
 
   /** Reset the codec timeline. MessagePort FIFO guarantees a following feed is
@@ -1505,6 +1905,7 @@ export class SpatialRenderer {
       if (!state.bedLabel) {
         state.hasObjectMetadata = false;
         state.objectRampEndSample = Number.NEGATIVE_INFINITY;
+        state.objectPoseTimeline.length = 0;
       }
     }
     this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
@@ -1529,7 +1930,7 @@ export class SpatialRenderer {
   }
 
   setProgramLoudnessGainDb(gainDb: number | null, atSample?: number): void {
-    this.programLoudnessGainDb = gainDb === null || !Number.isFinite(gainDb) ? null : Math.min(0, gainDb);
+    this.programLoudnessGainDb = gainDb === null || !Number.isFinite(gainDb) ? null : Math.max(-60, Math.min(60, gainDb));
     const gain = this.programLoudnessGainDb === null ? 1 : Math.pow(10, this.programLoudnessGainDb / 20);
     this.peakGuard?.port.postMessage({
       type: atSample === undefined ? "programGain" : "scheduleProgramGain",
@@ -1550,6 +1951,17 @@ export class SpatialRenderer {
   }
 
   async close(): Promise<void> {
+    if (this.poseUpdateTimer !== null) {
+      globalThis.clearTimeout(this.poseUpdateTimer);
+      this.poseUpdateTimer = null;
+    }
+    if (this.poseStaleTimer !== null) {
+      globalThis.clearTimeout(this.poseStaleTimer);
+      this.poseStaleTimer = null;
+    }
+    this.wasmVbapLayoutRevision++;
+    this.wasmVbap?.free();
+    this.wasmVbap = null;
     this.teardownPostNodes();
     this.peakGuard?.disconnect();
     this.peakGuard = null;

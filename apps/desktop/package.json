@@ -1,13 +1,13 @@
 {
   "name": "@sda/desktop",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "private": true,
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
   "scripts": {
-    "dev": "electron . --dev",
-    "build": "pnpm --filter @sda/web build && electron-builder",
-    "pack": "electron-builder --dir"
+    "dev": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && electron . --dev",
+    "build": "node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && pnpm --filter @sda/web build && electron-builder",
+    "pack": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && electron-builder --dir"
   },
   "devDependencies": {
     "@sda/web": "workspace:*",
@@ -18,21 +18,86 @@
     "appId": "app.sda.desktop",
     "productName": "SDA",
     "files": [
+      "assets/**",
       "main.cjs",
+      "native-event-batches.cjs",
+      "remote-session.cjs",
+      "remote-sync.cjs",
+      "remote-fanout.cjs",
+      "remote-devices.cjs",
+      "remote-media.cjs",
+      "remote-certificate.cjs",
+      "remote-web-server.cjs",
+      "remote-hls.cjs",
+      "remote-hls-codec.cjs",
+      "remote-web/**",
+      "media-browser.cjs",
+      "personal-hrtf.cjs",
+      "personal-hrtf-library.cjs",
+      "parametric-hrtf.mjs",
+      "generated-hrtf.cjs",
+      "personal-hrtf-worker.cjs",
       "preload.cjs",
-      {
-        "from": "../web/dist",
-        "to": "web"
-      }
+      "cinema-profiles.cjs",
+      "monitor-settings.cjs",
+      "headphone-simulation.cjs",
+      "builtin-rooms.cjs",
+      "builtin-rooms/**",
+      "room-lab.cjs",
+      "room-layouts.cjs",
+      "web/**"
+    ],
+    "asarUnpack": [
+      "node_modules/h5wasm/**",
+      "personal-hrtf-worker.cjs",
+      "personal-hrtf.cjs",
+      "parametric-hrtf.mjs",
+      "generated-hrtf.cjs",
+      "personal-hrtf-library.cjs"
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": "nsis",
       "artifactName": "${productName} Setup ${version}-${arch}.${ext}",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true,
+      "extraResources": [
+        {
+          "from": "head-tracking-helper",
+          "to": "head-tracking-helper"
+        },
+        {
+          "from": "head-tracking-driver",
+          "to": "head-tracking-driver"
+        },
+        {
+          "from": "native-renderer",
+          "to": "native-renderer"
+        }
+      ]
+    },
+    "nsis": {
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "installer/installer.nsh"
     },
     "mac": {
+      "icon": "assets/icon.png",
       "target": "dmg",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
-    }
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "native-renderer",
+          "to": "native-renderer"
+        }
+      ]
+    },
+    "beforePack": "./stage-web.cjs"
+  },
+  "dependencies": {
+    "fft.js": "4.0.4",
+    "h5wasm": "0.10.3",
+    "ws": "^8.21.3"
   }
 }

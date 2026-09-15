@@ -1,0 +1,42 @@
+[package]
+name = "sda-airpods-head-tracking"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "AirPods head-tracking provider for SDA"
+
+[[bin]]
+name = "SdaAirPodsHeadTracking"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Devices_DeviceAndDriverInstallation",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-motion = { version = "0.3.2", features = [
+  "CMHeadphoneMotionManager",
+  "CMHeadphoneMotionManagerDelegate",
+  "CMDeviceMotion",
+  "CMAttitude",
+  "block2",
+] }
+objc2 = { version = "0.6.2", features = ["std"] }
+objc2-foundation = { version = "0.3.2", features = ["NSOperation"] }
+block2 = "0.6.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

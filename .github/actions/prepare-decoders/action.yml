@@ -1,0 +1,20 @@
+name: Prepare audio decoders
+description: Generate AC-4 tables and build the Rust and MPEG-H WASM modules on a clean runner.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: '4.0.15'
+    - name: Prepare AC-4 specification tables
+      shell: bash
+      run: node scripts/prepare-ac4.mjs
+    - name: Build Rust WASM decoder
+      shell: bash
+      run: pnpm core:build
+    - name: Build MPEG-H WASM decoder
+      shell: bash
+      run: pnpm mpegh:build

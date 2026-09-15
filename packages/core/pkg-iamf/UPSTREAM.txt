@@ -1,0 +1,3 @@
+AOMediaCodec/libiamf e55e1832a608affe602de2ee39929bd7759a75ab
+AOMediaCodec/oar 3d1d23b807543f993a1d0cf0a9839c7f0746d94b
+Source subset for LPCM WASM decoding. Capture patches are applied by scripts/build-iamf.mjs.

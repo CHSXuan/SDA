@@ -6,8 +6,8 @@
  * those stale samples later and drift away from the other object channels.
  */
 
-const WORKLET_BUILD = "object-batch-v1";
-const MAX_SOURCES = 64;
+const WORKLET_BUILD = "head-pose-route-v3";
+const MAX_SOURCES = 128;
 const CALLBACK_GAP_TELEMETRY_MS = 12;
 const CALLBACK_GAP_ESCALATION_MS = 25;
 const RING_SIZE = 1 << 18; // 262144 samples ≈ 5.5 s @48k per source
@@ -18,12 +18,18 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     super();
     const opts = (options && options.processorOptions) || {};
     this.busCount = opts.busCount || 12;
+    this.outputChunkSize = opts.outputChunkSize || this.busCount;
+    this.outputChunks = Math.ceil(this.busCount / this.outputChunkSize);
+    this.bankBuses = Array.from({length: 4}, () => new Array(this.busCount));
     this.paused = false;
     this.consumed = 0;
     this.lastTick = 0;
     this.epoch = Number.isSafeInteger(opts.epoch) ? opts.epoch : 0;
     this.timelineStarted = false;
     this.timelineOrigin = null;
+    // While true, object metadata keeps sample-accurate scalar gain but its
+    // canonical world-space route cannot overwrite the live head-relative route.
+    this.headTracking = false;
     this.sources = new Map();
     this.underrunSamples = 0;
     this.rejectedBatches = 0;
@@ -59,6 +65,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       gain: 1,
       targetGain: 1,
       gainStep: 0,
+      gainRampLeft: 0,
       muteGain: 1,
       targetMuteGain: 1,
       muteRampLeft: 0,
@@ -73,6 +80,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       availabilityRampLeft: 0,
       availabilityLastOutput: 0,
       availabilityWasValid: false,
+      lastAudibleAt: 0,
       hasReceivedPcm: false,
       lifecycleEvents: [],
       lifecycleCursor: 0,
@@ -97,36 +105,64 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     src.routeBuses = routes;
   }
 
-  /** Advance an active metadata ramp by an exact number of sample intervals. */
-  advanceGainRamp(src, samples) {
-    const advance = Math.min(Math.max(0, Math.trunc(samples)), src.rampLeft);
-    if (advance === 0) return;
-    for (let bus = 0; bus < this.busCount; bus++) {
-      src.gains[bus] += src.rampStep[bus] * advance;
+  /** Advance spatial and scalar ramps independently by exact sample intervals. */
+  advanceGainRamps(src, samples, advanceSpatial = true, advanceScalar = true) {
+    const count = Math.max(0, Math.trunc(samples));
+    if (advanceSpatial) {
+      const spatialAdvance = Math.min(count, src.rampLeft);
+      if (spatialAdvance > 0) {
+        for (let bus = 0; bus < this.busCount; bus++) {
+          src.gains[bus] += src.rampStep[bus] * spatialAdvance;
+        }
+        src.rampLeft -= spatialAdvance;
+        if (src.rampLeft === 0) {
+          src.gains.set(src.target);
+          this.refreshRouteBuses(src);
+        }
+      }
     }
-    src.gain += src.gainStep * advance;
-    src.rampLeft -= advance;
-    if (src.rampLeft === 0) {
-      src.gains.set(src.target);
-      src.gain = src.targetGain;
-      this.refreshRouteBuses(src);
+    if (advanceScalar) {
+      const scalarAdvance = Math.min(count, src.gainRampLeft);
+      if (scalarAdvance > 0) {
+        src.gain += src.gainStep * scalarAdvance;
+        src.gainRampLeft -= scalarAdvance;
+        if (src.gainRampLeft === 0) src.gain = src.targetGain;
+      }
     }
   }
 
   /** Start an event at eventTime and fast-forward it to currentTime. */
   startGainRampAtTime(src, msg, eventTime, currentTime) {
-    const target = msg.gains;
-    const ramp = Math.max(1, msg.ramp | 0);
-    for (let bus = 0; bus < this.busCount; bus++) {
-      src.target[bus] = Math.min(target.length > bus ? target[bus] : 0, 4);
-      src.rampStep[bus] = (src.target[bus] - src.gains[bus]) / ramp;
+    if (msg.type === "scheduleGains" && msg.poseUpdate === true && !this.headTracking) return;
+    const ramp = msg.ramp === 0 ? 0 : Math.max(1, msg.ramp | 0);
+    const preserveSpatial = this.headTracking
+      && msg.type === "scheduleGains"
+      && msg.poseControlled === true
+      && msg.poseUpdate !== true;
+    const preserveScalar = msg.poseUpdate === true;
+    if (!preserveSpatial) {
+      const target = msg.gains;
+      for (let bus = 0; bus < this.busCount; bus++) {
+        src.target[bus] = Math.min(target.length > bus ? target[bus] : 0, 4);
+        src.rampStep[bus] = ramp === 0 ? 0 : (src.target[bus] - src.gains[bus]) / ramp;
+        if (ramp === 0) src.gains[bus] = src.target[bus];
+      }
+      src.rampLeft = ramp;
+      this.refreshRouteBuses(src, ramp > 0);
     }
-    src.targetGain = msg.gain ?? 1;
-    src.gainStep = (src.targetGain - src.gain) / ramp;
-    src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
-    src.rampLeft = ramp;
-    this.refreshRouteBuses(src, true);
-    this.advanceGainRamp(src, currentTime - eventTime);
+    if (!preserveScalar) {
+      src.targetGain = msg.gain ?? 1;
+      src.gainStep = ramp === 0 ? 0 : (src.targetGain - src.gain) / ramp;
+      if (ramp === 0) src.gain = src.targetGain;
+      src.gainRampLeft = ramp;
+      src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
+    }
+    this.advanceGainRamps(
+      src,
+      currentTime - eventTime,
+      !preserveSpatial,
+      !preserveScalar,
+    );
   }
 
   /** Replay every overdue event chronologically to currentTime. Each event is
@@ -152,6 +188,19 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   enqueueScheduledGain(src, msg) {
     const events = src.scheduledGains;
     const cursor = src.scheduledGainCursor;
+    if (msg.poseUpdate === true) {
+      // Pose refreshes repeatedly update already-buffered object boundaries.
+      // Replace the pending route instead of growing the queue at 120 Hz.
+      for (let index = cursor; index < events.length; index++) {
+        const candidate = events[index];
+        if (candidate.at > msg.at) break;
+        if (candidate.at === msg.at && candidate.poseUpdate === true) {
+          events[index] = msg;
+          src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
+          return;
+        }
+      }
+    }
     const last = events[events.length - 1];
     if (!last || last.at <= msg.at) {
       events.push(msg);
@@ -167,6 +216,14 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     }
     events.splice(low, 0, msg);
     src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
+  }
+
+  discardScheduledPoseUpdates(src) {
+    src.scheduledGains = src.scheduledGains
+      .slice(src.scheduledGainCursor)
+      .filter((event) => event.poseUpdate !== true);
+    src.scheduledGainCursor = 0;
+    src.nextScheduledGainAt = src.scheduledGains[0]?.at ?? Number.POSITIVE_INFINITY;
   }
 
   scheduleLifecycle(src, at, active, token = null) {
@@ -321,6 +378,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           if (src && Number.isSafeInteger(entry.at)) this.enqueueScheduledGain(src, entry);
         }
         break;
+      case "headTracking":
+        if (this.headTracking !== (msg.enabled === true)) {
+          this.headTracking = msg.enabled === true;
+          for (const src of this.sources.values()) this.discardScheduledPoseUpdates(src);
+        }
+        break;
       case "mute": {
         const src = this.sources.get(msg.id);
         if (!src) break;
@@ -430,7 +493,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       if (gapMs > CALLBACK_GAP_ESCALATION_MS) this.callbackGapsOver25Ms++;
     }
     this.lastProcessAt = now;
-    const busesByBank = outputs;
+    const busesByBank = this.outputChunks === 1 ? outputs : this.bankBuses;
+    if (this.outputChunks > 1) for (let bank = 0; bank < 4; bank++) {
+      for (let bus = 0; bus < this.busCount; bus++) {
+        busesByBank[bank][bus] = outputs[bank * this.outputChunks + Math.floor(bus / this.outputChunkSize)][bus % this.outputChunkSize];
+      }
+    }
     const primaryBuses = busesByBank[0] || [];
     const blockSize = primaryBuses[0] ? primaryBuses[0].length : 128;
     let activeBankMask = 0;
@@ -474,9 +542,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         const retired = !src.active;
         const available = src.active && samplePosition >= src.validStart && samplePosition < src.validEnd && src.valid[slot] === 1;
         if (available !== src.availabilityWasValid) {
+          // Streams legitimately encode whole silent passages per object. A hard
+          // 0.67 ms edge after a long encoded silence is audible as stutter, so
+          // re-entry fades track the silence length while departures stay fast.
+          const silence = samplePosition - src.lastAudibleAt;
           src.availabilityWasValid = available;
           src.availabilityFrom = src.availabilityLastOutput;
-          src.availabilityRampLeft = 32;
+          src.availabilityRampLeft = available && silence > sampleRate
+            ? Math.round(sampleRate / 100)
+            : 32;
         }
         if (!retired && !available && src.hasReceivedPcm && samplePosition >= src.validStart) this.underrunSamples++;
         const target = available ? src.ring[slot] : 0;
@@ -495,15 +569,18 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         sample *= gain * muteGain;
         // UI activity reflects the actual source sample after metadata gain and user mute.
         // A short hold makes intermittent drum hits readable at the throttled visual cadence.
-        if (Math.abs(sample) >= 0.001) activityUntil = samplePosition + this.activityHoldSamples;
+        if (Math.abs(sample) >= 0.001) {
+          activityUntil = samplePosition + this.activityHoldSamples;
+          src.lastAudibleAt = samplePosition;
+        }
 
         for (const bus of src.routeBuses) {
           if (bus >= buses.length) break;
           buses[bus][i] += sample * src.gains[bus];
         }
 
-        if (src.rampLeft > 0) {
-          this.advanceGainRamp(src, 1);
+        if (src.rampLeft > 0 || src.gainRampLeft > 0) {
+          this.advanceGainRamps(src, 1);
           gain = src.gain;
         }
         if (src.muteRampLeft > 0) {
@@ -565,14 +642,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
 }
 
 /** Stereo-linked lookahead limiter. Both ears share one gain envelope so peak
- * control cannot shift the binaural image. */
+ * control cannot shift the binaural image. The short release prevents one sparse
+ * object transient from suppressing the following object-update interval. */
 class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const ceilingDb = options?.processorOptions?.ceilingDb ?? -1;
     this.ceiling = Math.pow(10, ceilingDb / 20);
     this.lookahead = Math.max(1, Math.round((typeof sampleRate === "number" ? sampleRate : 48000) * 0.005));
-    this.releaseCoeff = Math.exp(-1 / ((typeof sampleRate === "number" ? sampleRate : 48000) * 0.1));
+    this.releaseCoeff = Math.exp(-1 / ((typeof sampleRate === "number" ? sampleRate : 48000) * 0.02));
     this.buffers = [new Float32Array(this.lookahead), new Float32Array(this.lookahead)];
     this.write = 0;
     this.gain = 1;
@@ -607,7 +685,7 @@ class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
 
   normalizeProgramGain(value) {
     const gain = Number(value);
-    return Number.isFinite(gain) ? Math.max(0, Math.min(1, gain)) : 1;
+    return Number.isFinite(gain) ? Math.max(0, Math.min(1000, gain)) : 1;
   }
 
   onMessage(msg) {
