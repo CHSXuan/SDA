@@ -40,33 +40,30 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build WASM decoder core (pkg-web)
-        run: pnpm core:build
+      - name: Prepare decoder build inputs and WASM modules
+        uses: ./.github/actions/prepare-decoders
 
-      - name: Build web + package Electron (NSIS)
-        # 发布由 publish-release 完成；禁止 electron-builder 自行发布，
-        # 否则 tag 构建会因找不到 repository 配置而失败。
+      - name: Fetch Windows native dependencies
         run: |
-          pnpm --filter @sda/web build
-          pnpm --filter @sda/desktop exec electron-builder --win nsis --x64 --arm64 --publish never
+          cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
+
+      - name: Build Windows helper and native renderer
+        run: |
+          node scripts/build-head-tracking-helper.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-native-renderer.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/stage-head-tracking-driver.mjs
+
+      - name: Build web
+        run: pnpm --filter @sda/web build
+
+      - name: Package Electron (NSIS)
+        run: pnpm --filter @sda/desktop exec electron-builder --win nsis --x64 --arm64 --publish never '-c.win.artifactName=SDA Setup ${version}-universal.${ext}'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-
-      - name: Name dual-arch Windows installer
-        shell: pwsh
-        run: |
-          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
-          $source = "apps/desktop/dist/SDA Setup $version.exe"
-          $destination = "apps/desktop/dist/SDA Setup $version-universal.exe"
-
-          if (-not (Test-Path -LiteralPath $source)) {
-            throw "Expected dual-arch NSIS installer was not produced: $source"
-          }
-          if (Test-Path -LiteralPath $destination) {
-            throw "Refusing to overwrite existing installer: $destination"
-          }
-
-          Rename-Item -LiteralPath $source -NewName "SDA Setup $version-universal.exe"
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
@@ -110,8 +107,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build WASM decoder core (pkg-web)
-        run: pnpm core:build
+      - name: Prepare decoder build inputs and WASM modules
+        uses: ./.github/actions/prepare-decoders
 
       - name: Build web + package Electron (unsigned DMG)
         run: |

@@ -29,7 +29,7 @@ const sources=[...walk(join(src,'src')).map(p=>p.endsWith('iamf_decoder.c')?deco
 const includes=[src+'/include',src+'/dep_external/include',...['','/codec','/codec/opus','/codec/aac','/codec/flac','/common','/obu'].map(p=>src+'/src/iamf_dec'+p),...['/include','/src','/src/common','/src/utility','/src/renderer','/src/renderer/ear','/src/renderer/olr','/src/renderer/olr/object_audio_renderer'].map(p=>oar+p),root+'/packages/core/iamf'];
 const exports=['open','close','input','decode','info','object_info','object_pcm','events','output'].map(n=>'_sda_'+n);
 const args=[...sources,...includes.map(p=>'-I'+p),'-O2','-sALLOW_MEMORY_GROWTH=1','-sMODULARIZE=1','-sEXPORT_ES6=1','-sENVIRONMENT=web,worker,node','-sFILESYSTEM=0','-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32,HEAP32','-sEXPORTED_FUNCTIONS='+JSON.stringify(exports),'-o',join(dest,'iamf.js')];
-const result=spawnSync(process.env.EMSDK_PYTHON??join(root,'tmp/emsdk/python/3.13.3_64bit/python.exe'),[process.env.EMCC??join(root,'tmp/emsdk/upstream/emscripten/emcc.py'),...args],{stdio:'inherit'});
+const result=spawnSync(process.env.EMSDK_PYTHON??(process.env.EMSDK?'python':join(root,'tmp/emsdk/python/3.13.3_64bit/python.exe')),[process.env.EMCC??join(process.env.EMSDK??join(root,'tmp/emsdk'),'upstream/emscripten/emcc.py'),...args],{stdio:'inherit'});
 if(result.status!==0)process.exit(result.status??1);
 for(const n of ['LICENSE','PATENTS','UPSTREAM.txt'])cpSync(join(src,n),join(dest,n));
 

@@ -36,6 +36,7 @@ jobs:
           workspaces: |
             packages/core
             apps/head-tracking-helper
+            apps/native-renderer
 
       - name: Install wasm-bindgen-cli (must match Cargo.lock)
         run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
@@ -43,14 +44,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test head-tracking components
-        shell: pwsh
-        run: |
-          pnpm head-tracking:test
-          pnpm head-tracking:test-js
+      - name: Prepare decoder build inputs and WASM modules
+        uses: ./.github/actions/prepare-decoders
 
-      - name: Build WASM decoder core
-        run: pnpm core:build
+      - name: Fetch native dependencies for offline build and tests
+        run: |
+          cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
+
+      - name: Test head-tracking helper
+        run: pnpm head-tracking:test
+
+      - name: Test head-tracking integration
+        run: pnpm head-tracking:test-js
 
       - name: Build Windows x64 preview installer
         shell: pwsh
