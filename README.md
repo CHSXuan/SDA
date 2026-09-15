@@ -6,7 +6,7 @@
 
 SDA 将本地音频中的声床、声音对象及其空间元数据接入自己的渲染引擎，让耳机听者体验环绕声场，并在三维视图中查看声音的位置与运动。除了播放，SDA 还提供房间仿真、监听处理、耳廓档案、耳机音色模拟，以及手机和平板网页远程收听。
 
-**目前仍在测试开发中。** 当前主要运行平台为 Windows 桌面端；不同编码、元数据和渲染功能的支持范围见下文。支持播放不等于完整实现对应格式的所有功能，也不代表获得 Dolby、DTS 或 Sony 认证。
+**目前仍在测试开发中。** 当前运行平台为 Windows 与 macOS 桌面端；不同编码、元数据和渲染功能的支持范围见下文。支持播放不等于完整实现对应格式的所有功能，也不代表获得 Dolby、DTS 或 Sony 认证。
 
 ## 主要功能
 
@@ -70,9 +70,9 @@ SDA 将本地音频中的声床、声音对象及其空间元数据接入自己�
 
 ### 本机播放
 
-打开文件或添加文件夹，在「系统设置 → 音频输出设备」选择系统默认或指定设备。Windows 桌面通过 Rust 原生渲染器与 WASAPI 输出，支持共享、独占及 UU／RDP 远程兼容模式。
+打开文件或添加文件夹，在「系统设置 → 音频输出设备」选择系统默认或指定设备。桌面端通过 Rust 原生渲染器输出：Windows 使用 WASAPI（共享、独占及 UU／RDP 远程兼容），macOS 使用 CoreAudio。
 
-**当前桌面原生输出为双声道。** 多声道／对象在 SDA 中渲染到左右耳；即使声卡有更多通道，也不能把此路径理解为多声道物理直通。共享输出仍可能受到 Windows 混音和系统音效影响。
+**当前桌面原生输出为双声道。** 多声道／对象在 SDA 中渲染到左右耳；即使声卡有更多通道，也不能把此路径理解为多声道物理直通。共享输出仍可能受到系统混音和音效影响。
 
 ### 手机、iPad 与其他电脑收听
 
@@ -99,20 +99,22 @@ SDA 将本地音频中的声床、声音对象及其空间元数据接入自己�
   → 流式解封装 / PCM 与 ADM 读取
   → Decoder Worker：Rust WASM + MPEG-H / IAMF 独立 WASM 模块
   → 声床 PCM、对象 PCM、按采样时间排列的空间事件
-      ├─ Windows 桌面：Electron → Rust 原生渲染器 → WASAPI 双声道输出
-      │                                      └─ HTTPS/WSS/HLS → 网页远程客户端
+      ├─ 桌面端：Electron → Rust 原生渲染器 → WASAPI (Windows) / CoreAudio (macOS) 双声道输出
+      │                               └─ HTTPS/WSS/HLS → 网页远程客户端
       └─ 独立网页版：Web Audio / AudioWorklet 渲染路径
 
 React + Three.js：播放控制、设置与声场可视化
 ```
 
+原生渲染器通过 CPAL 抽象层支持 Windows 和 macOS，DSP 管线（HRTF、房间卷积、对象混音）完全平台共用。详见 [macOS 移植说明](docs/macos-port.md)。
+
 解码与音频渲染分工独立：桌面不是仅靠网页 AudioWorklet 发声，也不是把所有解码都搬进原生引擎。房间响应、HRTF、对象路径和监听路由存在分流与合成关系，不是把几个音效依次串联。
 
-Windows 原生引擎以 48 kHz 为内部渲染时钟。大量对象、长房间响应与逐对象处理会增加 CPU 和缓存开销；性能与实时性取决于文件、设置和设备。
+原生引擎以 48 kHz 为内部渲染时钟。大量对象、长房间响应与逐对象处理会增加 CPU 和缓存开销；性能与实时性取决于文件、设置和设备。
 
 ## 从源码运行
 
-以下命令在仓库根目录执行，面向 Windows 开发环境。安装包用户不需要这些工具链。
+以下命令在仓库根目录执行，面向 Windows 与 macOS 开发环境。安装包用户不需要这些工具链。
 
 ### 1. 工具与源码
 
@@ -123,9 +125,10 @@ Windows 原生引擎以 48 kHz 为内部渲染时钟。大量对象、长房间�
 | `wasm32-unknown-unknown`、`wasm-bindgen-cli 0.2.127` | Rust WASM 构建；CLI 版本须与核心 Cargo.lock 一致 |
 | Python 3 + pip | AC-4 规范表准备；不属于普通用户播放依赖 |
 | Emscripten 4.0.15 | MPEG-H 与 IAMF 的独立 WASM 模块 |
-| Windows MSVC C++ 构建工具与 Windows SDK | Rust Windows 原生组件的编译和链接 |
+| Windows MSVC C++ 构建工具与 Windows SDK | Rust Windows 原生组件（仅 Windows） |
+| Xcode Command Line Tools | Rust macOS 原生组件（仅 macOS；`xcode-select --install`） |
 
-```powershell
+```sh
 git clone --recurse-submodules https://github.com/fengluoxiao/SDA.git
 cd SDA
 pnpm install --frozen-lockfile
@@ -137,13 +140,14 @@ rustup toolchain install 1.98.0 --profile minimal --target wasm32-unknown-unknow
 cargo install wasm-bindgen-cli --version 0.2.127 --locked
 ```
 
-上游依赖按当前子模块与锁文件读取，不再手工固定 README 中的历史提交号。
+macOS 首次安装需确认 Xcode Command Line Tools 已就绪（`xcode-select --install`），无需完整 Xcode。上游依赖按当前子模块与锁文件读取，不再手工固定 README 中的历史提交号。
 
 ### 2. 构建解码模块
 
-```powershell
+```sh
 # 首次准备 AC-4 表：需要联网、Git 和 Python
-node scripts/prepare-ac4.mjs
+# macOS 上如 python3 不在 PATH 中的 python 下，需设置 PYTHON 环境变量
+PYTHON=python3 node scripts/prepare-ac4.mjs
 pnpm core:build
 
 # 配好 Emscripten 后构建独立模块
@@ -159,7 +163,7 @@ Emscripten 需先安装并激活。脚本默认查找 `tmp/emsdk`；使用其他
 
 原生组件的日常构建使用 `--locked --offline`，新电脑应先下载 Cargo 依赖：
 
-```powershell
+```sh
 cargo fetch --manifest-path apps/native-renderer/Cargo.toml --locked
 cargo fetch --manifest-path apps/head-tracking-helper/Cargo.toml --locked
 
@@ -169,7 +173,7 @@ pnpm dev
 
 也可在两个终端分别运行 `pnpm web:dev` 与 `pnpm desktop:dev`。桌面开发模式默认访问 `http://localhost:5173`，可通过 `SDA_DEV_URL` 指定地址。
 
-```powershell
+```sh
 # 构建网页与远程网页资源
 pnpm web:build
 
@@ -177,18 +181,29 @@ pnpm web:build
 pnpm --filter @sda/desktop exec electron .
 ```
 
+macOS 上确保 `ELECTRON_RUN_AS_NODE` 未被设置为 `1`，否则 Electron 将以纯 Node.js 模式运行而不加载桌面 API。
+
 内置 HRTF 与房间资源已随项目提供，日常构建无需重新生成。原生构建脚本会把所需 HRTF 复制到桌面资源目录；不要用早期的单主体生成步骤覆盖现有整套档案。
 
-### 4. 打包 Windows 安装包
+### 4. 打包安装包
+
+**Windows：**
 
 ```powershell
 pnpm --filter @sda/desktop build -- --win nsis --x64 --publish never
 ```
 
+**macOS：**
+
+```sh
+pnpm --filter @sda/desktop build -- --mac dmg --publish never
+```
+
 此命令构建原生组件、暂存驱动包、构建网页并运行 electron-builder；解码 WASM 需先按上文准备。
 
-- 安装包：`apps/desktop/dist/SDA Setup <version>-x64.exe`。
-- 解包目录：`apps/desktop/dist/win-unpacked/`。
+- Windows 安装包：`apps/desktop/dist/SDA Setup <version>-x64.exe`。
+- macOS 安装包：`apps/desktop/dist/SDA-<version>-mac-<arch>.dmg`。
+- 解包目录：`apps/desktop/dist/win-unpacked/`（Windows）或 `apps/desktop/dist/mac-arm64/` / `mac/`（macOS）。
 - 已配置 SDA 自有窗口、可执行文件和安装器图标，`signAndEditExecutable` 已开启；图标资源写入不等于拥有发行签名证书。
 - 如果 Windows 解压构建工具时报告符号链接权限错误，检查开发者模式／构建环境权限，不要通过关闭可执行文件资源写入来退回 Electron 默认图标。
 
@@ -200,7 +215,7 @@ pnpm --filter @sda/desktop build -- --win nsis --x64 --publish never
 | --- | --- |
 | `apps/web` | 桌面共用的 React UI、Three.js 声场、独立网页入口及远程网页源模块 |
 | `apps/desktop` | Electron 主进程、设置／档案服务、文件访问、远程服务和打包资源 |
-| `apps/native-renderer` | Rust 原生双耳渲染、房间／监听处理、WASAPI 与远程 PCM 输出 |
+| `apps/native-renderer` | Rust 原生双耳渲染、房间／监听处理、WASAPI／CoreAudio 与远程 PCM 输出 |
 | `apps/desktop/remote-web` | 随主机分发的手机／平板／桌面浏览器客户端 |
 | `packages/core` | Rust 解码核心，以及 MPEG-H / IAMF WASM 接口 |
 | `packages/demux` | 容器解封装、PCM WAVE 与 ADM 元数据读取 |
@@ -229,6 +244,7 @@ pnpm web:build
 - 渲染：[信号流程](docs/rendering-signal-flow.md)、[逐对象 HRTF](docs/direct-object-hrtf.md)、[连续方向](docs/directional-hrtf.md)、[声源面积](docs/source-extent.md)、[近场](docs/near-field.md)。
 - 声学：[内置房间](docs/builtin-reference-rooms.md)、[房间实验室](docs/room-lab.md)、[监听](docs/monitor-processor.md)、[电气模型](docs/hardware-model.md)。
 - 个性化：[个人 HRTF](docs/personal-hrtf.md)、[耳机音色模拟](docs/headphone-simulation.md)。
+- 平台：[macOS 移植说明](docs/macos-port.md)、[Windows 设备集成](docs/windows-head-tracking-install.md)。
 - 播放：[输出设备](docs/audio-output-management.md)、[无线远程](docs/lossless-remote.md)、[循环模式](docs/playback-modes.md)、[沉浸操作](docs/immersive-navigation.md)、[像素皮肤](docs/pixel-avatar-skins.md)。
 
 ## 来源与许可

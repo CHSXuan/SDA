@@ -202,10 +202,9 @@ function writeHeadTrackingEnabled(enabled) {
 
 function isHeadTrackingHelperFile(helperPath) {
   try {
-    return typeof helperPath === "string" &&
-      path.extname(helperPath).toLowerCase() === ".exe" &&
-      !fs.lstatSync(helperPath).isSymbolicLink() &&
-      fs.statSync(helperPath).isFile();
+    if (typeof helperPath !== "string" || fs.lstatSync(helperPath).isSymbolicLink() || !fs.statSync(helperPath).isFile()) return false;
+    if (process.platform === "darwin") return path.basename(helperPath) === "SdaAirPodsHeadTracking";
+    return path.extname(helperPath).toLowerCase() === ".exe";
   } catch {
     return false;
   }
@@ -217,10 +216,10 @@ function readHeadTrackingHelperPath() {
 }
 
 function bundledHeadTrackingHelperPath() {
-  if (process.platform !== "win32") return null;
+  const ext = process.platform === "darwin" ? "" : ".exe";
   const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "head-tracking-helper", "SdaAirPodsHeadTracking.exe")]
-    : [path.join(__dirname, "head-tracking-helper", "SdaAirPodsHeadTracking.exe")];
+    ? [path.join(process.resourcesPath, "head-tracking-helper", `SdaAirPodsHeadTracking${ext}`)]
+    : [path.join(__dirname, "head-tracking-helper", `SdaAirPodsHeadTracking${ext}`)];
   return candidates.find(isHeadTrackingHelperFile) ?? null;
 }
 
@@ -277,7 +276,7 @@ const NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS = 1500;
 const NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS = 3000;
 
 function bundledNativeRendererPath() {
-  const executable = "SdaNativeRenderer.exe";
+  const executable = process.platform === "win32" ? "SdaNativeRenderer.exe" : "SdaNativeRenderer";
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, "native-renderer", executable)]
     : [path.join(__dirname, "native-renderer", executable)];
@@ -869,7 +868,7 @@ function processHeadTrackingMessage(message) {
   if (!headTrackingHelloReceived) {
     if (
       message.type !== "hello" ||
-      message.source !== "windows-airpods-experimental" ||
+      !["windows-airpods-experimental", "macos-airpods"].includes(message.source) ||
       message.coordinateSystem !== "sda-adm-right-forward-up" ||
       message.orientation !== "head-to-world-quaternion"
     ) {
@@ -901,7 +900,8 @@ function processHeadTrackingMessage(message) {
     headTrackingLastSequence = sequence;
     headTrackingLastPoseAt = now;
     if (!headTrackingEnabled) return;
-    setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? "追踪中（内置 Windows helper）" : "追踪中（外部 helper）");
+    const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
+    setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${platformLabel} helper）` : "追踪中（外部 helper）");
     sendHeadTracking("sda:head-tracking-pose", { timestampMs, orientation });
     return;
   }
@@ -973,7 +973,7 @@ function startHeadTracking() {
       takeoverSent
         ? "Windows 正在强制接管整个 AirPods 连接"
         : hasRecentPose
-        ? headTrackingHelperSource === "bundled-helper" ? "追踪中（内置 Windows helper）" : "追踪中（外部 helper）"
+        ? headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${process.platform === "darwin" ? "macOS" : "Windows"} helper）` : "追踪中（外部 helper）"
         : "正在恢复 AirPods motion",
     );
   }
@@ -1187,12 +1187,17 @@ function readStoredProfile(id) {
 }
 
 function createWindow() {
+  const isMac = process.platform === "darwin";
   const win = new BrowserWindow({
     icon: path.join(__dirname, "assets", process.platform === "win32" ? "icon.ico" : "icon.png"),
     width: 1440,
     height: 900,
     backgroundColor: "#171819",
-    frame: false,
+    // macOS: keep native traffic-light buttons, hide the rest of the title bar.
+    // Windows / Linux: fully frameless with custom renderer-side controls.
+    ...(isMac
+      ? { titleBarStyle: "hiddenInset", vibrancy: "sidebar" }
+      : { frame: false }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -1204,9 +1209,13 @@ function createWindow() {
   });
 
   win.setMenu(null);
-  const publishWindowState = () => win.webContents.send("sda:window-state", win.isMaximized());
+  const publishWindowState = () => {
+    win.webContents.send("sda:window-state", { maximized: win.isMaximized(), fullscreen: win.isFullScreen() });
+  };
   win.on("maximize", publishWindowState);
   win.on("unmaximize", publishWindowState);
+  win.on("enter-full-screen", publishWindowState);
+  win.on("leave-full-screen", publishWindowState);
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     writeStartupLog(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
     dialog.showErrorBox("SDA 页面加载失败", `${errorDescription}\n${validatedURL}`);
@@ -1297,7 +1306,9 @@ ipcMain.handle("sda:head-tracking-select-helper", async (event) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
   const options = {
     title: "选择独立 AirPods 头追 helper",
-    filters: [{ name: "Windows helper", extensions: ["exe"] }],
+    filters: process.platform === "darwin"
+      ? [{ name: "macOS helper", extensions: ["*"] }]
+      : [{ name: "Windows helper", extensions: ["exe"] }],
     properties: ["openFile"],
   };
   const { canceled, filePaths } = parent
@@ -1316,7 +1327,8 @@ ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
   const configuration = helperConfiguration();
   if (!configuration.bundledAvailable) throw new Error("bundled head tracking helper is unavailable");
   headTrackingHelperSource = "bundled-helper";
-  setHeadTrackingStatus(false, "bundled-helper", "已选择内置 Windows helper");
+  const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
+  setHeadTrackingStatus(false, "bundled-helper", `已选择内置 ${platformLabel} helper`);
   return configuration;
 });
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Minus, Square, Copy, X } from "lucide-react";
 
+const isMac = typeof navigator !== "undefined" && /Mac|Darwin/.test(navigator.userAgent);
+
 export function WindowTitlebar() {
   const [maximized, setMaximized] = useState(false);
   const desktop = window.sdaDesktop;
@@ -10,7 +12,8 @@ export function WindowTitlebar() {
     const unsubscribe = desktop?.onWindowMaximized?.(setMaximized);
     return () => { active = false; unsubscribe?.(); };
   }, [desktop]);
-  if (!desktop?.windowControl) return null;
+  // macOS uses native traffic-light buttons via titleBarStyle: 'hiddenInset'.
+  if (isMac || !desktop?.windowControl) return null;
   return <div className="window-titlebar">
     <span className="window-caption">SDA</span>
     <div className="window-actions">

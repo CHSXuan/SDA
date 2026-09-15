@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir } from "node:fs/promises";
+import { chmod, copyFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,9 +8,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const helper = join(root, "apps", "head-tracking-helper");
 const cargo = process.env.CARGO ?? "cargo";
 const rustc = process.env.RUSTC ?? "rustc";
+const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
 
-if (process.platform !== "win32") {
-  console.log("Windows AirPods helper: skipped on non-Windows host");
+if (!isWindows && !isMac) {
+  console.log("AirPods helper: skipped on unsupported platform");
   process.exit(0);
 }
 
@@ -27,7 +29,7 @@ function output(command, args) {
 }
 
 const pathParts = [];
-if (process.platform === "win32") {
+if (isWindows) {
   const sysroot = await output(rustc, ["--print", "sysroot"]);
   const selfContained = join(sysroot, "lib", "rustlib", "x86_64-pc-windows-gnu", "bin", "self-contained");
   if (existsSync(selfContained)) pathParts.push(selfContained);
@@ -36,7 +38,9 @@ if (process.platform === "win32") {
 }
 const cargoEnvironment = {
   ...process.env,
-  Path: [...pathParts, process.env.Path ?? process.env.PATH ?? ""].filter(Boolean).join(";"),
+  ...(isWindows
+    ? { Path: [...pathParts, process.env.Path ?? process.env.PATH ?? ""].filter(Boolean).join(";") }
+    : {}),
 };
 
 await new Promise((resolveRun, reject) => {
@@ -52,8 +56,16 @@ await new Promise((resolveRun, reject) => {
 
 const destination = join(root, "apps", "desktop", "head-tracking-helper");
 await mkdir(destination, { recursive: true });
+
+const binaryName = isWindows ? "SdaAirPodsHeadTracking.exe" : "SdaAirPodsHeadTracking";
+const sourceBinary = join(helper, "target", "release", binaryName);
 await Promise.all([
-  copyFile(join(helper, "target", "release", "sda-airpods-head-tracking.exe"), join(destination, "SdaAirPodsHeadTracking.exe")),
+  copyFile(sourceBinary, join(destination, binaryName)),
   copyFile(join(helper, "LICENSE"), join(destination, "LICENSE.txt")),
 ]);
-console.log(`Windows AirPods helper: ${join(destination, "SdaAirPodsHeadTracking.exe")}`);
+
+if (!isWindows) {
+  await chmod(join(destination, binaryName), 0o755);
+}
+
+console.log(`AirPods helper: ${join(destination, binaryName)}`);
