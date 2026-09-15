@@ -62,7 +62,7 @@ jobs:
       - name: Build Windows x64 preview installer
         shell: pwsh
         run: |
-          pnpm --filter @sda/desktop build -- --win nsis --x64 --publish never
+          pnpm --filter @sda/desktop build --win nsis --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 

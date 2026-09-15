@@ -38,3 +38,6 @@ __pycache__/
 /nul
 /vendor/libmpegh/
 /packages/core/pkg-mpegh/
+
+# Web build staged inside Electron appDir before ASAR packaging.
+/apps/desktop/web/

@@ -45,10 +45,7 @@
       "builtin-rooms/**",
       "room-lab.cjs",
       "room-layouts.cjs",
-      {
-        "from": "../web/dist",
-        "to": "web"
-      }
+      "web/**"
     ],
     "asarUnpack": [
       "node_modules/h5wasm/**",
@@ -89,7 +86,8 @@
       "icon": "assets/icon.png",
       "target": "dmg",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
-    }
+    },
+    "beforePack": "./stage-web.cjs"
   },
   "dependencies": {
     "fft.js": "4.0.4",
