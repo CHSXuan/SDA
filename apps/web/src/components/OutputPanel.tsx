@@ -9,6 +9,9 @@ export interface OutputDevices {
     bufferMs?: number | null; state: string; detail: string };
   devices: {id:string;name:string;available:boolean;isDefault:boolean;sampleRate?:number|null;channels?:number|null}[];
 }
+const isMac = typeof navigator !== "undefined"
+  && (/Mac|iPhone|iPad/.test(navigator.userAgent) || document.documentElement?.dataset?.platform === "darwin");
+
 export default function OutputPanel() {
   const [data,setData] = useState<OutputDevices | null>(null);
   const [draft,setDraft] = useState<OutputSettings>({deviceId:null,exclusive:false});
@@ -46,7 +49,7 @@ export default function OutputPanel() {
     </label>
     <label>访问方式
       <Select aria-label="输出访问方式" value={draft.remoteCompatible?"remote":draft.exclusive?"exclusive":"shared"} onChange={e=>setDraft({...draft,deviceId:e.target.value==="remote"?null:draft.deviceId,remoteCompatible:e.target.value==="remote",exclusive:e.target.value==="exclusive"})}>
-        <option value="remote">远程兼容 · UU / RDP</option><option value="shared">WASAPI 共享</option><option value="exclusive">WASAPI 独占 · 本机监听</option>
+        <option value="remote">远程兼容 · UU / RDP</option><option value="shared">{isMac ? "CoreAudio 共享" : "WASAPI 共享"}</option><option value="exclusive">{isMac ? "CoreAudio 独占 · 本机监听" : "WASAPI 独占 · 本机监听"}</option>
       </Select>
     </label>
     {draft.remoteCompatible&&<small>跟随系统默认，使用共享混音供远程采集；远程软件切换默认设备时自动跟随。</small>}
@@ -55,6 +58,7 @@ export default function OutputPanel() {
     <div className="output-manager-status" aria-live="polite">
       <strong>{data?.status.state==="ready"?data.status.actualName:"输出不可用"}</strong>
       {data?.status.state==="ready"&&<span>{data.status.mode==="exclusive"?"实际独占":"实际共享"} · {(data.status.sampleRate??0)/1000} kHz · {data.status.channels} 声道 · 缓冲 {data.status.bufferMs?.toFixed(1)} ms</span>}
+      {isMac&&data?.status.state==="ready"&&<small>macOS CoreAudio 输出；独占模式由系统管理。</small>}
       <small>内部渲染 48 kHz / 双耳双声道，按设备采样率转换。输出会话失效时自动重新初始化，不重连蓝牙；指定耳机断开后不会切到外放。</small>
       {(error||data?.status.detail)&&<p role="status">{error||data?.status.detail}</p>}
     </div>

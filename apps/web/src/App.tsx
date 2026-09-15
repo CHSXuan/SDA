@@ -92,6 +92,8 @@ const HEAD_TRACKING_TELEMETRY_INTERVAL_MS = 1000 / 30;
 const HEAD_TRACKING_TELEMETRY_HISTORY_MS = 6_000;
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
 const ownedArrayBuffer = (bytes: Uint8Array): ArrayBuffer => Uint8Array.from(bytes).buffer;
+const isMac = typeof navigator !== "undefined"
+  && (/Mac|iPhone|iPad/.test(navigator.userAgent) || document.documentElement?.dataset?.platform === "darwin");
 
 function readOutputLatencySeconds(): OutputLatencySeconds {
   const desktopValue = window.sdaDesktop?.getOutputLatencySeconds?.();
@@ -1974,7 +1976,7 @@ export function App() {
           <Select
             value="binaural"
             disabled
-            title="桌面 WASAPI sidecar 当前仅提供固定虚拟扬声器的双耳 HRTF 输出"
+            title={`桌面${isMac ? "CoreAudio" : "WASAPI"}原生渲染器当前仅提供固定虚拟扬声器的双耳 HRTF 输出`}
           >
             <option value="binaural">双耳 (耳机 HRTF)</option>
           </Select>
@@ -2099,7 +2101,7 @@ export function App() {
                     onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
                 </label>
                 <ObjectRenderingStatus direct={directObjectHrtf}/>
-                <label className="settings-switch" title="启动或停止桌面唯一的 Rust/WASAPI 空间输出。停止后桌面不会退回 Web Audio 输出。">
+                <label className="settings-switch" title={`启动或停止桌面唯一的 Rust/${isMac ? "CoreAudio" : "WASAPI"} 空间输出。停止后桌面不会退回 Web Audio 输出。`}>
                   <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <input type="checkbox" role="switch" checked={nativeRendererStatus?.running ?? false}
                     disabled={nativeRendererBusy} aria-label="音频输出" onChange={() => void toggleNativeRenderer()} />
@@ -2163,7 +2165,7 @@ export function App() {
                   通过独立 helper 进程读取已配对 AirPods 的 motion data；不是 Apple Personalized Spatial Audio，不读取配对密钥。相对姿态流存在时变漂移，静止数秒后声像会缓慢回到最近一次重置的朝向（锚定回正）。
                 </p>
                 <p className="settings-description">
-                  Helper：{headTrackingHelper?.usingBundled ? "内置 Windows helper" : headTrackingHelper?.configured ? `外部 ${headTrackingHelper.fileName}` : "未配置"}
+                  Helper：{headTrackingHelper?.usingBundled ? `内置 ${isMac ? "macOS" : "Windows"} helper` : headTrackingHelper?.configured ? `外部 ${headTrackingHelper.fileName}` : "未配置"}
                 </p>
                 <p className="settings-description">
                   状态：{headTrackingStatus?.running ? `运行中（${headTrackingStatus.source}；${headTrackingStatus.detail}）` : headTrackingStatus?.detail ?? "正在读取"}
@@ -2171,7 +2173,7 @@ export function App() {
                 <div className="settings-switch">
                   <span>Helper 来源</span>
                   <div>
-                    <button onClick={() => void selectHeadTrackingHelper()} title="选择其它 Windows AirPods 头追 helper (.exe)">选择外部</button>
+                    <button onClick={() => void selectHeadTrackingHelper()} title={`选择其它${isMac ? "macOS" : "Windows"} AirPods 头追 helper${isMac ? "" : " (.exe)"}`}>选择外部</button>
                     {headTrackingHelper?.bundledAvailable && headTrackingHelper.externalSelected && (
                       <button onClick={() => void useBundledHeadTrackingHelper()} title="恢复使用 SDA 随附的 helper">使用内置</button>
                     )}
@@ -2194,7 +2196,7 @@ export function App() {
                 {headTrackingHelper?.mockAvailable && !headTrackingHelper.configured && (
                   <p className="settings-description">开发模式已启用模拟 yaw 追踪；它不访问 AirPods 或蓝牙硬件。</p>
                 )}
-                <p className="settings-description">请先在 Windows 设置中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
+                <p className="settings-description">请先在{isMac ? " macOS 蓝牙设置" : " Windows 设置"}中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
               </fieldset>
             )}
             </div>
