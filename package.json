@@ -8,7 +8,7 @@
     "iamf:build": "node scripts/build-iamf.mjs",
     "iamf:test": "node scripts/test-iamf.mjs && node scripts/test-iamf-worker.mjs",
     "mpegh:build": "node scripts/build-mpegh.mjs",
-    "mpegh:test": "node scripts/test-mpegh.mjs",
+    "mpegh:test": "node scripts/test-mpegh.mjs && node scripts/test-mpegh-loudness.mjs && node scripts/test-mpegh-loudness-client.mjs",
     "head-tracking:build": "node scripts/build-head-tracking-helper.mjs",
     "head-tracking:stage-driver": "node scripts/stage-head-tracking-driver.mjs",
     "head-tracking:test": "cargo test --manifest-path apps/head-tracking-helper/Cargo.toml --locked --offline",

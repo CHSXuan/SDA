@@ -13,6 +13,7 @@ import Select from "./components/Select";
 import PersonalHrtfPanel from "./components/PersonalHrtfPanel";
 import PlaylistPanel from "./components/PlaylistPanel";
 import OutputPanel from "./components/OutputPanel";
+import {Wifi} from "lucide-react";
 import RemotePanel, {RemoteClientView} from "./components/RemotePanel";
 import {createMonitorPreset} from "./monitor-presets";
 import {createHardwarePreset} from "./hardware-presets";
@@ -58,7 +59,7 @@ import {
 } from "./head-tracking-telemetry";
 import { HeadTrackingSession } from "./head-tracking-session";
 
-type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string };
+type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string; version?: string };
 type HeadTrackingPlayer = {
   setHeadPose?: (pose: HeadPose) => void;
   clearHeadPose?: () => void;
@@ -262,9 +263,9 @@ function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { render
 
 /** Cache key for a track's measured BS.1770-4 loudness (volume balance for
  *  metadata-less content such as ALAC). */
-function measuredLoudnessStorageKey(info: { channels: number; sampleRate: number }, source: PlaybackSource): string {
-  const identity = source.kind === "path" ? source.path : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
-  return `sda-measured-lufs-v4:${identity}:${info.channels}:${info.sampleRate}`;
+function measuredLoudnessStorageKey(info: { codec: string; channels: number; sampleRate: number }, source: PlaybackSource): string {
+  const identity = source.kind === "path" ? `${source.path}:${source.version ?? "unknown"}` : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
+  return `sda-measured-lufs-v5:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
 }
 
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
@@ -393,6 +394,7 @@ export function App() {
    *  playerRef 是空的、pause() 会丢 —— play() 建好 player 后按此补发。 */
   const pausedRef = useRef(false);
   const [volume, setVolume] = useState(1);
+  const [balanceAnalysisProgress, setBalanceAnalysisProgress] = useState<number | null>(null);
   const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(readVolumeBalanceEnabled);
   const [programLoudness, setProgramLoudness] = useState<ProgramLoudnessMetadata | null>(null);
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
@@ -439,7 +441,7 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession({yawMode:"yaw",sensitivity:1,smoothingMs:220,deadZoneDegrees:2.5,maxDegreesPerSecond:480}));
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"remote" | "roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
   const [hrtfTestVisual,setHrtfTestVisual]=useState<HrtfTestVisual|null>(null);
   const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
   const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
@@ -787,6 +789,7 @@ export function App() {
             createdPlayer?.setMeasuredLoudness(null);
           }
         },
+        onBalanceAnalysis: progress => { if (isCurrent()) setBalanceAnalysisProgress(progress); },
         onMeasuredLoudness: (integratedLufs, peakDbfs) => {
           const key = measuredLoudnessKeyRef.current;
           if (!isCurrent() || !key) return;
@@ -1308,6 +1311,7 @@ export function App() {
       setPlayerReady(null);
       if (!isCurrent()) return;
       setErrors([]);
+      setBalanceAnalysisProgress(null);
       setTrack(null);
       setBinauralMetadata(null);
       objectsRef.current = [];
@@ -1363,6 +1367,7 @@ export function App() {
             throw new Error("桌面文件读取接口不可用");
           }
           const opened = await desktop.openPath(source.path);
+          source.version = `${opened.size}:${opened.mtimeMs ?? Date.now()}`;
           try {
             if (!isCurrent() || playerRef.current !== player) return;
             const readSlice = desktop.readSlice;
@@ -1815,6 +1820,18 @@ export function App() {
     setPaused(false);
   }, []);
 
+  const layoutOptions = [
+    ...(!stereoProgram && mode !== "stereo" ? [{value:"auto",label:`自动${detectedLayout ? `（${detectedLayout}）` : ""}`}] : []),
+    ...(Object.keys(LAYOUTS) as LayoutId[])
+              .filter((id) => !track || ((stereoProgram || mode === "stereo")
+                ? id === "2.0" || id === "2.1"
+                : id !== "2.0" && id !== "2.1"))
+              .filter((id) => id === "2.0" || id === "2.1" ||
+                (["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")
+                  ? id === "360RA-13" || id === "22.2"
+                  : id !== "360RA-13" && id !== "22.2")).map(id=>({value:id,label:id === "11.1.8" ? (track?.codec === "iamf" ? "11.1.8（手动）" : "Dolby 11.1.8 · Atmos / 母版（手动）") : id === "22.2" ? "22.2 · 标准三层布局（手动）" : id === "360RA-13" ? "360RA · 13 音箱参考布局" : id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `${track?.codec === "iamf" ? "IAMF" : "Dolby"} ${id}`})),
+  ];
+
   const [remoteTools,setRemoteTools]=useState<RemoteTools|null>(null);
   const remoteToolsFetch=useRef<()=>Promise<void>>(async()=>{});
   const remoteRoomSettings=(settings:CinemaSettings)=>{const {monitor,...room}=settings;return room;};
@@ -1822,6 +1839,8 @@ export function App() {
     tools:remoteTools?{...remoteTools,head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,
       locked:personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}:null,
     scene:{spherical:(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")),objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
+    balanceAnalysisProgress,
+    layoutSelection:{value:layoutId,options:layoutOptions,locked:roomComparison!==null},
     source:track?{codec:track.codec,sampleRate:track.sampleRate,channels:track.rawBedLabels?.length??track.channels,objects:track.objectChannels}:undefined,
     artist:track?.artist, album:track?.album, coverUrl:track?.coverUrl, title:track?.title??fileNameRef.current??"",playing,paused,position,duration,volume,
     currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,
@@ -1848,6 +1867,10 @@ export function App() {
       case "volume":changeVolume(Number(command.value));break;
       case "playbackMode":changePlaybackMode(command.value as PlaybackMode);break;
       case "volumeBalance":changeVolumeBalance(command.value===true);break;
+      case "layout":
+        if(roomComparison!==null)throw Error("请先退出对照试听");
+        if(!layoutOptions.some(option=>option.value===command.value))throw Error("当前歌曲不支持此布局，请重新选择");
+        changeLayout(command.value as LayoutId | "auto");break;
       case "stereoMode":await changeStereoRenderMode(command.value as StereoRenderMode);break;
       case "roomCancel":await window.sdaDesktop?.roomLabCancel?.();break;
       case "roomGenerate":{
@@ -1979,20 +2002,7 @@ export function App() {
             <option value="binaural">双耳 (耳机 HRTF)</option>
           </Select>
           <Select value={layoutId} disabled={roomComparison!==null} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
-            {!stereoProgram && mode !== "stereo" && <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>}
-            {(Object.keys(LAYOUTS) as LayoutId[])
-              .filter((id) => !track || ((stereoProgram || mode === "stereo")
-                ? id === "2.0" || id === "2.1"
-                : id !== "2.0" && id !== "2.1"))
-              .filter((id) => id === "2.0" || id === "2.1" ||
-                (["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")
-                  ? id === "360RA-13" || id === "22.2"
-                  : id !== "360RA-13" && id !== "22.2"))
-              .map((id) => (
-                <option key={id} value={id}>
-                  {id === "11.1.8" ? (track?.codec === "iamf" ? "11.1.8（手动）" : "Dolby 11.1.8 · Atmos / 母版（手动）") : id === "22.2" ? "22.2 · 标准三层布局（手动）" : id === "360RA-13" ? "360RA · 13 音箱参考布局" : id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `${track?.codec === "iamf" ? "IAMF" : "Dolby"} ${id}`}
-                </option>
-              ))}
+            {layoutOptions.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
           </Select>
           <Select aria-label="实际佩戴耳机" title="默认通用耳机，无需适配型号；也可选择实际型号进行近似校准" value={headphoneSource} disabled={headphoneSwitchBusy} onChange={e=>{
             const source=e.target.value;
@@ -2051,7 +2061,6 @@ export function App() {
             <div className="settings-tabs" role="tablist" aria-label="设置分类">
               {[
                 { id: "output", label: "音频输出" },
-                ...(window.sdaDesktop?.remoteSession ? [{id:"remote",label:"无损远程"}] : []),
                 ...(window.sdaDesktop?.startNativeRenderer ? [{ id: "spatial", label: "空间音效" }] : []),
                 { id: "eq", label: "耳机 EQ" },
                 ...(window.sdaDesktop?.getHeadTrackingStatus ? [{ id: "tracking", label: "头部追踪" }] : []),
@@ -2069,14 +2078,11 @@ export function App() {
                   onClick={() => setSettingsTab(tab.id)}>{tab.label}</button>
               ))}
             </div>
-            <div className="settings-content" id="settings-content-remote" role="tabpanel" aria-labelledby="settings-tab-remote" hidden={settingsTab!=="remote"}>
-              {settingsTab==="remote"&&<RemotePanel status={remote}/>}
-            </div>
             <div className="settings-content" id="settings-content-output" role="tabpanel" aria-labelledby="settings-tab-output" hidden={settingsTab !== "output"}>
             <OutputPanel />
             <fieldset className="settings-group" disabled={mode === "multichannel"}>
               <legend>输出</legend>
-              <label className="settings-switch" title="仅作用于纯立体声曲目：按 Master 整曲综合响度对齐 −18 LUFS，左右统一增益，提升受峰值余量限制。多声道、Atmos 对象音轨和 ADM 母版自动旁路；选择立体声输出不会使它们参与平衡。">
+              <label className="settings-switch" title="适用于纯立体声和 360RA。360RA 播放时累计分析固定参考混音，以 −18 LUFS 为本软件对齐目标，仅衰减偏响曲目，不放大安静曲目，平滑更新统一增益，保留对象相对音量。其它空间格式保持旁路；此目标不代表 Dolby 母版认证。">
                 <span>音量平衡</span>
                 <input
                   type="checkbox"
@@ -2086,7 +2092,7 @@ export function App() {
                 />
               </label>
             </fieldset>
-            {mode === "multichannel" && <p className="settings-disabled">音量平衡仅作用于纯立体声曲目，在双耳或立体声输出下生效。</p>}
+            {mode === "multichannel" && <p className="settings-disabled">音量平衡适用于立体声和 360RA，在双耳或立体声输出下生效。</p>}
             </div>
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
             {window.sdaDesktop?.startNativeRenderer && (
@@ -2204,6 +2210,7 @@ export function App() {
 
       <main>
         <section className="view">
+        {balanceAnalysisProgress !== null && <p role="status" className="settings-disabled" style={{position:"absolute",top:58,left:24,zIndex:4,pointerEvents:"none"}}>正在分析整曲响度 · {Math.round(balanceAnalysisProgress * 100)}%</p>}
 {roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
           <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
@@ -2443,7 +2450,12 @@ export function App() {
           </div>
         )}
         {floatPanel === "cinema" && <MonitorPanel onClose={()=>setFloatPanel(null)} key={`${roomComparison??"editing"}-${audioSettingsRevision}`} comparisonActive={roomComparison!==null} onExitComparison={restoreRoomComparison} layout={layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} speakers={outputSpeakers} />}
+        {floatPanel === "remote" && <section className="panel float-panel desktop-sheet remote-sheet" aria-label="无线远程">
+          <SheetHeading title="无线远程" onClose={()=>setFloatPanel(null)}/>
+          <RemotePanel status={remote}/>
+        </section>}
         <nav className="float-buttons" aria-label="音频工具">
+          {window.sdaDesktop?.remoteSession && <button className={floatPanel==="remote"?"active":""} aria-expanded={floatPanel==="remote"} title="无线远程" onClick={()=>{setSettingsOpen(false);setFloatPanel(floatPanel==="remote"?null:"remote");}}><Wifi size={19}/><span>无线远程</span></button>}
           {window.sdaDesktop?.electron3D !== false && <button className={immersiveView ? "active" : ""} aria-pressed={immersiveView} title={immersiveView ? "退出沉浸视角" : "进入沉浸视角"} onClick={() => { setRoomVisual(null); setImmersiveView(value => !value); }}><ScanFace size={19} /><span>沉浸</span></button>}
           {roomVisual&&floatPanel!=="roomlab"&&<button onClick={()=>setRoomVisual(null)}><RotateCcw size={19} /><span>返回声场</span></button>}
           <button className={floatPanel==="roomlab"?"active":""} onClick={()=>setFloatPanel(floatPanel==="roomlab"?null:"roomlab")} title="房间实验室"><Box size={19} /><span>房间</span></button>

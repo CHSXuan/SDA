@@ -60,7 +60,7 @@ export function receiverView(owner, state) {
       ?Math.max(0,(Number(owner.audio.currentTime)||0)+(owner.mediaClockBase||0)):position;
   }
   return {audible,buffering,position:owner?.displayPosition??position,
-    label:owner?.testing?"耳廓测试中":loading?"正在加载音频…":!running?(state?.paused?"已暂停":"等待播放"):
+    label:owner?.testing?"耳廓测试中":Number.isFinite(state?.balanceAnalysisProgress)?`正在分析整曲响度 · ${Math.round(state.balanceAnalysisProgress*100)}%`:loading?"正在加载音频…":!running?(state?.paused?"已暂停":"等待播放"):
       blocked?"点击播放收听":buffering?"正在缓冲…":"正在播放"};
 }
 

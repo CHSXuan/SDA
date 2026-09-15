@@ -212,3 +212,14 @@ test("HLS is desktop opt-in, denied by default and revoked immediately",async()=
   assert.equal((await hlsHttp(f.port,'/hls/session','POST','',{token})).status,403);
  }finally{await f.close();}
 });
+
+test('RTC negotiation failure falls back before sending PCM and preserves samples',async()=>{
+ const f=await setup();f.host.hooks.rtc=async()=>{throw Error('ICE unavailable');};const ws=socket(f.port),audio=[];let fallback=false;
+ ws.on('error',()=>{});
+ try{
+  const decode=decodePackets((kind,body)=>{if(kind==='H')ws.send(packet('H',{protocol:1}));else if(kind==='A')audio.push(Buffer.from(body));});
+  ws.on('message',(data,binary)=>{if(!binary){assert.equal(JSON.parse(data).type,'fallback');fallback=true;}else{assert.ok(fallback);decode(data);}});
+  await new Promise(r=>ws.once('open',r));ws.send(JSON.stringify({protocol:1,token:f.host.key.toString('hex'),pcmPipeline:true,rtcOffer:'offer'}));
+  await until(()=>audio.length===10);assert.deepEqual(audio,f.sent);
+ }finally{ws.terminate();await f.close();}
+});

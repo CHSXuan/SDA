@@ -1,0 +1,33 @@
+<script>
+const {ipcRenderer}=require('electron');
+(async()=>{
+ const context=new AudioContext({sampleRate:48000});
+ await context.audioWorklet.addModule('../apps/desktop/remote-web/pcm-worklet.mjs');
+ const node=new AudioWorkletNode(context,'sda-remote-pcm',{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[2]});
+ const mute=context.createGain();mute.gain.value=0;node.connect(mute);mute.connect(context.destination);await context.resume();
+ node.port.postMessage({type:'configure',bufferMs:300});
+ const pc=new RTCPeerConnection({iceServers:[]}),dc=pc.createDataChannel('sda-pcm',{ordered:true});dc.binaryType='arraybuffer';
+ let pending=new Uint8Array(),samples=0,gaps=0,started=false,lastBuffering=true,maxFeedbackAge=0;
+ dc.onmessage=({data})=>{
+  const b=new Uint8Array(pending.length+data.byteLength);b.set(pending);b.set(new Uint8Array(data),pending.length);pending=b;
+  while(pending.length>=3845){
+   if(pending[0]!==65)throw Error('bad packet');
+   const pcm=pending.slice(5,3845);pending=pending.subarray(3845);
+   const f=new Float32Array(pcm.buffer);for(const v of f){if(v!==samples%4096/4096)throw Error('sample mismatch');samples++;}
+   node.port.postMessage({type:'pcm',samples:pcm.buffer},[pcm.buffer]);
+  }
+ };
+ node.port.onmessage=({data:d})=>{
+  if(d.type!=='progress'||dc.readyState!=='open')return;
+  if(!d.buffering)started=true;
+  if(started&&d.buffering&&!lastBuffering&&samples<2880000)gaps++;lastBuffering=d.buffering;
+  maxFeedbackAge=Math.max(maxFeedbackAge,(context.currentTime-d.clock)*1000);
+  const body=new TextEncoder().encode(JSON.stringify({consumed:d.consumed,queuedFrames:d.queued}));const b=new Uint8Array(body.length+5);b[0]=75;new DataView(b.buffer).setUint32(1,body.length,true);b.set(body,5);dc.send(b);
+  if(d.consumed>=1440000)ipcRenderer.send('result',{ok:gaps===0,gaps,samples,maxFeedbackAge,seconds:d.consumed/48000});
+ };
+ ipcRenderer.on('answer',(_,sdp)=>pc.setRemoteDescription({type:'answer',sdp}));
+ await pc.setLocalDescription(await pc.createOffer());
+ if(pc.iceGatheringState!=='complete')await new Promise(resolve=>pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete')resolve();}));
+ ipcRenderer.send('offer',pc.localDescription.sdp);
+})();
+</script>

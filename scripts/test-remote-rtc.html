@@ -1,0 +1,8 @@
+<script>
+const {ipcRenderer}=require('electron');
+(async()=>{
+ const {prepareRtc}=await import('../apps/desktop/remote-web/rtc.mjs');let count=0;
+ const rtc=await prepareRtc(e=>{const a=new Uint8Array(e.data);for(const value of a){if(value!==Math.floor(count/3840))throw Error('PCM mismatch');count++;}if(count===384000)rtc.channel.send(new TextEncoder().encode('return-pcm'));},()=>{});
+ ipcRenderer.on('answer',(_,sdp)=>rtc.answer(sdp));ipcRenderer.send('offer',rtc.offer);
+})();
+</script>

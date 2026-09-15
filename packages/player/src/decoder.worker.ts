@@ -55,12 +55,18 @@ function compactObjectEvents(frame: DecodedFrameData): void {
   });
 }
 
+function measureMpeghReference(channels:Float32Array[],sampleRate:number):void {
+  loudnessMeter ??= new LoudnessMeter(sampleRate,2);
+  loudnessMeter.push(channels);
+}
+
 function postFrame(frame: DecodedFrameData): void {
+  if(frame.codec === "mpegh" && loudnessMeter && ++loudnessPostCounter % 8 === 0) frame.loudness=loudnessMeter.integrated();
   // BS.1770-4 measurement for content without codec loudness metadata (e.g.
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
   // ADM tracks are unrendered sources, not BS.1770 speaker channels. Applying
   // channel-layout weights to 118 objects is both incorrect and very costly.
-  if (isStereoMasterFrame(frame) && frame.channels[0]?.length) {
+  if (frame.codec !== "mpegh" && isStereoMasterFrame(frame) && frame.channels[0]?.length) {
     loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
     loudnessMeter.push(frame.channels);
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
@@ -169,12 +175,12 @@ async function handleMessage(e: MessageEvent): Promise<void> {
         }
         const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
         if(kind === "mp4" || isMhas(chunk)) await initMpegh();
-        if(kind === "raw" && isMhas(chunk)) {decoder?.free();decoder=new MpeghDecoder();}
+        if(kind === "raw" && isMhas(chunk)) {decoder?.free();decoder=new MpeghDecoder(false,undefined,measureMpeghReference,true);}
         if(kind === "raw" && isIamf(chunk)) {await initIamf();decoder?.free();decoder=new IamfDecoder();}
         demuxer = createDemuxer(kind, {
           onTrack: (t) => {
             if(t.codec === "mha1" || t.codec === "mhm1") {
-              decoder?.free();decoder=new MpeghDecoder(t.codec === "mha1",t.decoderConfig);
+              decoder?.free();decoder=new MpeghDecoder(t.codec === "mha1",t.decoderConfig,measureMpeghReference,true);
               decoderConfigurationError=null;
             }
             if (["dts", "dtsc", "dtsh", "dtsl", "dtse"].includes(t.codec)) {

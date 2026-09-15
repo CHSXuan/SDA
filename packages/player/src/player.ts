@@ -111,6 +111,7 @@ export interface PlayerCallbacks {
   /** Throttled (~per frame batch) object-state snapshot for the 3D view. */
   onVisualState?: (objects: VisualObject[], streamTimeSec: number, soundingIds: ReadonlySet<number>) => void;
   onError?: (message: string) => void;
+  onBalanceAnalysis?: (progress: number | null) => void;
   /** Fired when the input ended and the renderer drained. */
   onEnded?: () => void;
   /** Throttled worklet and decoder health snapshot for the active playback session. */
@@ -348,6 +349,8 @@ export class SdaPlayer {
   private lastVolume = 1;
   private volumeBalanceEnabled = false;
   private stereoBalanceEligible = false;
+  private mpeghMeasurement: FrameLoudness | null = null;
+  private balanceAnalysisAbort = new AbortController();
   private nonStereoProgrammeSeen = false;
   private programLoudness: ProgramLoudnessMetadata | null = null;
   private programLoudnessGainDb: number | null = null;
@@ -972,9 +975,14 @@ export class SdaPlayer {
     size: number,
     codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
   ): Promise<void> {
+    this.balanceAnalysisAbort.abort();
+    const analysisAbort = this.balanceAnalysisAbort = new AbortController();
+    this.mpeghMeasurement = null;
+    this.cachedMeasuredLufs = null;
+    this.cachedMeasuredPeakDbfs = null;
     const header = await readRange(0, Math.min(12, size));
     const metadata = BwfDemuxer.sniffs(header) ? await readBwfMetadata(readRange, size) : undefined;
-    if (!this.disposed) this.open(codec, metadata);
+    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata);
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
@@ -1014,6 +1022,7 @@ export class SdaPlayer {
   }
 
   stop(): void {
+    this.balanceAnalysisAbort.abort();
     this.resetOutputLatencyProtection();
     if (this.visualTimer) clearInterval(this.visualTimer);
     this.visualTimer = null;
@@ -1161,6 +1170,7 @@ export class SdaPlayer {
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
   setMeasuredLoudness(integratedLufs: number | null, peakDbfs: number | null = null): void {
+    if (this.mpeghMeasurement) return;
     this.cachedMeasuredPeakDbfs = peakDbfs;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
@@ -1183,6 +1193,7 @@ export class SdaPlayer {
   private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number, peakDbfs: number | null = null): void {
     const gainDb = masterBalanceGainDb(integratedLufs, peakDbfs);
     const previous = this.scheduledProgramLoudnessGainDb ?? 0;
+    console.info(`[SDA balance] codec=${this.trackCodec} enabled=${this.volumeBalanceEnabled} lufs=${integratedLufs.toFixed(2)} targetDb=${gainDb.toFixed(2)} at=${atSample}`);
     this.scheduledProgramLoudnessGainDb = gainDb;
     this.programLoudnessGainDb = gainDb;
     if (Math.abs(gainDb - previous) < 0.05) return;
@@ -1211,6 +1222,7 @@ export class SdaPlayer {
   async dispose(): Promise<void> {
     console.log(`[SDA] player#${this.id} dispose`);
     this.disposed = true;
+    this.balanceAnalysisAbort.abort();
     if(this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
     this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
     this.rejectPendingWorkerPushes("player disposed");
@@ -1811,8 +1823,11 @@ export class SdaPlayer {
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
-    if (!isStereoMasterFrame(frame)) this.nonStereoProgrammeSeen = true;
-    const eligible = !this.nonStereoProgrammeSeen && isStereoMasterFrame(frame);
+    const mpegh = frame.codec === "mpegh";
+    if (!mpegh && !isStereoMasterFrame(frame)) this.nonStereoProgrammeSeen = true;
+    const eligible = !this.nonStereoProgrammeSeen && (mpegh
+      ? true
+      : isStereoMasterFrame(frame));
     if (eligible !== this.stereoBalanceEligible) {
       this.stereoBalanceEligible = eligible;
       this.setVolumeBalance(this.volumeBalanceEnabled);
@@ -1875,7 +1890,10 @@ export class SdaPlayer {
       const frameSamples = frame.channels[0]?.length ?? 0;
       const renderer = this.renderer;
       if (this.stereoBalanceEligible) {
-        const stereoMaster = true;
+        // MPEG-H reference loudness supplies one linked master gain.
+        // The upstream reference is quantized, not a true-peak measurement of
+        // SDA's object render: never use it to justify positive gain.
+        const stereoMaster = frame.codec !== "mpegh";
         if (this.cachedMeasuredLufs != null && !this.measuredLoudnessSettled) {
           // A cached complete-track measurement applies from the first submitted sample.
           const gainDb = masterBalanceGainDb(this.cachedMeasuredLufs, stereoMaster ? this.cachedMeasuredPeakDbfs : null);

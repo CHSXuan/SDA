@@ -10,6 +10,7 @@ const {HlsPeer}=require("./remote-hls.cjs");
 // No plaintext listener or extra firewall port is created.
 function createRemoteWeb(session, {packet,decodePackets}) {
   const hlsPeers=new Map();
+  let rtcNegotiating=0;
   const cookieMatches=(req,hls)=>hls&&String(req.headers.cookie||"").split(";").some(v=>v.trim()===`sda_hls=${hls.cookie}`);
   const authenticate=(req,token)=>session.devices?session.devices.authenticate(req):typeof token==="string"&&/^[a-f0-9]{64}$/.test(token)&&session.key&&crypto.timingSafeEqual(Buffer.from(token,"hex"),session.key)?{legacy:true,canControl:true}:null;
   const identify=(peer,device)=>{if(device&&!device.legacy){peer.deviceId=device.id;peer.deviceName=device.name;peer.canControl=device.canControl!==false;}};
@@ -132,6 +133,9 @@ function createRemoteWeb(session, {packet,decodePackets}) {
   files.set("/startup-calibration.mjs",["startup-calibration.mjs","text/javascript; charset=utf-8"]);
   files.set("/pcm-media-output.mjs",["pcm-media-output.mjs","text/javascript; charset=utf-8"]);
   files.set("/connection-watchdog.mjs",["connection-watchdog.mjs","text/javascript; charset=utf-8"]);
+  files.set("/rtc.mjs",["rtc.mjs","text/javascript; charset=utf-8"]);
+  files.set("/pcm-lossless.mjs",["pcm-lossless.mjs","text/javascript; charset=utf-8"]);
+  for(const name of ["pcm-decode-worker.mjs","pcm-decode-client.mjs"])files.set("/"+name,[name,"text/javascript; charset=utf-8"]);
   const cache = new Map();
   const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -170,7 +174,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
         session.hooks.diagnostic?.({transport:"websocket",event:"close",code,reason:reason.toString("utf8").replace(/[\x00-\x1f]/g," ").slice(0,160)});
       });
       ws.on("error", error => session.hooks.diagnostic?.({transport:"websocket",event:"error",code:typeof error.code==="string"?error.code:"unknown"}));
-      ws.once("message", (data, binary) => {
+      ws.once("message", async (data, binary) => {
         clearTimeout(timer);
         let auth;
         try { if (binary) throw Error(); auth = JSON.parse(data.toString("utf8")); } catch { ws.close(1008, "配对信息无效"); return; }
@@ -182,20 +186,37 @@ function createRemoteWeb(session, {packet,decodePackets}) {
         if(auth.hls){
           const hls=hlsPeers.get(auth.hls);
           if(!hls||auth.hls!==hls.id||!mediaAuthorized(req,hls)){ws.close(1008,"收听会话已失效");return;}
-          const stream=createWebSocketStream(ws,{highWaterMark:64*1024});stream.setNoDelay=()=>stream;session.track(stream);
+          const stream=createWebSocketStream(ws,{highWaterMark:64*1024});stream.setNoDelay=(enabled=true)=>{socket.setNoDelay(enabled);return stream;};session.track(stream);
           try{hls.attachControl(stream,decodePackets);}catch{ws.close(1008,"此收听会话已有控制页面");}return;
         }
         if (!session.canAccept()||device.id&&[...session.hostPeers].some(p=>p.deviceId===device.id&&!p.destroyed)) { ws.close(1013, "设备连接尚未释放或已达上限，请稍后重试"); return; }
-        const stream = createWebSocketStream(ws, { highWaterMark: 64 * 1024 });
+        let stream;
+        if(auth.pcmPipeline===true&&typeof auth.rtcOffer==='string'&&auth.rtcOffer.length<64000&&session.hooks.rtc){
+          if(session.hostPeers.size+rtcNegotiating>=session.capacity()){ws.close(1013,'已达到设备连接上限');return;}
+          rtcNegotiating++;
+          try{
+            stream=await session.hooks.rtc(auth.rtcOffer,value=>{if(ws.readyState===1)ws.send(JSON.stringify(value));});
+            if(ws.readyState!==1||session.generation!==generation||!authenticate(req,auth.token)){stream.destroy();return;}
+            ws.once('close',()=>stream.destroy());stream.once('close',()=>ws.close());
+            stream.remoteTransport='webrtc';
+            session.hooks.diagnostic?.({transport:'webrtc',event:'connected'});
+          }catch{
+            if(ws.readyState!==1)return;
+            ws.send(JSON.stringify({type:'fallback'}));
+            session.hooks.diagnostic?.({transport:'webrtc',event:'fallback'});
+          }finally{rtcNegotiating--;}
+        }else if(auth.rtcOffer&&ws.readyState===1)ws.send(JSON.stringify({type:'fallback'}));
+        stream??=createWebSocketStream(ws, { highWaterMark: 64 * 1024 });
         // WebSocket pong is handled by the browser networking stack, even when
         // page JavaScript / audio feedback is suspended in the background.
         let lastPong=Date.now();
         ws.on("pong",()=>{lastPong=Date.now();});
         stream.pcmPipeline=auth.pcmPipeline===true;
+        stream.stateDelta=auth.stateDelta===true;
         stream.transportLastSeen=()=>lastPong;
         stream.probeTransport=()=>{if(ws.readyState===1)ws.ping();};
         stream.remoteAddress = socket.remoteAddress;
-        stream.setNoDelay = () => stream;
+        stream.setNoDelay = (enabled=true) => { socket.setNoDelay(enabled); return stream; };
         identify(stream,device);session.track(stream);session.reservePeer(stream);session.phase = "connecting";
         session.detail = "浏览器已配对，正在连接音频"; session.publish();
         void session.attachHost(stream, generation).catch(error => session.failPeer(stream, error.message));

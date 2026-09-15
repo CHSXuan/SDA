@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { LoudnessMeter } from "../src/bs1770.ts";
+import { LoudnessMeter, masterBalanceGainDb } from "../src/bs1770.ts";
 
 const SAMPLE_RATE = 48000;
 /** ITU anchor: a 997 Hz sine at 0 dBFS in ONE channel integrates to −3.01 LKFS
@@ -60,4 +60,11 @@ const mono = new LoudnessMeter(SAMPLE_RATE, 1);
 feed(mono, [sine(0.1, 1.234)], 997);
 assert.ok(mono.integrated().blocks > 8, "mono meter accumulates blocks");
 
+// 360RA supplies no proven final-render true-peak headroom: quiet tracks stay
+// unchanged; a loud track gets one programme-wide attenuation. Stereo retains
+// its existing peak-bounded positive-gain policy.
+assert.equal(masterBalanceGainDb(-10, null), -8);
+assert.equal(masterBalanceGainDb(-26, null), 0);
+assert.equal(masterBalanceGainDb(-26, -20), 8);
+assert.equal(masterBalanceGainDb(NaN, null), 0);
 console.log("bs1770 loudness tests: OK");

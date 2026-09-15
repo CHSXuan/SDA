@@ -5,10 +5,20 @@ const FRAMES=480,MAX_BACKLOG=600;
 class RemoteFanout {
  constructor(owner,{packet,decodePackets}){this.owner=owner;this.packet=packet;this.decodePackets=decodePackets;this.peers=new Map();this.inflight=0;this.starting=null;this.local=null;this.server=null;this.closed=false;this.history=[];this.sourceSample=null;this.sourceEnd=null;}
  add(socket){if(this.sourceEnd!==null)socket.endSample=this.sourceEnd;const position=this.owner.hooks.position?.();const queue=socket.sync&&Number.isFinite(position)?this.history.filter(f=>f.sample>=Math.max(0,position-1)*48000):[];const state={socket,ready:false,sent:0,consumed:0,queue:[...queue],lastFeedback:Date.now(),reset:false};this.peers.set(socket,state);return state;}
- // Browser main-thread delivery/ACKs can stall for over a second in the
- // background. Keep 2.4 s of credit, below the worklet's 131072-frame FIFO;
- // the configured startup threshold remains independent of this headroom.
- window(p){return (p.socket.pcmPipeline?2400:this.owner.bufferMs)*48;}
+ // Keep the requested receiver buffer plus measured delivery/feedback latency.
+ // A large safety ceiling is not a permanent audio queue target.
+ window(p){return (p.socket.pcmPipeline?Math.min(2400,this.owner.bufferMs+(p.feedbackMarginMs??0)):this.owner.bufferMs)*48;}
+ feedback(p,queued,now=Date.now()){
+  if(!p.socket.pcmPipeline||!Number.isSafeInteger(queued)||queued<0||queued>131072)return;
+  const observed=Math.max(0,(p.sent-p.consumed-queued)/48);
+  const previous=p.feedbackMarginMs??0;
+  const elapsed=Math.max(0,Math.min(1000,now-(p.feedbackAt??now)));
+  const empty=queued===0&&p.consumed>0&&p.sent>p.consumed;
+  // One adjustment per underrun episode, not per 20 ms feedback packet.
+  const recovery=empty&&!p.feedbackEmpty?previous+100:0;
+  p.feedbackMarginMs=Math.min(Math.max(0,2400-this.owner.bufferMs),Math.max(observed,recovery,previous-(queued/48>=this.owner.bufferMs?elapsed*.2:0)));
+  p.feedbackEmpty=empty;p.feedbackAt=now;
+ }
  flush(p){const window=this.window(p);while(p.ready&&p.queue.length&&p.sent-p.consumed<window&&!p.socket.destroyed){const frame=p.queue.shift();if(p.socket.frameIndex===0&&Number.isSafeInteger(frame.sample))p.socket.positionBase=frame.sample/48000;p.sent+=FRAMES;p.socket.write(this.packet('A',frame.body??frame));}if(p.queue.length>(p.socket.sync?1000:MAX_BACKLOG)||p.socket.writableLength>1024*1024)this.owner.failPeer(p.socket,'此设备网络未跟上播放，请重新连接');}
  pump(){if(this.closed||!this.local)return;let demand=0;for(const p of this.peers.values()){this.flush(p);if(p.ready&&!p.socket.destroyed)demand=Math.max(demand,Math.floor((this.window(p)-(p.sent-p.consumed)-p.queue.length*FRAMES)/FRAMES));}const count=Math.max(0,Math.min(demand,100)-this.inflight);if(count){this.inflight+=count;this.local.write(Buffer.alloc(count,'P'));}}
  async start(){if(this.starting)return this.starting;this.starting=this.open();return this.starting;}
@@ -22,7 +32,7 @@ class RemoteFanout {
     if(kind==='M'&&body.length===8){const sample=Number(body.readBigUInt64LE());if(!Number.isSafeInteger(sample))throw Error('无效音频时钟');this.sourceSample=sample;return;}
     if(kind==='N'&&body.length===8){const sample=Number(body.readBigUInt64LE());if(!Number.isSafeInteger(sample))throw Error('Invalid end sample');this.sourceEnd=sample;for(const p of this.peers.values()){p.socket.endSample=sample;p.socket.sealIfComplete?.();}return;}
     if(kind!=='A'||body.length!==3840)throw Error('无效原生音频包');
-    this.inflight=Math.max(0,this.inflight-1);owner.bytes+=body.length;
+    this.inflight=Math.max(0,this.inflight-1);this.lastAudioAt=Date.now();owner.bytes+=body.length;
     const frame={body,sample:this.sourceSample};if(this.sourceSample!==null){this.sourceSample+=FRAMES;this.history.push(frame);while(this.history.length>1000)this.history.shift();}
     for(const p of this.peers.values()){if(p.ready&&!p.socket.destroyed){p.queue.push(frame);this.flush(p);}}
     this.pump();

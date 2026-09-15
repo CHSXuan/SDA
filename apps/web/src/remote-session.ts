@@ -8,6 +8,8 @@ export interface RemoteTools {
 }
 export interface RemoteScene {spherical?:boolean;objects:import("@sda/player").VisualObject[];layout:readonly import("@sda/renderer").VirtualSpeaker[];muted:number[];sounding:number[];hiddenSpeakers:string[];position:number;trackId:string}
 export interface RemotePlayback {
+  balanceAnalysisProgress?:number|null;
+  layoutSelection?:{value:string;options:{value:string;label:string}[];locked:boolean};
   scene?:RemoteScene;
   coverUrl?:string;
   source?:{codec:string;sampleRate:number;channels:number;objects?:number};

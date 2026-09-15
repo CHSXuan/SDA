@@ -33,7 +33,7 @@ export class MpeghDecoder {
   private frames:DecodedFrameData[]=[];
   private samplePos=0;
   private dead=false;
-  constructor(private rawAu=false,config?:Uint8Array){
+  constructor(private rawAu=false,config?:Uint8Array,private referenceOnly?: (channels: Float32Array[], sampleRate: number) => void, private emitSourcesWithReference=false){
     if(!runtime)throw Error('MPEG-H runtime not initialized');
     const error=runtime._sda_open(0);if(error)throw Error(`MPEG-H create: ${(error>>>0).toString(16)}`);
     if(rawAu){if(!config?.length)throw Error('MPEG-H mha1 track is missing mhaC configuration');this.feed(mhasPacket(1,config));}
@@ -63,6 +63,16 @@ export class MpeghDecoder {
     const m=runtime, info=(k:number)=>m._sda_info(k);
     let n=info(3);if(!n)return;
     const objects=info(5),beds=info(6),hoa=info(7),rate=info(2);
+    if(this.referenceOnly){
+      const count=info(11),samples=info(10)/(count*3);
+      if(count!==2 || !Number.isInteger(samples) || samples<=0)throw Error('MPEG-H invalid reference mix');
+      const reference=[new Float32Array(samples),new Float32Array(samples)];
+      const bytes=m.HEAPU8;let p=m._sda_rendered();
+      for(let i=0;i<samples;i++)for(let c=0;c<2;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;reference[c]![i]=(v<<8>>8)/8388608;}
+      this.referenceOnly(reference,rate);
+      if(!this.emitSourcesWithReference){this.samplePos+=samples;return;}
+    }
+
     let channels:Float32Array[],labels:string[],events:ObjectEvent[]=[],objectChannels:{id:number;channel:number}[]=[];
     if(objects){
       if(hoa)throw Error('MPEG-H mixed objects/HOA is not supported yet');

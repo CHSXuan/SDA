@@ -47,3 +47,21 @@
 .remote-panel .remote-stop,.remote-panel .remote-invite button,.remote-panel .remote-device button{font-size:12px;font-weight:500;min-height:36px;padding:8px 14px;gap:8px;flex-shrink:0;width:auto;box-sizing:border-box}
 
 .remote-capacity{display:grid;grid-template-columns:1fr 120px;align-items:center;gap:12px;margin:16px 0}.remote-capacity small{grid-column:1/-1;color:var(--text-muted);font-size:12px}
+
+/* Remote controls live in their own rail sheet, with only the page body scrolling. */
+.app .remote-sheet{display:flex;flex-direction:column;width:min(460px,calc(100vw - var(--rail) - 24px));height:min(760px,calc(100dvh - 112px - var(--titlebar)));overflow:hidden;padding-bottom:16px}
+.remote-sheet>.desktop-sheet-heading{flex:none}
+.remote-sheet .remote-panel{display:flex;flex-direction:column;flex:1;min-height:0;padding:0;gap:14px}
+.remote-sheet .remote-summary{flex:none;padding:16px}
+.remote-sheet .remote-start{margin-left:auto;min-height:36px;padding:8px 12px;border-radius:11px;font-size:12px}
+.remote-tabs{display:flex;flex:none;gap:4px;padding:4px;border-radius:14px;background:var(--remote-fill);border:1px solid var(--remote-line)}
+.remote-panel .remote-tabs>button{flex:1;min-width:0;border:0;border-radius:10px;padding:9px 8px;color:var(--dim);background:transparent;font-size:12px;transition:background .18s,color .18s,box-shadow .18s}
+.remote-panel .remote-tabs>button[aria-selected=true]{background:var(--panel);color:var(--text);box-shadow:0 2px 8px #0001}
+.remote-panel .remote-tabs>button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.remote-tab-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:1px 2px 6px}
+.remote-tab-content[hidden]{display:none!important}
+.remote-tab-content:not([hidden]){animation:remote-page-in .18s ease-out}
+.remote-tab-content>.remote-legacy,.remote-tab-content>.remote-note{margin-top:16px}
+@keyframes remote-page-in{from{opacity:.55;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.remote-tab-content:not([hidden]){animation:none}.remote-panel .remote-tabs>button{transition:none}}
+@media(max-width:620px){.app .remote-sheet{width:calc(100vw - 16px);height:calc(100dvh - 192px - var(--titlebar))}}

@@ -20,7 +20,7 @@ class SdaRemotePcm extends AudioWorkletProcessor {
     if(this.hold){left.fill(0);right.fill(0);}else this.fifo.fill(left, right); this.ticks += left.length;
     if (this.ticks >= 960) {
       this.ticks = 0;
-      this.port.postMessage({type:"progress", epoch:this.epoch, consumed:this.fifo.consumed, queued:this.fifo.queued, buffering:!!this.hold||this.fifo.buffering});
+      this.port.postMessage({type:"progress", epoch:this.epoch, clock:currentTime, received:this.fifo.consumed+this.fifo.queued, consumed:this.fifo.consumed, queued:this.fifo.queued, buffering:!!this.hold||this.fifo.buffering});
     }
     return true;
   }

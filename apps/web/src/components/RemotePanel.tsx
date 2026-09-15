@@ -1,4 +1,4 @@
-import {useEffect,useState} from "react";
+import {useEffect,useRef,useState} from "react";
 import {Copy,Headphones,Radio,Pause,Play,SkipBack,SkipForward,RotateCcw,Unplug,ShieldCheck,Smartphone,Wifi,Settings2} from "lucide-react";
 import Select from "./Select";
 import {Slider} from "./Slider";
@@ -8,6 +8,9 @@ import type {OutputDevices} from "./OutputPanel";
 import "./RemotePanel.css";
 
 export default function RemotePanel({status}:{status:RemoteStatus}) {
+  const [tab,setTab]=useState("connection");
+  const scrollRef=useRef<HTMLDivElement>(null);
+  useEffect(()=>{if(scrollRef.current)scrollRef.current.scrollTop=0;},[tab]);
   const [invite,setInvite]=useState("");const [port,setPort]=useState("49632");
   const [pairingKey,setPairingKey]=useState("");const [keyLoaded,setKeyLoaded]=useState(false);
   const [bufferMs,setBufferMs]=useState("300");const [exclusive,setExclusive]=useState(true);
@@ -15,16 +18,23 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");const [copied,setCopied]=useState("");
   const api=window.sdaDesktop;
   useEffect(()=>{let alive=true;Promise.resolve(api?.getRemotePairingKey?.()).then(key=>{if(alive){setPairingKey(key??"");setKeyLoaded(true);}},()=>{if(alive){setError("无法读取已保存的密钥，请重新打开设置");}});return()=>{alive=false;};},[]);
+  useEffect(()=>{if(status.role==="client")setTab("connection");},[status.role]);
   useEffect(()=>{if(status.role==="off")void api?.getOutputDevices?.().then(v=>setDevices(v.devices)).catch(()=>{});},[status.role]);
   const run=async(action:"host"|"join"|"stop"|"maxPeers"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>{
     setBusy(true);setError("");
     try{await api?.remoteSession?.(action,value);}catch(e){setError(String(e));}finally{setBusy(false);}
   };
   return <section className="remote-panel" aria-label="多设备无损远程">
-    <div className="remote-intro"><span className="remote-hero-icon"><Wifi size={25}/></span><div><span className="remote-eyebrow">SDA CONNECT</span><h3>无线远程</h3><p>将这台电脑的声场，带到你的设备。</p></div><span className="remote-badge">最多 {status.capacity??2} 台</span></div>
-    <div className="remote-summary" role="status"><div className="remote-status-heading"><span className={`remote-status-dot ${status.role!=="off"?"is-active":""}`}/><strong>{status.role==="off"?"尚未开启":status.role==="host"?"正在发送":"正在收听"}</strong>{status.role!=="off"&&<button className="remote-stop" disabled={busy} onClick={()=>void run("stop")}><Unplug size={14}/><span>{status.role==="host"?"停止发送":"断开连接"}</span></button>}</div><small>{status.detail}</small><div className="remote-metrics"><span><Smartphone size={14}/>{status.connectedDevices?.length??0} 台在线</span><span><Headphones size={14}/>主机渲染 · 无损传输</span>{status.role!=="off"&&<span>缓冲 {status.bufferMs} ms</span>}</div></div>
+    <div className="remote-summary" role="status"><div className="remote-status-heading"><span className={`remote-status-dot ${status.role!=="off"?"is-active":""}`}/><strong>{status.role==="off"?"尚未开启":status.role==="host"?"正在发送":"正在收听"}</strong>{status.role==="off"&&<button className="remote-start" data-button="primary" disabled={busy||!keyLoaded} onClick={()=>void run("host",{port:Number(port),bufferMs:Number(bufferMs),pairingKey})}><Radio size={16}/><span>开启发送</span></button>}{status.role!=="off"&&<button className="remote-stop" disabled={busy} onClick={()=>void run("stop")}><Unplug size={14}/><span>{status.role==="host"?"停止发送":"断开连接"}</span></button>}</div><small>{status.detail}</small><div className="remote-metrics"><span><Smartphone size={14}/>{status.connectedDevices?.length??0} 台在线</span><span><Headphones size={14}/>主机渲染 · 无损传输</span>{status.role!=="off"&&<span>缓冲 {status.bufferMs} ms</span>}</div></div>
 
-    {status.role!=="client"&&<section className="remote-device-list" aria-label="设备授权">
+    <div className="remote-tabs" role="tablist" aria-label="无线远程分类">
+      {[{id:"connection",label:"连接"},{id:"devices",label:`设备${status.pendingDevices?.length ? ` · ${status.pendingDevices.length}` : ""}`},{id:"preferences",label:"播放设置"}].filter(item=>status.role!=="client"||item.id==="connection").map(item=><button key={item.id} id={`remote-tab-${item.id}`} type="button" role="tab" aria-selected={tab===item.id} aria-controls={`remote-page-${item.id}`} tabIndex={tab===item.id?0:-1} onClick={()=>setTab(item.id)} onKeyDown={event=>{
+        const buttons=Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]'));const i=buttons.indexOf(event.currentTarget);const next=event.key==="ArrowRight"?(i+1)%buttons.length:event.key==="ArrowLeft"?(i-1+buttons.length)%buttons.length:event.key==="Home"?0:event.key==="End"?buttons.length-1:-1;
+        if(next>=0){event.preventDefault();buttons[next]?.focus();buttons[next]?.click();}
+      }}>{item.label}</button>)}
+    </div>
+    <div className="remote-tab-scroll" ref={scrollRef}>
+    {status.role!=="client"&&<section className="remote-device-list remote-tab-content" role="tabpanel" id="remote-page-devices" aria-labelledby="remote-tab-devices" hidden={tab!=="devices"} aria-label="设备授权">
       <h4><span><ShieldCheck size={17}/>设备管理</span><small>{status.connectedDevices?.length??0} / {status.capacity??2} 在线</small></h4>
       <label className="remote-capacity">最大同时连接数<Select aria-label="最大同时连接数" value={String(status.capacity??2)} disabled={busy} onChange={e=>void run("maxPeers",Number(e.target.value))}>{Array.from({length:16},(_,i)=><option key={i+1} value={i+1}>{i+1} 台</option>)}</Select><small>设置自动保存。调低上限不打断现有收听，新的连接需等待空位。</small></label>
       {(status.pendingDevices??[]).map(device=><div className="remote-device" key={device.id}><strong>{device.name}</strong><small>{device.address} · 请求连接</small><div><button disabled={busy} onClick={()=>void run("deviceApprove",{id:device.id,canControl:true})}>允许收听与控制</button><button disabled={busy} onClick={()=>void run("deviceApprove",{id:device.id,canControl:false})}>仅收听</button><button disabled={busy} onClick={()=>void run("deviceReject",{id:device.id})}>拒绝</button></div></div>)}
@@ -32,13 +42,13 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
       {!status.devices?.length&&!status.pendingDevices?.length&&<div className="remote-empty"><Smartphone size={26}/><strong>还没有配对设备</strong><small>在手机或平板打开连接链接，首次授权后即可记住设备。</small></div>}
     </section>}
 
+    <div className="remote-tab-content" role="tabpanel" id="remote-page-connection" aria-labelledby="remote-tab-connection" hidden={tab!=="connection"}>
     {status.role==="off"?<>
       <fieldset className="settings-group" disabled={busy||!keyLoaded}><legend>连接设置</legend>
         <label>监听端口<input aria-label="远程监听端口" inputMode="numeric" value={port} onChange={e=>setPort(e.target.value)}/></label>
         <label>网络缓冲<Select value={bufferMs} onChange={e=>setBufferMs(e.target.value)} aria-label="远程网络缓冲"><option value="100">100 ms · 稳定局域网</option><option value="300">300 ms · 默认</option><option value="600">600 ms · 异地组网</option><option value="1000">1000 ms · 高延迟网络</option></Select></label>
         <label>自定义密钥<input type="password" aria-label="自定义配对密钥" autoComplete="new-password" spellCheck={false} maxLength={256} placeholder="留空使用自动生成并保存的密钥" value={pairingKey} onChange={e=>setPairingKey(e.target.value)}/></label>
         <small>开启发送后自动记住，下次无需重填。清空后开启发送可恢复自动密钥。</small>
-        <button data-button="primary" onClick={()=>void run("host",{port:Number(port),bufferMs:Number(bufferMs),pairingKey})}><Radio size={16}/><span>开启发送</span></button>
       </fieldset>
       <details className="remote-legacy"><summary>连接旧版 SDA 主机</summary><fieldset className="settings-group" disabled={busy}><legend>原生客户端收听</legend>
         <label>主机配对地址<input aria-label="主机配对地址" autoComplete="off" spellCheck={false} placeholder="粘贴 sda://… 完整地址" value={invite} onChange={e=>setInvite(e.target.value)}/></label>
@@ -51,10 +61,12 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
       {status.role==="host"&&<div className="remote-invites"><h4><Wifi size={17}/>连接你的设备</h4><p className="remote-section-hint">复制链接，在手机、平板或电脑的浏览器打开。</p>{(status.webInvites??[]).map((link,i)=><div className="remote-invite" key={link}><code>https://{status.addresses[i]}:{status.port}</code><button aria-label={`复制 ${status.addresses[i]} 网页链接`} onClick={()=>void navigator.clipboard.writeText(link).then(()=>setCopied(link)).catch(()=>setError("无法复制到剪贴板"))}><Copy size={15}/><span>{copied===link?"已复制":"复制链接"}</span></button></div>)}{!status.webInvites?.length&&<p>没有可用的局域网地址，请先连接网络。</p>}<details className="remote-help"><summary>连接说明</summary><small>首次访问会提示主机自签名 HTTPS 证书，确认地址属于主机后继续。网页内点击「连接并收听」。PCM 原样传输，浏览器和系统可能重采样。</small>{status.invites.length>0&&<details><summary>原生客户端</summary>{status.invites.map((link,i)=><div className="remote-invite" key={link}><code>{status.addresses[i]}:{status.port}</code><button aria-label={`复制 ${status.addresses[i]} 原生配对地址`} onClick={()=>void navigator.clipboard.writeText(link).then(()=>setCopied(link)).catch(()=>setError("无法复制到剪贴板"))}>{copied===link?"已复制":"复制原生配对地址"}</button></div>)}</details>}<small>链接含首次配对密钥。自动生成的密钥会保存，重新开启仍可使用原链接；复用自定义密钥时旧链接仍可重新连接。关闭电脑端静音可同时播放；远端存在网络缓冲延迟。</small></details></div>}
 
     </>}
-    {status.role!=="client"&&<div className="remote-preferences"><h4><Settings2 size={17}/>播放选项</h4>
+    </div>
+    {status.role!=="client"&&<div className="remote-preferences remote-tab-content" role="tabpanel" id="remote-page-preferences" aria-labelledby="remote-tab-preferences" hidden={tab!=="preferences"}><h4><Settings2 size={17}/>播放选项</h4>
     {<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.hlsAllowed===true} disabled={busy} onChange={e=>void run("hlsAllowed",e.target.checked)}/><span>允许 HLS 原生播放</span><small>默认关闭，使用低延迟 PCM。开启后 Safari 可使用原生无损 HLS；请刷新网页并重新连接。关闭会断开现有 HLS 收听。</small></label>}
     {<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.localMuted!==false} disabled={busy} onChange={e=>void run("localMute",e.target.checked)}/><span>电脑端静音</span><small>手机发起播放时静音电脑；电脑发起播放时恢复本机声音。仅连接或浏览手机界面不会静音。</small></label>}
     </div>}
+    </div>
     {busy&&<p className="remote-progress" role="status">正在应用，请稍候…</p>}{error&&<p className="remote-error" role="alert">{error}</p>}
   </section>;
 }

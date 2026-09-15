@@ -2,6 +2,7 @@
 const tls = require("node:tls");
 const {RemoteDevices}=require("./remote-devices.cjs");
 const {RemoteFanout}=require("./remote-fanout.cjs");
+const {sendState}=require("./remote-state.cjs");
 const net = require("node:net");
 const crypto = require("node:crypto");
 const os = require("node:os");
@@ -76,6 +77,7 @@ function validateControl(value) {
   if (action === "track" && typeof arg === "string" && arg.length <= 160) return { action, value: arg };
   if (action === "volume" && Number.isFinite(arg) && arg >= 0 && arg <= 1) return { action, value: arg };
   if (action === "playbackMode" && ["sequence", "repeat-all", "repeat-one"].includes(arg)) return { action, value: arg };
+  if (action === "layout" && typeof arg === "string" && /^(auto|[0-9]{1,2}\.[0-9](\.[0-9])?|360RA-13)$/.test(arg)) return {action,value:arg};
   if (action === "stereoMode" && ["original", "dry", "room"].includes(arg)) return { action, value: arg };
   throw Error("不支持的远程控制指令");
 }
@@ -184,10 +186,10 @@ class RemoteSession {
         if(p.ready||message.protocol!==1)throw Error("远程协议不兼容");p.ready=true;p.lastFeedback=Date.now();if(p.reset){p.reset=false;socket.write(packet("R"));}hub.pump();
       }else if(kind==="K"){
         if(!p.ready||!Number.isSafeInteger(message.consumed)||message.consumed<p.consumed||message.consumed>p.sent)throw Error("无效音频确认");
-        p.consumed=message.consumed;p.lastFeedback=Date.now();this.queued=Math.max(0,...[...hub.peers.values()].map(v=>v.sent-v.consumed));hub.pump();
+        p.consumed=message.consumed;hub.feedback(p,message.queuedFrames);p.lastFeedback=Date.now();this.queued=Math.max(0,...[...hub.peers.values()].map(v=>v.sent-v.consumed));hub.pump();
         if(message.mediaState&&Date.now()-(p.mediaReportAt??0)>1000){
           const m=message.mediaState;p.mediaReportAt=Date.now();
-          this.hooks.diagnostic?.({transport:'pcm',queuedMs:Number.isFinite(m.queuedMs)?Math.max(0,Math.min(3000,m.queuedMs)):undefined,inflightMs:Math.round((p.sent-p.consumed)/48),hostQueuedMs:p.queue.length*10,hidden:m.hidden===true,context:['running','suspended','interrupted','closed'].includes(m.context)?m.context:'unknown',playback:['none','paused','playing','unavailable'].includes(m.playback)?m.playback:'unknown',buffering:m.buffering===true,mediaElement:m.mediaElement===true,mediaPaused:m.mediaPaused===true,mediaReadyState:Number.isInteger(m.mediaReadyState)&&m.mediaReadyState>=0&&m.mediaReadyState<=4?m.mediaReadyState:undefined});
+          this.hooks.diagnostic?.({nativeCreditPackets:hub.inflight,nativePacketAgeMs:hub.lastAudioAt?Date.now()-hub.lastAudioAt:null,transportQueuedBytes:socket.writableLength,rtc:socket.rtcStats??null,transport:'pcm',connectionTransport:socket.remoteTransport??'stream',creditWindowMs:Math.round(hub.window(p)/48),feedbackMarginMs:Math.round(p.feedbackMarginMs??0),receivedFrames:Number.isSafeInteger(m.receivedFrames)?m.receivedFrames:undefined,workletReceivedFrames:Number.isSafeInteger(m.workletReceivedFrames)?m.workletReceivedFrames:undefined,feedbackAgeMs:Number.isFinite(m.feedbackAgeMs)?Math.round(m.feedbackAgeMs):undefined,contextRate:Number.isFinite(m.contextRate)?m.contextRate:undefined,mediaRate:Number.isFinite(m.mediaRate)?m.mediaRate:undefined,queuedMs:Number.isFinite(m.queuedMs)?Math.max(0,Math.min(3000,m.queuedMs)):undefined,inflightMs:Math.round((p.sent-p.consumed)/48),hostQueuedMs:p.queue.length*10,hidden:m.hidden===true,context:['running','suspended','interrupted','closed'].includes(m.context)?m.context:'unknown',playback:['none','paused','playing','unavailable'].includes(m.playback)?m.playback:'unknown',buffering:m.buffering===true,mediaElement:m.mediaElement===true,mediaPaused:m.mediaPaused===true,mediaReadyState:Number.isInteger(m.mediaReadyState)&&m.mediaReadyState>=0&&m.mediaReadyState<=4?m.mediaReadyState:undefined});
         }
       }else if(kind==="C"){
         if(!p.ready||typeof message.id!=="string"||message.id.length>64)throw Error("无效远程控制");
@@ -222,7 +224,7 @@ class RemoteSession {
     if(socket.destroyed||generation!==this.generation)return;
     this.phase="connected";this.detail=`${this.hostPeers.size} 台设备无损收听中`;this.publish();
     socket.write(packet("H",{protocol:1,sampleRate:48000,channels:2,sampleFormat:"f32le",bufferMs:this.bufferMs,canControl:socket.canControl!==false}));
-    if(this.state)socket.write(packet("S",this.state));
+    if(this.state)sendState(socket,this.state,packet);
   }
   failPeer(socket, detail) {
     if (this.peer !== socket && !this.hostPeers.has(socket)) return;
@@ -269,10 +271,12 @@ class RemoteSession {
       duration: Number.isFinite(state.duration) ? Math.max(0, state.duration) : 0,
       volume: Number.isFinite(state.volume) ? Math.min(1, Math.max(0, state.volume)) : 1,
       currentId: text(state.currentId), playbackMode: text(state.playbackMode), stereoMode: text(state.stereoMode), stereoAvailable:state.stereoAvailable===true, volumeBalanceEnabled:state.volumeBalanceEnabled===true,
+      balanceAnalysisProgress:Number.isFinite(state.balanceAnalysisProgress)?Math.max(0,Math.min(1,state.balanceAnalysisProgress)):null,
+      layoutSelection: state.layoutSelection && Array.isArray(state.layoutSelection.options) ? {value:text(state.layoutSelection.value),locked:state.layoutSelection.locked===true,options:state.layoutSelection.options.slice(0,32).map(o=>({value:text(o.value),label:text(o.label)}))}:null,
       tools: this.curateTools(state.tools),
       playlist: Array.isArray(state.playlist) ? state.playlist.slice(0, 500).map(v => ({ id: text(v.id), title: text(v.title) })) : [] };
     this.sync?.update(this.state);
-    if(this.role==="host")for(const socket of this.hostPeers)if(!socket.destroyed&&socket.writableLength<MAX_PACKET)socket.write(packet("S",this.state));
+    if(this.role==="host")for(const socket of this.hostPeers)if(!socket.destroyed&&socket.writableLength<MAX_PACKET)sendState(socket,this.state,packet);
   }
   curateTools(value) {
     if (!value) return null;

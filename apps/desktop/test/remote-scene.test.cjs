@@ -14,3 +14,11 @@ test('scene shape survives forwarding and resets when switching away from MPEG-H
   assert.equal(host.scene.spherical,false);
  }
 });
+
+test('layout controls preserve automatic selection and curate shared options',()=>{
+ for(const value of ['auto','360RA-13','22.2','7.1.4','2.0'])assert.deepEqual(validateControl({action:'layout',value}),{action:'layout',value});
+ for(const value of ['../secret',{},null])assert.throws(()=>validateControl({action:'layout',value}));
+ const host=new RemoteSession({});host.publishState({layoutSelection:{value:'auto',locked:true,options:[{value:'auto',label:'自动（360RA-13）',path:'secret'},{value:'360RA-13',label:'360RA · 13 音箱参考布局'}]}});
+ assert.equal(host.state.layoutSelection.value,'auto');assert.equal(host.state.layoutSelection.locked,true);
+ assert.equal(host.state.layoutSelection.options.length,2);assert.ok(!JSON.stringify(host.state).includes('secret'));
+});

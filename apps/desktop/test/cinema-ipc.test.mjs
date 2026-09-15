@@ -5,10 +5,14 @@ import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
 import cinemaProfiles from '../cinema-profiles.cjs';
+import {createRoomInspection} from '../room-inspection.cjs';
+import roomLayoutFollow from '../room-layout-follow.cjs';
 
 test('room import, apply acknowledgement, persistence, export and removal',async()=>{
  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'sda-cinema-test-'));
+ const services=[];
  try {
+  fs.mkdirSync(path.join(directory,'builtin-rooms'));fs.writeFileSync(path.join(directory,'builtin-rooms','catalog.json'),JSON.stringify({version:1,profiles:[]}));
   const profile={version:1,name:'Synthetic IPC fixture',source:'Test only',license:'Test only',measurement:'dummy-head',sampleRate:48000,layout:'2.0',
     speakers:[['FrontLeft',30],['FrontRight',-30]].map(([name,azimuth])=>{
       const impulse=Array(512).fill(0);impulse[100]=1;
@@ -18,7 +22,7 @@ test('room import, apply acknowledgement, persistence, export and removal',async
   const handlers=new Map();let stored={};let accepted=true;let sent;
   const main=fs.readFileSync(new URL('../main.cjs',import.meta.url),'utf8');
   const code=main.slice(main.indexOf('const cinemaProfileDirectory ='),main.indexOf('ipcMain.handle("sda:native-renderer-object-hrtf"'));
-  vm.runInNewContext(code,{fs,path,Buffer,cinemaProfiles,__dirname:directory,require:()=>({createBuiltinRooms:()=>({list:()=>[],has:()=>false})}),app:{getPath:()=>directory,on(){}},
+  vm.runInNewContext(code,{fs,path,Buffer,cinemaProfiles,__dirname:directory,require:name=>name==='./room-layout-follow.cjs'?roomLayoutFollow:name==='./room-inspection.cjs'?{createRoomInspection:options=>{const service=createRoomInspection(options);services.push(service);return service;}}:({createBuiltinRooms:()=>({list:()=>[],has:()=>false})}),app:{getPath:()=>directory,on(){}},
     BrowserWindow:{fromWebContents:()=>null},
     dialog:{showOpenDialog:async()=>({filePaths:[input]}),showSaveDialog:async()=>({filePath:path.join(directory,'report.json')})},
     ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},readSettings:()=>stored,writeSettings:value=>{stored={...stored,...value};},
@@ -37,5 +41,5 @@ test('room import, apply acknowledgement, persistence, export and removal',async
   assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'report.json'))).rows.length,2);
   accepted=true;await call('native-renderer-cinema',initial.settings,null);
   assert(await call('cinema-delete',room.id));assert.equal((await call('cinema-rooms')).length,0);
- } finally {fs.rmSync(directory,{recursive:true,force:true});}
+ } finally {await Promise.all(services.map(s=>s.close()));fs.rmSync(directory,{recursive:true,force:true});}
 });

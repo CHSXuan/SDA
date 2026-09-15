@@ -1,3 +1,4 @@
+import {prepareRtc} from './rtc.mjs';
 import {ConnectionWatchdog} from "./connection-watchdog.mjs";
 import {hlsAllowedByHost} from "/playback-policy.mjs";
 import {createScene} from "./scene.mjs";
@@ -93,8 +94,9 @@ function wire(kind, value) {
 }
 function send(kind, value, owner = session) {
   if (!owner || owner.closed || owner.socket?.readyState !== WebSocket.OPEN) return false;
-  if (owner.socket.bufferedAmount > 65536) { if(owner.audio){owner.socket.close();return false;} recoverPcm(owner); return false; }
-  owner.socket.send(wire(kind, value)); return true;
+  const transport=owner.rtc?.channel.readyState==='open'?owner.rtc.channel:owner.socket;
+  if (transport.bufferedAmount > 65536) { if(owner.audio){owner.socket.close();return false;} recoverPcm(owner); return false; }
+  transport.send(wire(kind, value)); return true;
 }
 function command(action, value) {
   if(session?.canControl===false&&!["scene","artwork","mediaList"].includes(action)){message("此设备仅允许收听");return;}
@@ -183,9 +185,10 @@ function renderState(state) {
   syncHostPlayback(session,state,resumeAudio,()=>{if(session)stats(session);});
   if(session?.pcmOutput){
     const owner=session,running=!!state.playing&&!state.paused;
-    if(owner.pcmHostRunning!==running){owner.pcmHostRunning=running;if(running)void owner.pcmOutput.play().catch(()=>stats(owner));else owner.pcmOutput.pause();}
+    if(owner.pcmHostRunning!==running){owner.pcmHostRunning=running;if(running)void resumeAudio(owner).catch(()=>stats(owner));else owner.pcmOutput.pause();}
   }
   updateCover(state,session);
+  sceneView.updateLayout(state.layoutSelection,!!session?.ready&&session?.canControl!==false);
   soundTools.update(state.tools&&session?.canControl===false?{...state.tools,locked:true}:state.tools, !!session?.ready, state.playing&&!state.paused);
   try {
     if (session?.mediaActivated && navigator.mediaSession && typeof MediaMetadata !== "undefined" && session?.mediaTitle !== JSON.stringify([state.currentId,state.title,state.artist,state.album])) {
@@ -268,7 +271,7 @@ function stats(owner) {
   }
   const suspended = owner.context.state !== "running";
   $("connection").textContent = owner.testing ? "耳廓测试中" : suspended ? "浏览器已暂停音频" : owner.buffering ? "缓冲中" : "已连接";
-  $("audio-info").textContent = `浏览器音频 ${owner.context.sampleRate / 1000} kHz · 缓冲 ${Math.round(owner.queued / 48)} ms · 已接收 ${(owner.bytes / 1048576).toFixed(1)} MB`;
+  $("audio-info").textContent = `${owner.rtc?.channel.readyState==='open'?(owner.rtc.compressed?'WebRTC 无损压缩':'WebRTC PCM'):'WebSocket'} · 浏览器音频 ${owner.context.sampleRate / 1000} kHz · 缓冲 ${Math.round(owner.queued / 48)} ms · 已接收 ${(owner.bytes / 1048576).toFixed(1)} MB`;
 }
 function receive(kind, body, owner) {
   owner.lastHost = Date.now();
@@ -298,9 +301,9 @@ function receive(kind, body, owner) {
     owner.ready = true; if(!owner.audio)send("H", {protocol:1}, owner);
     $("pairing").hidden = true; pages.show();
     setControls(true); message(""); stats(owner);
-    $("transport-format").textContent=owner.audio?"传输：FLAC · 48 kHz / 24-bit":"传输：PCM · 48 kHz / 32-bit float";
+    $("transport-format").textContent=owner.audio?"传输：FLAC · 48 kHz / 24-bit":owner.rtc?.compressed?"传输：无损压缩 PCM · 48 kHz / 32-bit float":"传输：PCM · 48 kHz / 32-bit float";
     $("format-note").textContent=owner.audio?"float32 转 24-bit PCM 后无损编码；超出整数满幅会截断，无增益或响度处理。":"网络原样传输 · 浏览器和系统可能重采样";
-  } else if (kind === "S") renderState(value);
+  } else if (kind === "S") {const {stateDelta,...state}=value;renderState(stateDelta?{...playback,...state}:state);}
   else if (kind === "D") {
     const result=controlResults.get(value.id);if(value.error)result?.reject(Error(value.error));else result?.resolve(value.data);controlResults.delete(value.id);
     soundTools.acknowledged(value.id,value.error,value);
@@ -429,6 +432,7 @@ function recoverPcm(owner){
   owner.ready=false;owner.buffering=true;owner.pcmHostRunning=undefined;
   owner.pcmOutput?.pause();owner.node.port.postMessage({type:"hold",enabled:true});
   clearTimeout(owner.connectDeadline);
+  owner.rtc?.close();owner.rtc=null;
   const old=owner.socket;owner.socket=null;old?.close();
   for(const [id,timer]of owner.pending){clearTimeout(timer);controlResults.get(id)?.reject(Error("连接中断，请确认操作结果后重试"));controlResults.delete(id);}
   owner.pending.clear();soundTools.disconnected();setControls(false);updateSystemPlayback();
@@ -438,19 +442,28 @@ function recoverPcm(owner){
 }
 function openPcmSocket(owner){
   if(session!==owner||owner.closed)return;
-  owner.ready=false;owner.consumed=0;owner.queued=0;owner.lastHost=Date.now();
+  owner.ready=false;owner.consumed=0;owner.queued=0;owner.bytes=0;owner.lastHost=Date.now();
   owner.pcmEpoch=(owner.pcmEpoch??0)+1;
   owner.node.port.postMessage({type:"new-session",epoch:owner.pcmEpoch});
     const socket = owner.socket = new WebSocket(`wss://${location.host}/stream`); socket.binaryType = "arraybuffer";
-    socket.onopen = () => {
+    socket.onopen = async () => {
       if (owner.closed || session!==owner || owner.socket!==socket) { socket.close(); return; }
-      socket.send(JSON.stringify({protocol:1, token:owner.key,pcmPipeline:true}));
+      if(!owner.rtcFailed)owner.rtc=await prepareRtc(event=>socket.onmessage(event),()=>{owner.rtcFailed=true;recoverPcm(owner);});
+      if(owner.closed||session!==owner||owner.socket!==socket){owner.rtc?.close();return;}
+      socket.send(JSON.stringify({protocol:1, token:owner.key,pcmPipeline:true,stateDelta:true,...(owner.rtc?{rtcOffer:owner.rtc.offer}:{})}));
       try { sessionStorage.setItem("sda-web-pairing", owner.key); } catch { /* Private browsing can disable storage. */ }
     };
     let pending = new Uint8Array(0);
     socket.onmessage = event => {
       if (owner.closed || session !== owner || owner.socket!==socket) return;
       try {
+        if(typeof event.data==='string'){
+          const signal=JSON.parse(event.data);
+          if(signal.type==='answer'&&owner.rtc)void owner.rtc.answer(signal.sdp).catch(()=>{owner.rtcFailed=true;recoverPcm(owner);});
+          else if(signal.type==='fallback'){owner.rtc?.close();owner.rtc=null;owner.rtcFailed=true;}
+          else throw Error('无效 WebRTC 协商');
+          return;
+        }
         if (!(event.data instanceof ArrayBuffer)) throw Error("主机未发送二进制 PCM 数据");
         const chunk = new Uint8Array(event.data), joined = new Uint8Array(pending.length + chunk.length);
         joined.set(pending); joined.set(chunk, pending.length); pending = joined;
@@ -511,7 +524,7 @@ async function connect() {
         if (owner.ready){
           const report=changed||Date.now()-(owner.mediaReportAt??0)>5000;
           if(report)owner.mediaReportAt=Date.now();
-          send("K", {consumed:owner.consumed,...(report?{mediaState:{hidden:document.hidden,context:context.state,playback:navigator.mediaSession?.playbackState??'unavailable',buffering:owner.buffering,queuedMs:Math.round(owner.queued/48),receivedFrames:owner.bytes/8,mediaElement:true,mediaPaused:owner.pcmOutput.audio.paused,mediaReadyState:owner.pcmOutput.audio.readyState}}:{})}, owner);
+          send("K", {consumed:owner.consumed,queuedFrames:owner.queued,...(report?{mediaState:{hidden:document.hidden,context:context.state,playback:navigator.mediaSession?.playbackState??'unavailable',buffering:owner.buffering,queuedMs:Math.round(owner.queued/48),receivedFrames:owner.bytes/8,workletReceivedFrames:data.received,feedbackAgeMs:Math.max(0,(context.currentTime-data.clock)*1000),contextRate:context.sampleRate,mediaRate:owner.pcmOutput.audio.playbackRate,mediaElement:true,mediaPaused:owner.pcmOutput.audio.paused,mediaReadyState:owner.pcmOutput.audio.readyState}}:{})}, owner);
         }
       }
     };
@@ -540,7 +553,7 @@ function stop(reason = "已断开连接", error = false) {
     owner.pcmOutput?.close();
     for (const timer of owner.pending.values()) clearTimeout(timer);
     if (!owner.audio && owner.socket?.readyState === WebSocket.OPEN) owner.socket.send(wire("Q", {}));
-    owner.socket?.close(1000); owner.node?.port.postMessage({type:"stop"}); owner.node?.disconnect();
+    owner.rtc?.close();owner.socket?.close(1000); owner.node?.port.postMessage({type:"stop"}); owner.node?.disconnect();
     if(owner.audio){owner.audio.pause();owner.audio.removeAttribute("src");owner.audio.load();owner.audio.remove();
       if(owner.hls)disconnecting=fetch(`/hls/${owner.hls}/stop`,{method:"POST",keepalive:true}).then(()=>{},()=>{});
     }

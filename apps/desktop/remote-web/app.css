@@ -133,3 +133,5 @@ header>div{padding-right:66px}
 /* Keep each independently scrolling page behind the shared glass heading. */
 #media-picker[data-media-root="true"] #media-content{margin-top:calc(-1 * var(--media-header-height,86px));padding-top:0}
 #media-picker[data-media-root="true"] .media-page{height:calc(min(52dvh,480px) + var(--media-header-height,86px));padding-top:calc(var(--media-header-height,86px) + 8px);scroll-padding-top:calc(var(--media-header-height,86px) + 8px)}
+
+.scene-layout{z-index:6;margin:0 0 12px}.scene-layout>button{font-size:13px;border-radius:12px}.scene-layout .tool-options[hidden]{display:none}.scene-layout .tool-options{max-height:260px}.scene-layout .tool-options button{min-height:42px}

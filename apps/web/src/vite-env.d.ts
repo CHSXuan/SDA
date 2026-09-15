@@ -199,7 +199,7 @@ declare global {
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       pickFile?: () => Promise<string | null>;
       pickFolder?: () => Promise<{ canceled: boolean; paths: string[] }>;
-      openPath?: (filePath: string) => Promise<{ id: number; size: number; name: string }>;
+      openPath?: (filePath: string) => Promise<{ id: number; size: number; mtimeMs?: number; name: string }>;
       readSlice?: (id: number, offset: number, length: number) => Promise<Uint8Array>;
       close?: (id: number) => Promise<void>;
       readBundledHeadphoneFir?: (assetPath: string) => Promise<Uint8Array>;

@@ -176,6 +176,38 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     #[test]
+    fn sustained_small_credit_loop_keeps_up_with_realtime() {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut sink=HostOutput::connect(&listener.local_addr().unwrap().to_string(),&"ab".repeat(32)).unwrap();
+        let (mut peer,_)=listener.accept().unwrap();
+        peer.set_nodelay(true).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+        let reader=thread::spawn(move || {
+            let mut auth=[0;64];peer.read_exact(&mut auth).unwrap();
+            peer.write_all(&[b'P';10]).unwrap();
+            for index in 0..300 {
+                let mut h=[0;5];peer.read_exact(&mut h).unwrap();assert_eq!(h,[b'A',0,15,0,0]);
+                let mut body=[0;FRAMES*8];peer.read_exact(&mut body).unwrap();
+                assert!(body.chunks_exact(4).all(|v| f32::from_le_bytes(v.try_into().unwrap())==index as f32));
+                peer.write_all(b"P").unwrap();
+            }
+        });
+        let fifo=stereo_fifo::StereoFifo::new(48000*8);
+        let t=RuntimeTelemetry::default();t.callback_output_enabled.store(true,Ordering::Release);
+        let start=Instant::now();let mut produced=0;let mut max_backlog=0;
+        while produced<300 || fifo.available_read()>0 || sink.offset<sink.pending.len() {
+            while produced<300 && start.elapsed().as_millis()>=produced*10 {
+                assert_eq!(fifo.push(&vec![produced as f32;FRAMES*2]),FRAMES);produced+=1;
+            }
+            sink.tick(&fifo,&t).unwrap();max_backlog=max_backlog.max(fifo.available_read());
+            assert!(start.elapsed()<Duration::from_secs(6),"native transport stalled");
+            thread::sleep(Duration::from_millis(2));
+        }
+        reader.join().unwrap();
+        eprintln!("native credit loop maximum queued audio: {} ms",max_backlog/48);
+        assert!(max_backlog<24000,"native loopback fell over 500 ms behind realtime");
+    }
+    #[test]
     fn positioned_stream_holds_idle_and_preserves_last_partial_packet() {
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();let token="12".repeat(32);
         let mut sink=HostOutput::connect(&listener.local_addr().unwrap().to_string(),&token).unwrap();

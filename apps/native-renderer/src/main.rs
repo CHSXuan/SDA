@@ -2004,6 +2004,27 @@ mod tests {
     }
 
     #[test]
+    fn spatial_master_balance_scales_rendered_pcm() {
+        let render = |gain: f32| {
+            let mut engine = calibrated_engine();
+            engine.program_enabled = true;
+            engine.set_program_target(gain, true);
+            engine.paused = false;
+            let mut source = Source { kind: SourceKind::Bed, bed_label: Some("FrontLeft".into()),
+                gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Source::default() };
+            Engine::set_source_route(&mut source,bed_route("FrontLeft",&engine.vbap),0);
+            let pcm:Vec<f32>=(0..4096).map(|i|0.001*(i as f32*0.1).sin()).collect();
+            source.samples.write(0,0,&pcm);engine.sources.insert("FrontLeft".into(),source);
+            let mut output=vec![0.0;8192];engine.render_into(&mut output,2);output
+        };
+        let unity=render(1.0);let half=render(0.5);
+        assert!(unity.iter().any(|v|v.abs()>1e-5));
+        for(a,b)in unity.iter().zip(&half){assert!((a*0.5-b).abs()<1e-7);}
+        let command:Command=serde_json::from_str(r#"{"type":"setComparisonGain","gainDb":-6}"#).unwrap();
+        assert!(matches!(command,Command::SetComparisonGain{gain_db} if gain_db == -6.0));
+    }
+
+    #[test]
     fn room_comparison_gain_scales_both_ears_without_changing_direction() {
         let render = |gain: f32| {
             let mut engine = calibrated_engine();

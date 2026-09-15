@@ -707,6 +707,7 @@ async function setRemoteLocalMute(muted) {
   remoteSession.publish();return remoteSession.status();
 }
 const remoteSession = new RemoteSession({
+  rtc:require("./remote-rtc.cjs")({BrowserWindow,ipcMain}),
   gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;startNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
   position:()=>Number(nativeRendererStatus.samplePos??0)/48000,
   diagnostic:health=>writeStartupLog(`remote-receiver ${JSON.stringify(health)}`),
@@ -1203,6 +1204,7 @@ function createWindow() {
     },
   });
 
+  win.on("closed",()=>{if(!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker))for(const worker of BrowserWindow.getAllWindows())worker.destroy();});
   win.setMenu(null);
   const publishWindowState = () => win.webContents.send("sda:window-state", win.isMaximized());
   win.on("maximize", publishWindowState);
@@ -1547,6 +1549,11 @@ function exclusiveAudioUpdate(action) {
 let builtinRoomLibrary;
 const builtinRooms = () => builtinRoomLibrary ??= require("./builtin-rooms.cjs").createBuiltinRooms(
   path.join(__dirname,"builtin-rooms"),path.join(app.getPath("userData"),"builtin-room-cache"));
+let roomInspectionService;
+const roomInspection = () => roomInspectionService ??= require("./room-inspection.cjs").createRoomInspection({
+  root:path.join(__dirname,"builtin-rooms"),cacheRoot:path.join(app.getPath("userData"),"builtin-room-cache"),directory:cinemaProfileDirectory(),
+});
+app.on("before-quit",()=>roomInspectionService?.close());
 let roomLabService;
 const roomLab = () => roomLabService ??= createRoomLab({
   runtimeFile: process.env.SDA_ROOM_RUNTIME ?? path.join(__dirname,"room-simulator","runtime.json"),
@@ -1572,25 +1579,18 @@ function readCinemaProfile(id) {
   if (cinemaProfiles.roomId(bytes) !== id) throw new Error("房间档案完整性校验失败");
   return { filePath, profile: cinemaProfiles.validateRoom(JSON.parse(bytes.toString("utf8"))) };
 }
-ipcMain.handle("sda:cinema-settings", () => {
+ipcMain.handle("sda:cinema-settings", async () => {
   try {
     const value = readSettings().cinema;
     if (!value) return { settings: defaultCinemaSettings(), profileId: null };
     const settings = cinemaProfiles.validateSettings(value.settings);
-    if (value.profileId) readCinemaProfile(value.profileId);
+    if (value.profileId) await roomInspection().inspect(value.profileId);
     return { settings, profileId: value.profileId ?? null };
   } catch (error) {
     return { settings: defaultCinemaSettings(), profileId: null, error: String(error) };
   }
 });
-ipcMain.handle("sda:cinema-rooms", () => {
-  const builtins=builtinRooms().list();
-  if (!fs.existsSync(cinemaProfileDirectory())) return builtins;
-  return [...builtins,...fs.readdirSync(cinemaProfileDirectory()).filter(name => /^[a-f0-9]{64}\.json$/.test(name)&&!builtinRooms().has(name.slice(0,-5))).flatMap(name => {
-    try { const id = name.slice(0, -5); return [cinemaProfiles.roomSummary(readCinemaProfile(id).profile, id)]; }
-    catch { return []; }
-  })];
-});
+ipcMain.handle("sda:cinema-rooms", () => roomInspection().list());
 ipcMain.handle("sda:cinema-import", async event => {
   const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
     title: "导入实测房间档案", filters: [{ name: "SDA room profile", extensions: ["json"] }], properties: ["openFile"],
@@ -1763,7 +1763,7 @@ ipcMain.handle("sda:open-path", (_e, filePath) => {
   if (!stat.isFile()) throw new Error("media path is not a regular file");
   const id = nextFileId++;
   openFiles.set(id, filePath);
-  return { id, size: stat.size, name: path.basename(filePath) };
+  return { id, size: stat.size, mtimeMs: stat.mtimeMs, name: path.basename(filePath) };
 });
 
 ipcMain.handle("sda:read-slice", async (_e, id, offset, length) => {
@@ -1878,7 +1878,7 @@ app.whenReady().then(() => {
     try { startHeadTracking(); } catch (error) { console.warn("[SDA] 头部追踪自动启动失败:", error); }
   }
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker)) createWindow();
   });
 });
 
