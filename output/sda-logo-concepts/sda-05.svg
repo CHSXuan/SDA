@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+ <linearGradient id="bg" x2=".9" y2="1"><stop stop-color="#243B39"/><stop offset="1" stop-color="#0A1219"/></linearGradient>
+ <linearGradient id="mint" x1=".1" y1="0" x2=".8" y2="1"><stop stop-color="#E7FFF0"/><stop offset=".48" stop-color="#94EAD1"/><stop offset="1" stop-color="#269B9D"/></linearGradient>
+ <linearGradient id="ice" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#EDFAFF"/><stop offset=".45" stop-color="#A0CDFF"/><stop offset="1" stop-color="#6465E9"/></linearGradient>
+ <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F5E6FF"/><stop offset=".5" stop-color="#C9A4FF"/><stop offset="1" stop-color="#746AF3"/></linearGradient>
+ <linearGradient id="pearl" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".52" stop-color="#E9E8DD"/><stop offset="1" stop-color="#939E9C"/></linearGradient>
+ <radialGradient id="sphere" cx=".3" cy=".2" r=".82"><stop stop-color="#F0FFF5"/><stop offset=".3" stop-color="#AFEED8"/><stop offset=".66" stop-color="#55BEB6"/><stop offset="1" stop-color="#173F53"/></radialGradient>
+ <radialGradient id="halo"><stop stop-color="#77D4CC" stop-opacity=".22"/><stop offset="1" stop-color="#77D4CC" stop-opacity="0"/></radialGradient>
+ <linearGradient id="depth" x2="0" y2="1"><stop stop-color="#8CC6FF" stop-opacity=".35"/><stop offset="1" stop-color="#5867BF" stop-opacity=".03"/></linearGradient>
+ <clipPath id="ball"><circle cx="256" cy="256" r="146"/></clipPath>
+</defs><rect x="16" y="16" width="480" height="480" rx="112" fill="#211B30"/><rect x="17" y="17" width="478" height="478" rx="111" fill="none" stroke="#FFFFFF" stroke-opacity=".10" stroke-width="2"/><path d="M130 314 C155 314 168 198 199 198 C230 198 233 342 265 342 C297 342 307 150 338 150 C361 150 364 239 389 239" fill="none" stroke="#8173B8" stroke-opacity=".24" stroke-width="61" stroke-linecap="round"/><path d="M123 292 C151 292 162 180 194 180 C226 180 231 326 263 326 C295 326 304 132 336 132 C361 132 365 218 389 218" fill="none" stroke="url(#violet)" stroke-width="39" stroke-linecap="round"/><path d="M126 292 C152 292 163 181 194 181" fill="none" stroke="#FFFFFF" stroke-opacity=".42" stroke-width="5" stroke-linecap="round"/></svg>

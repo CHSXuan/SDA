@@ -24,8 +24,11 @@ declare const self: {
   onmessage: ((e: MessageEvent) => void) | null;
 };
 
-let decoder: SdaDecoder | MpeghDecoder | null = null;
+import {initIamf,isIamf,IamfDecoder} from "../../core/src/iamf.js";
+
+let decoder: SdaDecoder | IamfDecoder | MpeghDecoder | null = null;
 let demuxer: Demuxer | null = null;
+let sniffPrefix = new Uint8Array(0);
 let bwfMetadata: BwfMetadata | undefined;
 let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
@@ -133,11 +136,13 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       // because only the discovered track carries its required codec cookie.
       decoder = new SdaDecoder(msg.codec as Exclude<CodecName, "alac">);
       decoderConfigurationError = null;
+      sniffPrefix = new Uint8Array(0);
       demuxer = null; // created on first push, after sniffing
       lastObjectTargets.clear();
       break;
     }
     case "flush": {
+      if (sniffPrefix.length) throw new Error("Truncated media header");
       demuxer?.flush();
       decoder?.flush();
       drainFrames();
@@ -150,11 +155,22 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       break;
     }
     case "push": {
-      const chunk = new Uint8Array(msg.chunk as ArrayBuffer);
+      let chunk = new Uint8Array(msg.chunk as ArrayBuffer);
       if (!demuxer) {
+        if (sniffPrefix.length) {
+          const joined = new Uint8Array(sniffPrefix.length + chunk.length);
+          joined.set(sniffPrefix); joined.set(chunk, sniffPrefix.length); chunk = joined;
+          sniffPrefix = new Uint8Array(0);
+        }
+        if (chunk.length < 16) {
+          sniffPrefix = chunk;
+          self.postMessage({type: "push-ack", sequence: msg.sequence});
+          break;
+        }
         const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
         if(kind === "mp4" || isMhas(chunk)) await initMpegh();
         if(kind === "raw" && isMhas(chunk)) {decoder?.free();decoder=new MpeghDecoder();}
+        if(kind === "raw" && isIamf(chunk)) {await initIamf();decoder?.free();decoder=new IamfDecoder();}
         demuxer = createDemuxer(kind, {
           onTrack: (t) => {
             if(t.codec === "mha1" || t.codec === "mhm1") {

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+ <linearGradient id="bg" x2=".9" y2="1"><stop stop-color="#243B39"/><stop offset="1" stop-color="#0A1219"/></linearGradient>
+ <linearGradient id="mint" x1=".1" y1="0" x2=".8" y2="1"><stop stop-color="#E7FFF0"/><stop offset=".48" stop-color="#94EAD1"/><stop offset="1" stop-color="#269B9D"/></linearGradient>
+ <linearGradient id="ice" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#EDFAFF"/><stop offset=".45" stop-color="#A0CDFF"/><stop offset="1" stop-color="#6465E9"/></linearGradient>
+ <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F5E6FF"/><stop offset=".5" stop-color="#C9A4FF"/><stop offset="1" stop-color="#746AF3"/></linearGradient>
+ <linearGradient id="pearl" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".52" stop-color="#E9E8DD"/><stop offset="1" stop-color="#939E9C"/></linearGradient>
+ <radialGradient id="sphere" cx=".3" cy=".2" r=".82"><stop stop-color="#F0FFF5"/><stop offset=".3" stop-color="#AFEED8"/><stop offset=".66" stop-color="#55BEB6"/><stop offset="1" stop-color="#173F53"/></radialGradient>
+ <radialGradient id="halo"><stop stop-color="#77D4CC" stop-opacity=".22"/><stop offset="1" stop-color="#77D4CC" stop-opacity="0"/></radialGradient>
+ <linearGradient id="depth" x2="0" y2="1"><stop stop-color="#8CC6FF" stop-opacity=".35"/><stop offset="1" stop-color="#5867BF" stop-opacity=".03"/></linearGradient>
+ <clipPath id="ball"><circle cx="256" cy="256" r="146"/></clipPath>
+</defs><rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/><rect x="17" y="17" width="478" height="478" rx="111" fill="none" stroke="#FFFFFF" stroke-opacity=".10" stroke-width="2"/><circle cx="256" cy="256" r="205" fill="url(#halo)"/><g transform="rotate(-28 256 256)"><g clip-path="url(#ball)"><circle cx="256" cy="256" r="146" fill="url(#sphere)"/><path d="M99 177 Q256 290 413 177 M88 240 Q256 371 424 240 M101 307 Q256 437 411 307" fill="none" stroke="#11262C" stroke-width="18"/><path d="M104 186 Q256 297 408 186 M91 250 Q256 377 421 250 M109 318 Q256 441 403 318" fill="none" stroke="#D9FFEF" stroke-opacity=".36" stroke-width="3"/></g></g></svg>

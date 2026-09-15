@@ -103,7 +103,7 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
-const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".dts", ".mhas", ".mha"]);
+const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".dts", ".iamf", ".mhas", ".mha"]);
 const MEDIA_DIALOG_EXTENSIONS = [...MEDIA_EXTENSIONS].map((extension) => extension.slice(1));
 const MAX_FOLDER_MEDIA_FILES = 2000;
 const MAX_FOLDER_ENTRIES = 20000;
@@ -1188,6 +1188,7 @@ function readStoredProfile(id) {
 
 function createWindow() {
   const win = new BrowserWindow({
+    icon: path.join(__dirname, "assets", process.platform === "win32" ? "icon.ico" : "icon.png"),
     width: 1440,
     height: 900,
     backgroundColor: "#171819",

@@ -24,6 +24,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { WindowTitlebar } from "./components/WindowTitlebar";
 import { MediaPicker } from "./components/MediaPicker";
 import { Box, SlidersHorizontal, AudioLines, Headphones, FileAudio, ListMusic, Orbit, Speaker, Ear, RotateCcw, ScanFace, Sun, Moon, Settings, FolderOpen, FolderPlus, Upload, X } from "lucide-react";
+import { SdaLogo } from "./components/SdaLogo";
 import { SdaPlayer, type BinauralRenderMetadata, type NativeRendererSink, type NativeRendererSourceDeclaration, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
@@ -1747,7 +1748,7 @@ export function App() {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.dts,.mhas,.mha";
+    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.dts,.iamf,.mhas,.mha";
     input.onchange = () => appendToPlaylist([...input.files ?? []].map((file) => ({ kind: "file", file })));
     input.click();
   }, [appendToPlaylist]);
@@ -1968,7 +1969,7 @@ export function App() {
       <WindowTitlebar />
       {mediaPicker && <MediaPicker mode={mediaPicker} onClose={() => setMediaPicker(null)} onSelect={paths => appendToPlaylist(paths.map(path => ({kind:"path",path})))}/>}
       <header>
-        <h1><AudioLines size={24} /><span>SDA<small>空间音频工作台</small></span></h1>
+        <h1><SdaLogo /><span>SDA<small>空间音频工作台</small></span></h1>
         <div className="controls">
           <Select
             value="binaural"
@@ -1989,7 +1990,7 @@ export function App() {
                   : id !== "360RA-13" && id !== "22.2"))
               .map((id) => (
                 <option key={id} value={id}>
-                  {id === "11.1.8" ? "Dolby 11.1.8 · Atmos / 母版（手动）" : id === "22.2" ? "22.2 · 标准三层布局（手动）" : id === "360RA-13" ? "360RA · 13 音箱参考布局" : id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `Dolby ${id}`}
+                  {id === "11.1.8" ? (track?.codec === "iamf" ? "11.1.8（手动）" : "Dolby 11.1.8 · Atmos / 母版（手动）") : id === "22.2" ? "22.2 · 标准三层布局（手动）" : id === "360RA-13" ? "360RA · 13 音箱参考布局" : id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `${track?.codec === "iamf" ? "IAMF" : "Dolby"} ${id}`}
                 </option>
               ))}
           </Select>
@@ -2290,7 +2291,7 @@ export function App() {
                 <dd>{debug || "—"}</dd>
               </dl>
             ) : (
-              <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .ac4 / .dts / .mhas 文件开始</p>
+              <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .ac4 / .dts / .iamf / .mhas 文件开始</p>
             )}
           </div>
         )}

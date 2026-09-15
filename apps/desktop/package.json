@@ -18,6 +18,7 @@
     "appId": "app.sda.desktop",
     "productName": "SDA",
     "files": [
+      "assets/**",
       "main.cjs",
       "native-event-batches.cjs",
       "remote-session.cjs",
@@ -58,9 +59,10 @@
       "personal-hrtf-library.cjs"
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": "nsis",
       "artifactName": "${productName} Setup ${version}-${arch}.${ext}",
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "extraResources": [
         {
           "from": "head-tracking-helper",
@@ -77,11 +79,14 @@
       ]
     },
     "nsis": {
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "include": "installer/installer.nsh"
     },
     "mac": {
+      "icon": "assets/icon.png",
       "target": "dmg",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     }
