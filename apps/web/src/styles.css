@@ -1258,6 +1258,18 @@ aside {
   background: var(--mp-track);
   overflow: hidden;
 }
+:root .app .mp-track-line.mp-track-seekable {
+  cursor: pointer;
+  height: 5px;
+  border-radius: 99px;
+  transition: height .15s ease;
+}
+:root .app .mp-track-line.mp-track-seekable:hover {
+  height: 8px;
+}
+:root .app .mp-track-line.mp-track-seekable:hover .mp-track-fill {
+  opacity: 0.85;
+}
 
 /* 已知总时长：实心进度填充 */
 .mp-track-fill {
@@ -1271,6 +1283,7 @@ aside {
   background: var(--mp-shimmer);
   transition: transform 0.12s linear;
   will-change: transform;
+  pointer-events: none;
 }
 
 /* 流式播放无总时长：一道流动的光泽表示进行中 */

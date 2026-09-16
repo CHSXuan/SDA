@@ -45,6 +45,10 @@ interface MiniPlayerProps {
   onTogglePlaylist: () => void;
   onReplay: () => void;
   onVolume: (v: number) => void;
+  /** 点击进度条跳转到指定时间（秒）。 */
+  onSeek?: (seconds: number) => void;
+  /** 快进/快退等待中，进度条显示加载动画。 */
+  seeking?: boolean;
 }
 
 function formatTime(sec: number): string {
@@ -72,6 +76,8 @@ export const MiniPlayer = memo(function MiniPlayer({
   onTogglePlaylist,
   onReplay,
   onVolume,
+  onSeek,
+  seeking,
 }: MiniPlayerProps) {
   if (!track) return null;
   const progress = duration > 0 ? Math.min(1, position / duration) : 0;
@@ -116,9 +122,22 @@ export const MiniPlayer = memo(function MiniPlayer({
             </div>
             <div className="mp-progress">
               <span className="mp-time">{formatTime(position)}</span>
-              <div className="mp-track-line">
+              <div
+                className={`mp-track-line${onSeek ? " mp-track-seekable" : ""}`}
+                onClick={onSeek && duration > 0 ? (e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                  onSeek(ratio * duration);
+                } : undefined}
+                role={onSeek && duration > 0 ? "slider" : undefined}
+                aria-label={onSeek ? "播放进度" : undefined}
+                aria-valuemin={0}
+                aria-valuemax={duration > 0 ? Math.round(duration) : undefined}
+                aria-valuenow={Math.round(position)}
+                tabIndex={onSeek && duration > 0 ? 0 : undefined}
+              >
                 <div className="mp-track-fill" style={{ transform: `scaleX(${progress})` }} />
-                {duration <= 0 && <div className="mp-track-shimmer" />}
+                {(duration <= 0 || seeking) && <div className="mp-track-shimmer" />}
               </div>
               <span className="mp-time dim">{duration > 0 ? formatTime(duration) : "--:--"}</span>
             </div>

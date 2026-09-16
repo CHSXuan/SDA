@@ -118,6 +118,8 @@ export interface PlayerCallbacks {
   /** A sustained callback-gap pattern upgrades the active AudioContext and
    * persists this latency for the next playback session. */
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
+  /** Fired when playback starts or resumes (including after seek). */
+  onPlaybackReady?: () => void;
 }
 
 export interface NativeRendererSourceDeclaration {
@@ -374,6 +376,8 @@ export class SdaPlayer {
   private headphoneProfileId: string | null = null;
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
+  /** Seek target sample — set by seekToSample, consumed by the startup gate. */
+  private pendingSeekSample: number | null = null;
   /** Blocks PCM submission and startAt until the initial stream-rate renderer is
    * fully ready. This prevents a default-rate context from audibly starting
    * before a 44.1 → 48 kHz alignment rebuild completes. */
@@ -1232,7 +1236,7 @@ export class SdaPlayer {
   positionSeconds(): number {
     if (this.outputBackend === "native-sidecar") {
       const origin = this.startupOrigin ?? 0;
-      return Math.min(Math.max(0, this.consumedSamples() - origin) / this.sampleRate, this.durationSeconds());
+      return this.clampToDuration(Math.max(0, this.consumedSamples() - origin) / this.sampleRate);
     }
     if (!this.renderer) return 0;
     // 听觉位置补偿：worklet 已渲染的样本还要经过 peak guard lookahead（5ms）
@@ -1240,7 +1244,7 @@ export class SdaPlayer {
     // 进度条与 3D 对象可视化应对齐用户实际听到的位置，而不是渲染时钟。
     const outputLatency = (this.renderer.ctx.baseLatency || 0) + 0.005;
     const audible = Math.max(0, this.renderer.consumedSeconds() - outputLatency);
-    return Math.min(audible, this.durationSeconds());
+    return this.clampToDuration(audible);
   }
 
   /** Startup readiness uses confirmed output, not decoded or visual-clock time. */
@@ -1250,6 +1254,11 @@ export class SdaPlayer {
 
   durationSeconds(): number {
     return this.containerDurationSec ?? Math.max(0, this.acceptedEndSample - (this.startupOrigin ?? 0)) / this.sampleRate;
+  }
+
+  /** Clamp to known container duration; pass through when duration is unknown. */
+  private clampToDuration(sec: number): number {
+    return this.containerDurationSec != null ? Math.min(sec, this.containerDurationSec) : sec;
   }
 
   // ---- internals ----
@@ -1445,6 +1454,49 @@ export class SdaPlayer {
     this.nativeStartPending = false;
   }
 
+  /** Seek to a sample position. Resets native renderer session, re-registers
+   *  sources, and tells the decoder to skip frames until the target.
+   *  Returns false when the caller must re-push the file from the beginning
+   *  (the streaming demuxer cannot seek backward on its own). */
+  async seekToSample(sample: number): Promise<boolean> {
+    if (this.disposed) return true;
+    console.log(`[SDA] player#${this.id} seekToSample ${sample}`);
+    // Immediately initialize the display clock at the seek target so emitVisual
+    // reports the correct position during the async native reset window.
+    this.nativeConsumedSamples = sample;
+    this.presentationClock.init(sample);
+    // Reset native renderer — clears sources, PCM coverage, and ring buffer.
+    await this.nativeRendererSink?.reset(sample);
+    // Re-register sources so startAt succeeds and pumpPcm can submit frames.
+    for (const [ch, label] of this.knownBedLabels.entries()) {
+      if (!label.startsWith("Obj_")) {
+        try { await this.nativeRendererSink?.addSource({ id: `bed:${ch}`, atSample: sample, bedLabel: label }); } catch {}
+      }
+    }
+    for (const id of this.objectChannels.keys()) {
+      try { await this.nativeRendererSink?.addSource({ id: `obj:${id}`, atSample: sample }); } catch {}
+    }
+    // Start native renderer at the seek target (sources now exist).
+    try { await this.nativeRendererSink?.startAt(sample); } catch (error) {
+      console.warn(`[SDA] player#${this.id} native startAt after seek failed:`, error);
+    }
+    // Reset Player decode state.
+    this.pcmQueue = [];
+    this.queuedSamples = 0;
+    this.acceptedFrames = [];
+    this.acceptedEndSample = 0;
+    this.inFlight.clear();
+    this.submittedFrames.clear();
+    this.batchResults.clear();
+    this.ended = false;
+    this.pendingSeekSample = sample;
+    this.resetStartupGate();
+    // Tell decoder to flush and skip to target sample.
+    this.worker.postMessage({ type: "seek", sample });
+    // The streaming demuxer cannot seek backward — caller must re-push file.
+    return false;
+  }
+
   private startPlaybackIfReady(force = false): void {
     if (
       !this.initialRendererReady
@@ -1466,7 +1518,9 @@ export class SdaPlayer {
           if (accepted === true) {
             this.nativeStartPending = false;
             this.playbackStarted = true;
+            this.pendingSeekSample = null;
             this.updateNativeConsumedCursor(this.nativeRendererSink!.getConsumedSamples?.() ?? origin);
+            this.cb.onPlaybackReady?.();
             this.pumpPcm();
             return;
           }
@@ -1496,6 +1550,8 @@ export class SdaPlayer {
       console.warn(`[SDA] player#${this.id} native startAt failed:`, error);
     }
     this.playbackStarted = true;
+    this.pendingSeekSample = null;
+    this.cb.onPlaybackReady?.();
   }
 
   /** Keep only PCM after an old worklet's consumption cursor. Object events at
@@ -1555,6 +1611,8 @@ export class SdaPlayer {
    * and the sample-clock visual timeline without creating an AudioContext. */
   private updateNativeConsumedCursor(sample: number): void {
     if (this.outputBackend !== "native-sidecar" || !Number.isFinite(sample)) return;
+    // After seek, ignore stale IPC reports below the seek target.
+    if (this.pendingSeekSample !== null && sample < this.pendingSeekSample) return;
     this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(sample));
     this.consumeAcceptedFrames();
     this.pumpPcm();
@@ -1564,7 +1622,9 @@ export class SdaPlayer {
   private consumedSamples(): number {
     if (this.outputBackend === "native-sidecar") {
       const reported = this.nativeRendererSink?.getConsumedSamples?.();
-      if (typeof reported === "number" && Number.isFinite(reported)) {
+      // After seek, ignore stale IPC reports below the seek target.
+      if (typeof reported === "number" && Number.isFinite(reported)
+          && (this.pendingSeekSample === null || reported >= this.pendingSeekSample)) {
         this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(reported));
       }
       return this.nativeConsumedSamples;
@@ -1608,12 +1668,16 @@ export class SdaPlayer {
       this.acceptedEndSample = Math.max(this.acceptedEndSample, end);
       if (!this.playbackStarted) {
         if (this.startupOrigin === null) {
-          this.startupOrigin = accepted.samplePos;
+          // After a seek, use the seek target as the startup origin so
+          // startPlaybackIfReady sends startAt at the correct sample.
+          this.startupOrigin = this.pendingSeekSample ?? accepted.samplePos;
           this.startupAcceptedEnd = end;
-        } else if (accepted.samplePos === this.startupAcceptedEnd) {
-          this.startupAcceptedEnd = end;
+        } else if (accepted.samplePos <= this.startupAcceptedEnd) {
+          // Accept overlapping or already-covered frames; advance the cursor.
+          this.startupAcceptedEnd = Math.max(this.startupAcceptedEnd, end);
         } else {
-          // Do not begin through a gap or an out-of-order acknowledged range.
+          // Gap detected — do not start through it, but keep processing
+          // subsequent ACKs so playback can resume once enough arrives.
           break;
         }
       }
@@ -2139,12 +2203,15 @@ export class SdaPlayer {
   private emitVisual(): void {
     if (this.outputBackend === "native-sidecar") {
       const consumed = this.nativeRendererSink?.getConsumedSamples?.();
-      if (typeof consumed === "number" && Number.isFinite(consumed) && consumed > this.nativeConsumedSamples) {
+      // After seek, ignore stale IPC reports below the seek target.
+      if (typeof consumed === "number" && Number.isFinite(consumed)
+          && consumed > this.nativeConsumedSamples
+          && (this.pendingSeekSample === null || consumed >= this.pendingSeekSample)) {
         this.updateNativeConsumedCursor(consumed);
       }
     }
     const streamTimeSec = this.outputBackend === "native-sidecar"
-      ? Math.min(this.durationSeconds(), Math.max(0,
+      ? this.clampToDuration(Math.max(0,
           this.presentationClock.read(this.nativeConsumedSamples, performance.now(), this.sampleRate,
             this.playbackStarted && !this.pausedState) - (this.startupOrigin ?? 0)) / this.sampleRate)
       : this.positionSeconds();

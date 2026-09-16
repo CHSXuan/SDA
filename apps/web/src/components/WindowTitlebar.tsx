@@ -12,9 +12,14 @@ export function WindowTitlebar() {
     const unsubscribe = desktop?.onWindowMaximized?.(setMaximized);
     return () => { active = false; unsubscribe?.(); };
   }, [desktop]);
-  // macOS uses native traffic-light buttons via titleBarStyle: 'hiddenInset'.
-  if (isMac || !desktop?.windowControl) return null;
-  return <div className="window-titlebar">
+  // macOS: transparent drag region in the traffic-light bar area.
+  if (isMac) {
+    if (!desktop?.windowControl) return null;
+    return <div className="mac-drag-bar" onDoubleClick={() => void desktop.windowControl?.("maximize")} />;
+  }
+  // Windows / Linux: fully custom title bar.
+  if (!desktop?.windowControl) return null;
+  return <div className="window-titlebar" onDoubleClick={() => void desktop.windowControl?.("maximize")}>
     <span className="window-caption">SDA</span>
     <div className="window-actions">
       <button title="最小化" aria-label="最小化" onClick={() => void desktop.windowControl?.("minimize")}><Minus size={15} /></button>
