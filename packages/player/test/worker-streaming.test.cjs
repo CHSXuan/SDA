@@ -9,6 +9,12 @@ const esbuild = require('esbuild');
     entryPoints: ['packages/player/src/decoder.worker.ts'], bundle: true,
     platform: 'node', format: 'cjs', write: false,
     plugins: [{ name: 'decoder-fixture', setup(b) {
+      b.onResolve({filter:/\/(mpegh|iamf)\.js$/},a=>({path:a.path,namespace:'unused-codec'}));
+      b.onLoad({filter:/.*/,namespace:'unused-codec'},()=>({contents:`
+        export async function initMpegh() {} export async function initIamf() {}
+        export function isMhas() { return false; } export function isIamf() { return false; }
+        export class MpeghDecoder {} export class IamfDecoder {}
+      `}));
       b.onResolve({ filter: /^@sda\/(core|demux)$/ }, a => ({ path: a.path, namespace: 'fixture' }));
       b.onLoad({ filter: /.*/, namespace: 'fixture' }, a => ({ contents: a.path.endsWith('core') ? `
         export async function initCore() {}
@@ -36,7 +42,7 @@ const esbuild = require('esbuild');
   const self = { postMessage: message => output.push(message) };
   vm.runInNewContext(build.outputFiles[0].text, { self, output, probe, module: { exports: {} }, exports: {}, require, console, Float32Array });
   self.onmessage({ data: { type: 'open', codec: 'eac3', outputSampleRate: 48000 } });
-  self.onmessage({ data: { type: 'push', chunk: new ArrayBuffer(1), sequence: 7 } });
+  self.onmessage({ data: { type: 'push', chunk: new ArrayBuffer(16), sequence: 7 } });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(output.find(x => x.type === 'error'), undefined);
   assert.equal(probe.emittedDuringDecode, true, 'first PCM must leave before the next AU is decoded');

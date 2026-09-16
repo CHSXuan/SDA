@@ -65,6 +65,8 @@ export interface FrameLoudness {
 }
 
 export interface DecodedFrameData {
+  /** Internal seek fast-forward frame: metadata only, never sent to output. */
+  discardedSamples?: number;
   codec: string;
   sampleRate: number;
   samplePos: number;
@@ -137,12 +139,16 @@ export class SdaDecoder {
   nextFrame(): DecodedFrameData | null {
     const frame = this.inner.nextFrame();
     if (!frame) return null;
+    // During a seek, retain codec state and metadata but avoid copying PCM
+    // that will never be heard. Stereo remains available to the loudness meter.
+    const discard = frame.channelCount > 2 && frame.samplePos + frame.samplesPerChannel <= this.discardBeforeSeconds * frame.sampleRate;
     const channels: Float32Array[] = [];
-    for (let i = 0; i < frame.channelCount; i++) {
+    for (let i = 0; !discard && i < frame.channelCount; i++) {
       const ch = frame.channel(i);
       if (ch) channels.push(ch);
     }
     const data: DecodedFrameData = {
+      discardedSamples: discard ? frame.samplesPerChannel : undefined,
       codec: frame.codec,
       sampleRate: frame.sampleRate,
       samplePos: frame.samplePos,
@@ -161,6 +167,7 @@ export class SdaDecoder {
   drainErrors(): string[] {
     return this.inner.drainErrors();
   }
+  discardBeforeSeconds = 0;
 
   reset(): void {
     this.inner.reset();

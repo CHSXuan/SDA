@@ -29,6 +29,7 @@ export function mhasPacket(type:number,payload:Uint8Array):Uint8Array {
   bits.forEach((b,i)=>result[i>>3]!|=b<<(7-(i&7)));result.set(payload,bits.length/8);return result;
 }
 export class MpeghDecoder {
+  discardBeforeSeconds = 0;
   private pending=new Uint8Array(0);
   private frames:DecodedFrameData[]=[];
   private samplePos=0;
@@ -73,6 +74,7 @@ export class MpeghDecoder {
       if(!this.emitSourcesWithReference){this.samplePos+=samples;return;}
     }
 
+    const discard = this.samplePos + n <= this.discardBeforeSeconds * rate;
     let channels:Float32Array[],labels:string[],events:ObjectEvent[]=[],objectChannels:{id:number;channel:number}[]=[];
     if(objects){
       if(hoa)throw Error('MPEG-H mixed objects/HOA is not supported yet');
@@ -82,8 +84,8 @@ export class MpeghDecoder {
       labels=[...bedLabels,...Array.from({length:objects},(_,i)=>`Obj_${i}`)];
       if(info(4)!==beds+objects)throw Error('MPEG-H source mapping mismatch');
       const p=m._sda_pcm()/4;
-      channels=labels.map(()=>new Float32Array(n));
-      for(let c=0;c<beds+objects;c++) {const target=c<beds?bedLabels.indexOf(sourceBeds[c]!):bedLabels.length+c-beds;
+      channels=labels.map(()=>new Float32Array(discard ? 0 : n));
+      for(let c=0;!discard && c<beds+objects;c++) {const target=c<beds?bedLabels.indexOf(sourceBeds[c]!):bedLabels.length+c-beds;
         for(let s=0;s<n;s++)channels[target]![s]+=m.HEAPF32[p+c*n+s];}
       objectChannels=Array.from({length:objects},(_,id)=>({id,channel:bedLabels.length+id}));
       const md=m.HEAPF32,base=m._sda_metadata()/4;
@@ -102,11 +104,11 @@ export class MpeghDecoder {
       // Channel / HOA programmes use the upstream stereo renderer, with zero objects.
       const count=info(11);n=info(10)/(count*3);
       if(!Number.isInteger(n)||count!==2)throw Error('MPEG-H unexpected stereo output');
-      labels=['L','R'];channels=labels.map(()=>new Float32Array(n));
+      labels=['L','R'];channels=labels.map(()=>new Float32Array(discard ? 0 : n));
       const bytes=m.HEAPU8;let p=m._sda_rendered();
-      for(let s=0;s<n;s++)for(let c=0;c<count;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;channels[c]![s]=(v<<8>>8)/8388608;}
+      for(let s=0;!discard && s<n;s++)for(let c=0;c<count;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;channels[c]![s]=(v<<8>>8)/8388608;}
     }
-    this.frames.push({codec:'mpegh',sampleRate:rate,samplePos:this.samplePos,channels,labels,rawBedLabels:labels.filter(l=>!l.startsWith('Obj_')),events,objectChannels,programLoudness:null,rampDuration:0});
+    this.frames.push({discardedSamples:discard?n:undefined,codec:'mpegh',sampleRate:rate,samplePos:this.samplePos,channels,labels,rawBedLabels:labels.filter(l=>!l.startsWith('Obj_')),events,objectChannels,programLoudness:null,rampDuration:0});
     this.samplePos+=n;
   }
   nextFrame():DecodedFrameData|null{return this.frames.shift()??null;}

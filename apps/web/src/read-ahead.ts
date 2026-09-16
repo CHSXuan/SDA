@@ -2,6 +2,7 @@
 export async function* readAhead(
   size: number, chunkSize: number,
   read: (offset: number, length: number) => Promise<Uint8Array>,
+  startOffset = 0,
 ): AsyncGenerator<Uint8Array> {
   if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
     throw new Error("Invalid file read bounds");
@@ -9,9 +10,10 @@ export async function* readAhead(
   const request = (offset: number) => Promise.resolve()
     .then(() => read(offset, Math.min(chunkSize, size - offset)))
     .then(bytes => ({ok: true as const, bytes}), error => ({ok: false as const, error}));
-  let pending = size ? request(0) : undefined;
+  if (!Number.isSafeInteger(startOffset) || startOffset < 0 || startOffset > size) throw new Error("Invalid file start offset");
+  let pending = startOffset < size ? request(startOffset) : undefined;
   try {
-    for (let offset = 0; offset < size; offset += chunkSize) {
+    for (let offset = startOffset; offset < size; offset += chunkSize) {
       const result = await pending!;
       if (!result.ok) throw result.error;
       if (result.bytes.byteLength !== Math.min(chunkSize, size - offset)) {

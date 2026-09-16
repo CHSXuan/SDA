@@ -121,6 +121,7 @@ export interface PlayerCallbacks {
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
   /** Fired when playback starts or resumes (including after seek). */
   onPlaybackReady?: () => void;
+  onSeekBuffered?: () => void;
 }
 
 export interface NativeRendererSourceDeclaration {
@@ -955,18 +956,19 @@ export class SdaPlayer {
     await this.renderer?.ctx.resume();
     if (this.disposed) return;
     console.log(`[SDA] player#${this.id} playFile`);
-    await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
-    if (this.disposed) return;
+    const epoch=this.decodeEpoch;
+    const startOffset = await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
+    if (this.disposed || epoch !== this.decodeEpoch) return;
 
-    const stream = file.stream();
+    const stream = file.slice(startOffset).stream();
     const reader = stream.getReader();
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done || this.disposed) break;
+        if (done || this.disposed || epoch !== this.decodeEpoch) break;
         await this.push(value);
       }
-      if (!this.disposed) this.worker.postMessage({ type: "flush" });
+      if (!this.disposed && epoch === this.decodeEpoch) this.end();
     } finally {
       await reader.cancel();
       reader.releaseLock();
@@ -974,28 +976,38 @@ export class SdaPlayer {
   }
 
   /** Read BWF metadata before PCM, including ADM chunks after a multi-GB data chunk. */
+  private sourceBwfMetadata?: BwfMetadata;
   async openSeekable(
     readRange: (offset: number, length: number) => Promise<Uint8Array>,
     size: number,
     codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
-  ): Promise<void> {
+  ): Promise<number> {
     this.balanceAnalysisAbort.abort();
     const analysisAbort = this.balanceAnalysisAbort = new AbortController();
-    this.mpeghMeasurement = null;
-    this.cachedMeasuredLufs = null;
-    this.cachedMeasuredPeakDbfs = null;
+    if (this.decodeEpoch === 0) {
+      this.mpeghMeasurement = null;
+      this.cachedMeasuredLufs = null;
+      this.cachedMeasuredPeakDbfs = null;
+    }
     const header = await readRange(0, Math.min(12, size));
-    const metadata = BwfDemuxer.sniffs(header) ? await readBwfMetadata(readRange, size) : undefined;
-    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata);
+    const cachedMetadata = this.seekSeconds > 0 && this.sourceBwfMetadata?.fileSize === size
+      ? this.sourceBwfMetadata : undefined;
+    const metadata = BwfDemuxer.sniffs(header) ? cachedMetadata ?? await readBwfMetadata(readRange, size) : undefined;
+    // PCM/ADM has a fixed byte stride; retain 100 ms for SRC filter warm-up.
+    const startSample = metadata && this.seekSeconds > 0
+      ? Math.floor(Math.max(0, this.seekSeconds - 0.1) * metadata.format.sampleRate) : 0;
+    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata, startSample);
+    return metadata && startSample > 0 ? metadata.dataOffset + startSample * metadata.format.blockAlign : 0;
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata, startSample = 0): void {
+    this.sourceBwfMetadata = bwfMetadata;
     this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
+    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, startSample, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined, seekSeconds:this.seekSeconds });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
@@ -1004,7 +1016,7 @@ export class SdaPlayer {
     const sequence = this.nextWorkerPushSequence++;
     return new Promise<void>((resolve, reject) => {
       this.pendingWorkerPushes.set(sequence, { resolve, reject });
-      this.worker.postMessage({ type: "push", chunk, sequence }, [chunk]);
+      this.worker.postMessage({ type: "push", epoch:this.decodeEpoch, chunk, sequence }, [chunk]);
     });
   }
 
@@ -1013,16 +1025,17 @@ export class SdaPlayer {
   async push(chunk: Uint8Array): Promise<void> {
     // Bound decode bursts independently of filesystem/network read sizes.
     // Pace each part so queued PCM cannot hide a multi-second decode gap.
-    for (let offset = 0; offset < chunk.length && !this.disposed; offset += this.decodeChunkSize) {
+    const epoch=this.decodeEpoch;
+    for (let offset = 0; offset < chunk.length && !this.disposed && epoch === this.decodeEpoch; offset += this.decodeChunkSize) {
       const copy = Uint8Array.from(chunk.subarray(offset, offset + this.decodeChunkSize)).buffer;
       await this.pushWorkerChunk(copy);
-      await this.pace();
+      await this.pace(epoch);
     }
   }
 
   /** Signal end of a manually pushed stream and drain remaining demuxed PCM. */
   end(): void {
-    this.worker.postMessage({ type: "flush" });
+    this.worker.postMessage({ type: "flush", epoch:this.decodeEpoch });
   }
 
   stop(): void {
@@ -1247,8 +1260,7 @@ export class SdaPlayer {
    *  end of the song. */
   positionSeconds(): number {
     if (this.outputBackend === "native-sidecar") {
-      const origin = this.startupOrigin ?? 0;
-      return this.clampToDuration(Math.max(0, this.consumedSamples() - origin) / this.sampleRate);
+      return this.clampToDuration(Math.max(0, this.consumedSamples()) / this.sampleRate);
     }
     if (!this.renderer) return 0;
     // 听觉位置补偿：worklet 已渲染的样本还要经过 peak guard lookahead（5ms）
@@ -1265,7 +1277,7 @@ export class SdaPlayer {
   }
 
   durationSeconds(): number {
-    return this.containerDurationSec ?? Math.max(0, this.acceptedEndSample - (this.startupOrigin ?? 0)) / this.sampleRate;
+    return this.containerDurationSec ?? Math.max(0, this.acceptedEndSample) / this.sampleRate;
   }
 
   /** Clamp to known container duration; pass through when duration is unknown. */
@@ -1466,48 +1478,47 @@ export class SdaPlayer {
     this.nativeStartPending = false;
   }
 
-  /** Seek to a sample position. Resets native renderer session, re-registers
-   *  sources, and tells the decoder to skip frames until the target.
-   *  Returns false when the caller must re-push the file from the beginning
-   *  (the streaming demuxer cannot seek backward on its own). */
-  async seekToSample(sample: number): Promise<boolean> {
-    if (this.disposed) return true;
-    console.log(`[SDA] player#${this.id} seekToSample ${sample}`);
-    // Immediately initialize the display clock at the seek target so emitVisual
-    // reports the correct position during the async native reset window.
-    this.nativeConsumedSamples = sample;
-    this.presentationClock.init(sample);
-    // Reset native renderer — clears sources, PCM coverage, and ring buffer.
-    await this.nativeRendererSink?.reset(sample);
-    // Re-register sources so startAt succeeds and pumpPcm can submit frames.
-    for (const [ch, label] of this.knownBedLabels.entries()) {
-      if (!label.startsWith("Obj_")) {
-        try { await this.nativeRendererSink?.addSource({ id: `bed:${ch}`, atSample: sample, bedLabel: label }); } catch {}
-      }
-    }
-    for (const id of this.objectChannels.keys()) {
-      try { await this.nativeRendererSink?.addSource({ id: `obj:${id}`, atSample: sample }); } catch {}
-    }
-    // Start native renderer at the seek target (sources now exist).
-    try { await this.nativeRendererSink?.startAt(sample); } catch (error) {
-      console.warn(`[SDA] player#${this.id} native startAt after seek failed:`, error);
-    }
-    // Reset Player decode state.
-    this.pcmQueue = [];
-    this.queuedSamples = 0;
-    this.acceptedFrames = [];
-    this.acceptedEndSample = 0;
-    this.inFlight.clear();
-    this.submittedFrames.clear();
-    this.batchResults.clear();
-    this.ended = false;
-    this.pendingSeekSample = sample;
+  /** Reuse the worker and output connection; invalidate only old media work. */
+  async prepareSeek(seconds: number): Promise<void> {
+    if (!Number.isFinite(seconds) || seconds < 0) throw new Error("Invalid seek time");
+    const epoch=++this.decodeEpoch;
+    console.log(`[SDA] player#${this.id} seek ${seconds}s epoch=${epoch}`);
+    this.seekSeconds = seconds;
+    const sample = Math.round(seconds * this.sampleRate);
+    this.pendingSeekSample = sample;this.seekBufferedNotified=false;
+    this.rendererGeneration++;
+    this.rejectPendingWorkerPushes("seek superseded old read");
+    this.pcmQueue=[];this.queuedSamples=0;this.acceptedFrames=[];this.acceptedEndSample=sample;
+    this.inFlight.clear();this.submittedFrames.clear();this.batchResults.clear();
+    this.ended=false;
     this.resetStartupGate();
-    // Tell decoder to flush and skip to target sample.
-    this.worker.postMessage({ type: "seek", sample });
-    // The streaming demuxer cannot seek backward — caller must re-push file.
-    return false;
+    this.pendingVisualEvents=[];this.pendingVisualCursor=0;this.pendingVisualTargets.clear();
+    this.objects.clear();this.objectChannels.clear();this.knownBedLabels=[];
+    // onTrack publishes container-only information again. Re-publish the
+    // decoded bed/object format on the first accepted seek frame as well.
+    this.decodedFormatKey = "";
+    this.soundingObjectIds.clear();this.visualSnapshotDirty=true;
+    this.nativeConsumedSamples = sample;this.presentationClock.init(sample);
+    this.renderer?.resetBuffers();
+    await this.nativeFrames.submit(async()=>{
+      if (epoch!==this.decodeEpoch || this.disposed) return;
+      await this.nativeRendererSink?.reset(sample);
+      if (epoch!==this.decodeEpoch || this.disposed) return;
+      // Native reset clears programme gain along with queued audio. Seeking
+      // within the same song must not temporarily bypass its loudness balance.
+      await this.nativeRendererSink?.setProgramGainDb(this.programLoudnessGainDb, sample);
+    });
+    if (epoch===this.decodeEpoch) {
+      this.installNativeConsumedClock();this.installNativeObjectActivity();
+      this.nativeConsumedSamples=sample;this.presentationClock.init(sample);
+      this.renderer?.setProgramLoudnessGainDb(this.programLoudnessGainDb, sample);
+      this.setLfeMuted(this.lfeMuted);
+    }
   }
+  private decodeEpoch = 0;
+
+  private seekSeconds = 0;
+  private seekBufferedNotified = false;
 
   private startPlaybackIfReady(force = false): void {
     if (
@@ -1515,18 +1526,27 @@ export class SdaPlayer {
       || this.playbackStarted
       || this.nativeStartPending
       || this.startupOrigin === null
-      || this.pausedState
     ) return;
     const startupAhead = this.outputBackend === "native-sidecar" && this.knownBedLabels.length >= 64 ? 1.5 : STARTUP_AHEAD_SECONDS;
     const required = Math.min(startupAhead, this.renderer?.maxBufferedSeconds() ?? startupAhead) * this.sampleRate;
     if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
+    if (this.pendingSeekSample !== null && !this.seekBufferedNotified) {
+      this.seekBufferedNotified = true;
+      // Publish the restored pose snapshot before releasing the seeking UI,
+      // including paused seeks where no native consumption tick will follow.
+      this.emitVisual();
+      this.cb.onSeekBuffered?.();
+    }
+    if (this.pausedState) return;
     if (this.outputBackend === "native-sidecar") {
       const origin = this.startupOrigin;
+      const epoch = this.decodeEpoch;
       this.nativeStartPending = true;
       const begin = performance.now();
       const attemptStart = (): void => {
+        if (this.disposed || epoch !== this.decodeEpoch) return;
         Promise.resolve(this.nativeRendererSink!.startAt(origin)).then((accepted) => {
-          if (this.disposed || this.startupOrigin !== origin) return;
+          if (this.disposed || epoch !== this.decodeEpoch || this.startupOrigin !== origin) return;
           if (accepted === true) {
             this.nativeStartPending = false;
             this.playbackStarted = true;
@@ -1604,7 +1624,7 @@ export class SdaPlayer {
     this.nativeConsumedUnsubscribe = undefined;
     const sink = this.nativeRendererSink;
     if (!sink) return;
-    this.nativeConsumedSamples = sink.getConsumedSamples?.() ?? 0;
+    this.nativeConsumedSamples = this.pendingSeekSample ?? sink.getConsumedSamples?.() ?? 0;
     const unsubscribe = sink.onConsumedSamples?.((sample) => this.updateNativeConsumedCursor(sample));
     if (typeof unsubscribe === "function") this.nativeConsumedUnsubscribe = unsubscribe;
   }
@@ -1623,6 +1643,7 @@ export class SdaPlayer {
    * and the sample-clock visual timeline without creating an AudioContext. */
   private updateNativeConsumedCursor(sample: number): void {
     if (this.outputBackend !== "native-sidecar" || !Number.isFinite(sample)) return;
+    if (this.pendingSeekSample !== null && !this.playbackStarted || sample > this.submittedEndSample()) return;
     // After seek, ignore stale IPC reports below the seek target.
     if (this.pendingSeekSample !== null && sample < this.pendingSeekSample) return;
     this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(sample));
@@ -1635,7 +1656,7 @@ export class SdaPlayer {
     if (this.outputBackend === "native-sidecar") {
       const reported = this.nativeRendererSink?.getConsumedSamples?.();
       // After seek, ignore stale IPC reports below the seek target.
-      if (typeof reported === "number" && Number.isFinite(reported)
+      if (this.playbackStarted && typeof reported === "number" && Number.isFinite(reported) && reported <= this.submittedEndSample()
           && (this.pendingSeekSample === null || reported >= this.pendingSeekSample)) {
         this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(reported));
       }
@@ -1790,11 +1811,11 @@ export class SdaPlayer {
     this.cb.onError?.(`音频实时供给不足：${details}`);
   }
 
-  private async pace(): Promise<void> {
+  private async pace(epoch=this.decodeEpoch): Promise<void> {
     // renderer 为 null（重建中）也要继续节流：queuedSamples 仍在累计，
     // 否则整个文件会在重建窗口内灌进 worker 解码（帧随即因 renderer 缺席堆积，
     // 缓冲爆炸）。disposed 时退出避免死等。
-    while (!this.disposed && this.aheadSeconds() > this.targetAheadSeconds()) {
+    while (!this.disposed && epoch === this.decodeEpoch && this.aheadSeconds() > this.targetAheadSeconds()) {
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -1821,6 +1842,7 @@ export class SdaPlayer {
   }
 
   private onWorkerMessage(msg: { type: string; [k: string]: unknown }): void {
+    if (msg.type !== "ready" && msg.epoch !== this.decodeEpoch) return;
     switch (msg.type) {
       case "ready":
         this.readyResolve();
@@ -1864,7 +1886,7 @@ export class SdaPlayer {
       case "flushed":
         // Only a complete decode is a track measurement. A stopped intro must
         // never replace a complete cached value or freeze the next playback.
-        if (this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+        if (this.seekSeconds === 0 && this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
             && this.measuredLoudness?.integratedLufs != null
             && Number.isFinite(this.measuredLoudness.integratedLufs)) {
           this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.peakDbfs);
@@ -1886,6 +1908,7 @@ export class SdaPlayer {
     // 整个文件会在窗口内解完扔光 → 提前 onEnded，卡在第几秒）。
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
+    if (!this.playbackStarted && this.seekSeconds > 0) this.pendingSeekSample = Math.round(this.seekSeconds * frame.sampleRate);
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
     const mpegh = frame.codec === "mpegh";
     if (!mpegh && !isStereoMasterFrame(frame)) this.nonStereoProgrammeSeen = true;
@@ -2219,6 +2242,10 @@ export class SdaPlayer {
   }
 
   private emitVisual(): void {
+    // Declarations arrive before their initial pose events during rebuffering.
+    // Keep the previous complete snapshot rather than showing transient dots
+    // stacked at the listener while the new seek state is being assembled.
+    if (this.pendingSeekSample !== null && !this.seekBufferedNotified) return;
     if (this.outputBackend === "native-sidecar") {
       const consumed = this.nativeRendererSink?.getConsumedSamples?.();
       // After seek, ignore stale IPC reports below the seek target.
@@ -2228,12 +2255,14 @@ export class SdaPlayer {
         this.updateNativeConsumedCursor(consumed);
       }
     }
-    const streamTimeSec = this.outputBackend === "native-sidecar"
+    const nativePresentedSample = this.outputBackend === "native-sidecar"
+      ? this.presentationClock.read(this.nativeConsumedSamples, performance.now(), this.sampleRate,
+          this.playbackStarted && !this.pausedState) : null;
+    const streamTimeSec = nativePresentedSample !== null
       ? this.clampToDuration(Math.max(0,
-          this.presentationClock.read(this.nativeConsumedSamples, performance.now(), this.sampleRate,
-            this.playbackStarted && !this.pausedState) - (this.startupOrigin ?? 0)) / this.sampleRate)
+          nativePresentedSample) / this.sampleRate)
       : this.positionSeconds();
-    const playedSample = Math.floor(streamTimeSec * this.sampleRate);
+    const playedSample = Math.floor(nativePresentedSample ?? streamTimeSec * this.sampleRate);
     let changed = false;
     while (
       this.pendingVisualCursor < this.pendingVisualEvents.length &&

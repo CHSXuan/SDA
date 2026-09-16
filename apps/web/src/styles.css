@@ -1259,12 +1259,15 @@ aside {
   overflow: hidden;
 }
 :root .app .mp-track-line.mp-track-seekable {
+  touch-action: none;
+  user-select: none;
   cursor: pointer;
   height: 5px;
   border-radius: 99px;
   transition: height .15s ease;
 }
-:root .app .mp-track-line.mp-track-seekable:hover {
+:root .app .mp-track-line.mp-track-seekable:hover,
+:root .app .mp-track-line.mp-track-dragging {
   height: 8px;
 }
 :root .app .mp-track-line.mp-track-seekable:hover .mp-track-fill {
@@ -1272,6 +1275,7 @@ aside {
 }
 
 /* 已知总时长：实心进度填充 */
+:root .app .mp-track-dragging .mp-track-fill { transition: none; }
 .mp-track-fill {
   position: absolute;
   left: 0;

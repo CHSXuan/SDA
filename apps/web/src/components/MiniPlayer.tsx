@@ -1,7 +1,7 @@
 import { Slider } from "./Slider";
 import PlaybackModeButton from "./PlaybackModeButton";
 import type { PlaybackMode } from "../playbackOrder";
-import { memo, type ReactNode } from "react";
+import { memo, useRef, useState, type ReactNode, type PointerEvent } from "react";
 import { GlassRefraction } from "./GlassRefraction";
 import { Pause, Play, RotateCcw, Volume2, ListMusic, SkipBack, SkipForward } from "lucide-react";
 
@@ -79,8 +79,19 @@ export const MiniPlayer = memo(function MiniPlayer({
   onSeek,
   seeking,
 }: MiniPlayerProps) {
+  const [preview, setPreview] = useState<number | null>(null);
+  const dragPointer = useRef<number | null>(null);
+  const pointerTime = (e: PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))) * duration;
+  };
+  const cancelDrag = () => {
+    dragPointer.current = null;
+    setPreview(null);
+  };
   if (!track) return null;
-  const progress = duration > 0 ? Math.min(1, position / duration) : 0;
+  const displayPosition = preview ?? position;
+  const progress = duration > 0 ? Math.min(1, displayPosition / duration) : 0;
   return (
     <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>
       <div className="mp-glass">
@@ -121,23 +132,48 @@ export const MiniPlayer = memo(function MiniPlayer({
               </button>
             </div>
             <div className="mp-progress">
-              <span className="mp-time">{formatTime(position)}</span>
+              <span className="mp-time">{formatTime(displayPosition)}</span>
               <div
-                className={`mp-track-line${onSeek ? " mp-track-seekable" : ""}`}
-                onClick={onSeek && duration > 0 ? (e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                  onSeek(ratio * duration);
-                } : undefined}
+                className={`mp-track-line${onSeek ? " mp-track-seekable" : ""}${preview !== null ? " mp-track-dragging" : ""}`}
+                onPointerDown={(e) => {
+                  if (!onSeek || duration <= 0 || e.button !== 0 || dragPointer.current !== null) return;
+                  e.preventDefault();
+                  e.currentTarget.focus();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  dragPointer.current = e.pointerId;
+                  setPreview(pointerTime(e));
+                }}
+                onPointerMove={(e) => {
+                  if (dragPointer.current === e.pointerId) setPreview(pointerTime(e));
+                }}
+                onPointerUp={(e) => {
+                  if (dragPointer.current !== e.pointerId) return;
+                  const target = pointerTime(e);
+                  cancelDrag();
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+                  onSeek?.(target);
+                }}
+                onPointerCancel={cancelDrag}
+                onLostPointerCapture={cancelDrag}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { cancelDrag(); return; }
+                  if (!onSeek || duration <= 0 || dragPointer.current !== null) return;
+                  const target = e.key === "Home" ? 0 : e.key === "End" ? duration
+                    : e.key === "ArrowLeft" ? position - 5 : e.key === "ArrowRight" ? position + 5 : null;
+                  if (target === null) return;
+                  e.preventDefault();
+                  onSeek(Math.max(0, Math.min(duration, target)));
+                }}
                 role={onSeek && duration > 0 ? "slider" : undefined}
                 aria-label={onSeek ? "播放进度" : undefined}
                 aria-valuemin={0}
                 aria-valuemax={duration > 0 ? Math.round(duration) : undefined}
-                aria-valuenow={Math.round(position)}
+                aria-valuenow={Math.round(displayPosition)}
+                aria-valuetext={formatTime(displayPosition)}
                 tabIndex={onSeek && duration > 0 ? 0 : undefined}
               >
                 <div className="mp-track-fill" style={{ transform: `scaleX(${progress})` }} />
-                {(duration <= 0 || seeking) && <div className="mp-track-shimmer" />}
+                {preview === null && (duration <= 0 || seeking) && <div className="mp-track-shimmer" />}
               </div>
               <span className="mp-time dim">{duration > 0 ? formatTime(duration) : "--:--"}</span>
             </div>

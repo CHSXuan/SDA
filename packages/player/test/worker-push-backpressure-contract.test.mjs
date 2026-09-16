@@ -10,8 +10,9 @@ assert.match(player, /private pushWorkerChunk\(chunk: ArrayBuffer\): Promise<voi
 assert.match(player, /pendingWorkerPushes\.set\(sequence, \{ resolve, reject \}\)/);
 assert.match(player, /await this\.pushWorkerChunk\(copy\)/);
 assert.match(player, /case "push-ack"/);
-assert.match(worker, /self\.postMessage\(\{ type: "push-ack", sequence: msg\.sequence \}\)/);
-assert.match(worker, /if \(msg\.type === "push"\) self\.postMessage\(\{ type: "push-ack", sequence: msg\.sequence, error: message \}\)/);
+assert.match(worker, /post\(\{ type: "push-ack", sequence: msg\.sequence \}\)/);
+assert.match(worker, /if \(msg\.type === "push"\) post\(\{ type: "push-ack", sequence: msg\.sequence, error: message \}\)/);
+assert.match(worker, /self\.postMessage\(\{\.\.\.message,epoch\},transfer\)/);
 assert.match(player, /await this\.push\(value\)/);
 assert.match(player, /offset \+= this\.decodeChunkSize/);
 assert.match(player, /const COMPRESSED_DECODE_CHUNK_SIZE = 1 << 15/);

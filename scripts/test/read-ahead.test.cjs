@@ -1,5 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const load=()=>import('../../apps/web/src/read-ahead.ts');
+test('seek starts at the selected byte without reading discarded PCM',async()=>{
+ const {readAhead}=await load(),calls=[];
+ for await(const bytes of readAhead(100,4,async(offset,length)=>{calls.push([offset,length]);return new Uint8Array(length);},91)){}
+ assert.deepEqual(calls,[[91,4],[95,4],[99,1]]);
+});
 test('one read overlaps decoding, preserves order and bounds memory to one prefetched chunk',async()=>{
  const {readAhead}=await load(),calls=[],gates=new Map();
  const stream=readAhead(10,4,(offset,length)=>{calls.push([offset,length]);return new Promise(resolve=>gates.set(offset,()=>resolve(new Uint8Array(length).fill(offset))));});

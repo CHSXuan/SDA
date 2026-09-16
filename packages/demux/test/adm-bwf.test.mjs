@@ -47,6 +47,12 @@ for (const after of [false, true]) {
   assert.deepEqual(frames.flatMap(frame => [...frame.channels[0]]), [-1, 8388607 / 8388608, 0, 0.5]);
   assert.equal(tracks[0].codec, 'adm');
   assert.equal(frames.reduce((sum, frame) => sum + frame.events.length, 0), 1);
+  const sought=[];
+  const seekDemux=new BwfDemuxer({onPcmFrame:f=>sought.push(f)},info,2);
+  seekDemux.push(file.subarray(info.dataOffset+2*info.format.blockAlign));seekDemux.flush();
+  assert.equal(sought[0].samplePos,2);
+  assert.deepEqual([...sought[0].channels[0]],[0,0.5]);
+  assert.equal(sought[0].events[0].samplePos,0,'seek must retain prior object state');
   const truncated = new BwfDemuxer({}, info);
   truncated.push(file.subarray(0, info.dataOffset + 2));
   assert.throws(() => truncated.flush(), /truncated PCM/);

@@ -303,8 +303,6 @@ const SphericalRoom = memo(function SphericalRoom({ p }: { p: Palette }) {
   useEffect(() => () => geometry.dispose(), [geometry]);
   return <group name="mpegh-spherical-field">
     <lineSegments geometry={geometry}><lineBasicMaterial color={p.outline} transparent opacity={0.55} depthWrite={false}/></lineSegments>
-    <Html position={[0, ROOM + 0.2, 0]} center style={{ pointerEvents: "none", whiteSpace: "nowrap", color: p.outline, fontSize: 11 }}>上方 +90°</Html>
-    <Html position={[0, -ROOM - 0.2, 0]} center style={{ pointerEvents: "none", whiteSpace: "nowrap", color: p.outline, fontSize: 11 }}>下方 −90°</Html>
   </group>;
 });
 

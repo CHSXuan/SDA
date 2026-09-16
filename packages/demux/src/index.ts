@@ -49,7 +49,7 @@ export interface Demuxer {
   flush(): void;
 }
 
-export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMetadata?: BwfMetadata): Demuxer {
+export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMetadata?: BwfMetadata, startSample = 0): Demuxer {
   if (kind === "mkv") {
     const mkv = new MkvDemuxer({
       onTrack: (t: MkvAudioTrack) =>
@@ -74,7 +74,7 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMeta
       onPcmFrame: cb.onPcmFrame,
       onBinauralMetadata: cb.onBinauralMetadata,
       onError: cb.onError,
-    }, bwfMetadata);
+    }, bwfMetadata, startSample);
     return { kind, push: (c) => bwf.push(c), flush: () => bwf.flush() };
   }
   // Raw elementary stream: pass bytes straight through; the decoder's own

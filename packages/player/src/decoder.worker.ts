@@ -1,3 +1,5 @@
+import {SeekFrameGate, SeekPacketGate} from "./seek-frame";
+import {MpeghSeekPackets} from "./mpegh-seek";
 import { isStereoMasterFrame } from "./stereo-master.js";
 /**
  * Decoder worker script — runs demux + wasm decode off the UI thread.
@@ -11,7 +13,7 @@ import { isStereoMasterFrame } from "./stereo-master.js";
  */
 
 import { initCore, SdaDecoder, type CodecName, type DecodedFrameData, type ObjectEvent } from "@sda/core";
-import { createDemuxer, sniffContainer, type BwfMetadata, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
+import { createDemuxer, sniffContainer, type BwfMetadata, type BinauralRenderMetadata, type ContainerKind, type Demuxer, type DemuxedAudioPacket } from "@sda/demux";
 import { canCoalesceObjectEvent } from "./control.js";
 import { LoudnessMeter } from "./bs1770.js";
 import { FrameBatcher } from "./frame-batcher.js";
@@ -30,6 +32,7 @@ let decoder: SdaDecoder | IamfDecoder | MpeghDecoder | null = null;
 let demuxer: Demuxer | null = null;
 let sniffPrefix = new Uint8Array(0);
 let bwfMetadata: BwfMetadata | undefined;
+let pcmStartSample = 0;
 let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
 let loudnessPostCounter = 0;
@@ -39,7 +42,11 @@ let outputSampleRate: number | undefined;
 let resampler: AlacResampler | null = null;
 let decodedFrames: DecodedFrameData[] = [];
 /** When set, decoded frames before this sample are silently dropped (seek). */
-let seekTargetSample = 0;
+let seekGate = new SeekFrameGate();
+let seekPackets = new SeekPacketGate();
+let mpeghSeek = new MpeghSeekPackets(0);
+let epoch=0;
+function post(message:Record<string,unknown>, transfer:Transferable[] = []):void { self.postMessage({...message,epoch},transfer); }
 
 function compactObjectEvents(frame: DecodedFrameData): void {
   const objectIds = new Set<number>();
@@ -73,7 +80,10 @@ function postFrame(frame: DecodedFrameData): void {
     loudnessMeter.push(frame.channels);
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
   }
-  self.postMessage(
+  const accepted = seekGate.accept(frame);
+  if (!accepted) return;
+  frame = accepted;
+  post(
     { type: "frame", frame },
     frame.channels.map((c) => c.buffer),
   );
@@ -84,17 +94,28 @@ function drainFrames(): void {
   while (true) {
     const frame = decoder.nextFrame();
     if (!frame) break;
+    seekPackets.restoreClock(frame);
     acceptDecodedFrame(frame);
   }
   for (const message of decoder.drainErrors()) {
-    self.postMessage({ type: "error", message });
+    post({ type: "error", message });
   }
+}
+
+function decodePacket(packet: DemuxedAudioPacket): void {
+  if (!seekPackets.accept(packet.timestampMs)) return;
+  if (!decoder) {
+    if (!decoderConfigurationError) post({type:'error',message:'audio packets arrived before the decoder was configured'});
+    return;
+  }
+  if (mpeghSeek.originMs > 0) seekPackets.setOrigin(mpeghSeek.originMs);
+  decoder.discardBeforeSeconds = seekPackets.localDiscardBeforeSeconds;
+  for (const au of packet.frames) decoder.push(au);
+  drainFrames();
 }
 
 async function processDecodedFrames(): Promise<void> {
   for (const frame of decodedFrames.splice(0)) {
-    const end = frame.samplePos + (frame.channels[0]?.length ?? 0);
-    if (end <= seekTargetSample) continue;
     const output = outputSampleRate && frame.sampleRate !== outputSampleRate
       ? await (resampler ??= new AlacResampler(outputSampleRate)).push(frame)
       : frame;
@@ -106,9 +127,15 @@ async function processDecodedFrames(): Promise<void> {
 }
 
 function acceptDecodedFrame(frame: DecodedFrameData): void {
-  // Skip frames before the seek target.
-  const end = frame.samplePos + (frame.channels[0]?.length ?? 0);
-  if (end <= seekTargetSample) return;
+  if (frame.discardedSamples) {
+    // Keep object history, but never resample, batch or transfer discarded PCM.
+    const ratio = (outputSampleRate ?? frame.sampleRate) / frame.sampleRate;
+    seekGate.remember(ratio === 1 ? frame : {...frame,
+      sampleRate: outputSampleRate!, samplePos: Math.round(frame.samplePos * ratio),
+      events: frame.events.map(event => ({...event, samplePos: Math.round(event.samplePos * ratio), rampDuration: Math.round(event.rampDuration * ratio)})),
+    });
+    return;
+  }
   if (outputSampleRate && frame.sampleRate !== outputSampleRate) {
     decodedFrames.push(frame);
     return;
@@ -128,19 +155,25 @@ self.onmessage = (e: MessageEvent) => {
 async function handleMessage(e: MessageEvent): Promise<void> {
   const msg = e.data;
   try {
+    if (msg.type === "open") epoch=msg.epoch ?? 0;
+    else if (msg.type !== "init" && (msg.epoch ?? 0) !== epoch) return;
     switch (msg.type) {
     case "init": {
       await initCore();
-      self.postMessage({ type: "ready" });
+      post({ type: "ready" });
       break;
     }
     case "open": {
+      seekGate = new SeekFrameGate(msg.seekSeconds ?? 0);
+      seekPackets = new SeekPacketGate(msg.seekSeconds ?? 0);
+      mpeghSeek = new MpeghSeekPackets(msg.seekSeconds ?? 0);
       decoder?.free();
       resampler?.destroy();
       resampler = null;
       decodedFrames = [];
       outputSampleRate = msg.outputSampleRate;
       bwfMetadata = msg.bwfMetadata;
+      pcmStartSample = msg.startSample ?? 0;
       frameBatcher = new FrameBatcher(postFrame);
       loudnessMeter = null;
       loudnessPostCounter = 0;
@@ -154,29 +187,18 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       lastObjectTargets.clear();
       break;
     }
-    case "seek": {
-      // Reset decoder/demuxer state and skip frames until the target sample.
-      seekTargetSample = msg.sample ?? 0;
-      decoder?.flush();
-      decodedFrames = [];
-      lastObjectTargets.clear();
-      if (resampler) { resampler.destroy(); resampler = null; }
-      loudnessMeter = null;
-      loudnessPostCounter = 0;
-      self.postMessage({ type: "seeked", sample: seekTargetSample });
-      break;
-    }
     case "flush": {
       if (sniffPrefix.length) throw new Error("Truncated media header");
       demuxer?.flush();
+      for (const packet of mpeghSeek.flush()) decodePacket(packet);
       decoder?.flush();
       drainFrames();
       await processDecodedFrames();
       const tail = resampler?.finish();
       if (tail) frameBatcher.push(tail);
       frameBatcher.flush();
-      if (loudnessMeter) self.postMessage({ type: "loudness-complete", loudness: loudnessMeter.integrated() });
-      self.postMessage({ type: "flushed" });
+      if (loudnessMeter) post({ type: "loudness-complete", loudness: loudnessMeter.integrated() });
+      post({ type: "flushed" });
       break;
     }
     case "push": {
@@ -189,7 +211,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
         }
         if (chunk.length < 16) {
           sniffPrefix = chunk;
-          self.postMessage({type: "push-ack", sequence: msg.sequence});
+          post({type: "push-ack", sequence: msg.sequence});
           break;
         }
         const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
@@ -198,6 +220,8 @@ async function handleMessage(e: MessageEvent): Promise<void> {
         if(kind === "raw" && isIamf(chunk)) {await initIamf();decoder?.free();decoder=new IamfDecoder();}
         demuxer = createDemuxer(kind, {
           onTrack: (t) => {
+            seekPackets.configure(t.container, t.codec, t.sampleRate, outputSampleRate);
+            mpeghSeek.configure(t.container, t.codec);
             if(t.codec === "mha1" || t.codec === "mhm1") {
               decoder?.free();decoder=new MpeghDecoder(t.codec === "mha1",t.decoderConfig,measureMpeghReference,true);
               decoderConfigurationError=null;
@@ -229,39 +253,34 @@ async function handleMessage(e: MessageEvent): Promise<void> {
                 decoder?.free();
                 decoder = null;
                 decoderConfigurationError = error instanceof Error ? error.message : String(error);
-                self.postMessage({ type: "error", message: decoderConfigurationError });
+                post({ type: "error", message: decoderConfigurationError });
               }
             }
-            self.postMessage(
+            post(
               { type: "track", track: t },
               t.coverArt ? [t.coverArt.bytes.buffer] : [],
             );
           },
           onPacket: (p) => {
-            if (!decoder) {
-              if (!decoderConfigurationError) self.postMessage({ type: "error", message: "audio packets arrived before the decoder was configured" });
-              return;
-            }
-            for (const au of p.frames) decoder.push(au);
-            drainFrames();
+            for (const packet of mpeghSeek.accept(p)) decodePacket(packet);
           },
-          onError: (m) => self.postMessage({ type: "error", message: m }),
+          onError: (m) => post({ type: "error", message: m }),
           onPcmFrame: acceptDecodedFrame,
-          onBinauralMetadata: (metadata: BinauralRenderMetadata) => self.postMessage({ type: "binaural-metadata", metadata }),
-        }, bwfMetadata);
+          onBinauralMetadata: (metadata: BinauralRenderMetadata) => post({ type: "binaural-metadata", metadata }),
+        }, bwfMetadata, pcmStartSample);
       }
       demuxer.push(chunk);
       drainFrames();
       await processDecodedFrames();
       frameBatcher.flush();
-      self.postMessage({ type: "push-ack", sequence: msg.sequence });
+      post({ type: "push-ack", sequence: msg.sequence });
       break;
     }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    self.postMessage({ type: "error", message });
-    if (msg.type === "push") self.postMessage({ type: "push-ack", sequence: msg.sequence, error: message });
+    post({ type: "error", message });
+    if (msg.type === "push") post({ type: "push-ack", sequence: msg.sequence, error: message });
   }
 }
 

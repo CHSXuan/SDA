@@ -476,6 +476,7 @@ export function App() {
   const coverUrlRef = useRef<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const lastSourceRef = useRef<PlaybackSource | null>(null);
+  const seekRequestRef = useRef(0);
   /** 静音推送回调用的最新对象列表（避免闭包拿旧 state）。 */
   const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
@@ -714,6 +715,8 @@ export function App() {
             reset: async (origin) => {
               if (!ownsNativeSession()) return;
               await enqueueNative(`reset ${origin}`, () => desktop.nativeRendererReset?.(origin));
+              nativeSourceAcks.clear();
+              nativeSourceDeclarations.clear();
             },
             setHeadPose: (pose) => {
               if (ownsNativeSession()) void enqueueNative("headPose", () => desktop.nativeRendererPose?.(pose.orientation)).catch((error) => {
@@ -894,6 +897,7 @@ export function App() {
             setSeeking(false);
           }
         },
+        onSeekBuffered: () => { if (isCurrent()) setSeeking(false); },
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         denseBinauralObjects: readBinauralHead() === "ku100" && readDenseBinauralObjects(),
@@ -1305,6 +1309,7 @@ export function App() {
 
   const play = useCallback(
     async (source: PlaybackSource) => {
+      const feedRequest = ++seekRequestRef.current;
       const request = ++playRequestRef.current;
       // Claim playback before any await. The preload can synchronously drain a
       // burst of open-file events, and every later append must see this request
@@ -1312,6 +1317,7 @@ export function App() {
       playingRef.current = true;
       setPlaying(true);
       setSeeking(false);
+      seekTargetRef.current = null;
       nativeSessionEpochRef.current++;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
@@ -1372,7 +1378,7 @@ export function App() {
           // A newer request now owns this player as its outgoing context.
           if (!isCurrent()) return;
         }
-        if (!isCurrent() || playerRef.current !== player) return;
+        if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
         if (source.kind === "file") {
@@ -1385,28 +1391,30 @@ export function App() {
           const opened = await desktop.openPath(source.path);
           source.version = `${opened.size}:${opened.mtimeMs ?? Date.now()}`;
           try {
-            if (!isCurrent() || playerRef.current !== player) return;
+            if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
             const readSlice = desktop.readSlice;
             await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
-            if (!isCurrent() || playerRef.current !== player) return;
+            if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
             for await (const chunk of readAhead(opened.size, FILE_CHUNK_SIZE,
               (offset, length) => readSlice(opened.id, offset, length))) {
-              if (!isCurrent() || playerRef.current !== player) return;
+              if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
               await player.push(chunk);
             }
-            if (isCurrent() && playerRef.current === player) player.end();
+            if (isCurrent() && playerRef.current === player && feedRequest === seekRequestRef.current) player.end();
           } finally {
             await desktop.close(opened.id);
           }
         }
       } catch (e) {
-        if (!isCurrent()) return;
+        if (!isCurrent() || feedRequest !== seekRequestRef.current) return;
         const outgoing = retiringPlayerRef.current;
         retiringPlayerRef.current = null;
         if (outgoing) await outgoing.dispose().catch(() => {});
         setErrors((prev) => [...prev, String(e)]);
         playingRef.current = false;
         setPlaying(false);
+        seekTargetRef.current = null;
+        setSeeking(false);
       }
     },
     [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, binauralLowFrequencyDiagnostic, headphoneProfileId, applyMutes, effectiveMutedIds],
@@ -1759,43 +1767,39 @@ export function App() {
   }, [play]);
 
   const seekTo = useCallback((seconds: number) => {
-    const player = playerRef.current;
-    if (!player) return;
-    // 立即更新 UI，不等 onVisualState 下一帧回调
-    const d = player.durationSeconds();
-    const clamped = Math.max(0, Math.min(seconds, d));
-    setPosition(clamped);
-    seekTargetRef.current = clamped;
-    setSeeking(true);
-    if (d > 0) setDuration(d);
-    const sr = track?.sampleRate ?? 48000;
-    const sample = Math.max(0, Math.round(seconds * sr));
-    void player.seekToSample(sample).then(async (fast) => {
-      if (fast) return;
-      // The streaming demuxer cannot seek — re-push file data from the beginning.
-      const source = currentSourceRef.current;
-      if (!source) return;
-      const desktop = window.sdaDesktop;
-      if (source.kind === "file") {
-        await player.playFile(source.file, "auto");
-      } else if (desktop?.openPath && desktop.readSlice && desktop.close) {
-        const opened = await desktop.openPath(source.path);
+    const source = lastSourceRef.current, player = playerRef.current;
+    if (!source || !player || !Number.isFinite(seconds)) return;
+    const duration = player.durationSeconds();
+    const target = Math.max(0, Math.min(seconds, Math.max(0, duration - 1 / 48000)));
+    const request = ++seekRequestRef.current;
+    const current = () => request === seekRequestRef.current && playerRef.current === player;
+    seekTargetRef.current = target;setPosition(target);setSeeking(true);
+    void (async () => {
+      await player.prepareSeek(target);
+      if (!current()) return;
+      if (source.kind === "file") await player.playFile(source.file, "auto");
+      else {
+        const api=window.sdaDesktop;
+        if (!api?.openPath || !api.readSlice || !api.close) throw Error("桌面文件读取接口不可用");
+        const opened=await api.openPath(source.path);
         try {
-          const readSlice = desktop.readSlice;
-          await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
-          for await (const chunk of readAhead(opened.size, FILE_CHUNK_SIZE,
-            (offset, length) => readSlice(opened.id, offset, length))) {
+          if (!current()) return;
+          const read=(offset:number,length:number)=>api.readSlice!(opened.id,offset,length);
+          const startOffset = await player.openSeekable(read,opened.size,"auto");
+          if (!current()) return;
+          for await (const chunk of readAhead(opened.size,FILE_CHUNK_SIZE,read,startOffset)) {
+            if (!current()) return;
             await player.push(chunk);
           }
-          player.end();
-        } finally {
-          await desktop.close(opened.id);
-        }
+          if (current()) player.end();
+        } finally { await api.close(opened.id); }
       }
-    }).catch((error) => {
-      console.warn("[SDA] seek error:", error);
+    })().catch(error=>{
+      if (!current()) return;
+      setSeeking(false);seekTargetRef.current=null;
+      setErrors(previous=>[...previous,`跳转失败：${String(error)}`]);
     });
-  }, [track?.sampleRate]);
+  }, []);
 
   const openFile = useCallback(async () => {
     const desktop = window.sdaDesktop;

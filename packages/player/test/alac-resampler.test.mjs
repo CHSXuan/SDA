@@ -29,6 +29,14 @@ for(const rate of [44100,88200,96000,192000]){
   }
 }
 const small=await convert(44100,44100,127),large=await convert(44100,44100,4096);
+const shifted=new AlacResampler(48000),start=44100*60+17;
+let cursor=Math.round((start-start%147)*48000/44100);
+for(let offset=0;offset<4410;offset+=441){
+  const result=await shifted.push(frame([new Float32Array(441),new Float32Array(441)],start+offset,44100));
+  if(result){assert.equal(result.samplePos,cursor);cursor+=result.channels[0].length;}
+}
+const tail=shifted.finish();if(tail){assert.equal(tail.samplePos,cursor);cursor+=tail.channels[0].length;}
+assert.equal(cursor,Math.round((start+4410)*48000/44100),'seek SRC must preserve absolute clock and tail');
 assert.ok(Math.max(...small[0].map((x,i)=>Math.abs(x-large[0][i])))<1e-6,"packet boundaries must not reset sinc history");
 const ultrasonic=await convert(96000,96000,4096,30000);
 assert.ok(rms(ultrasonic[0].slice(1024,-1024))<1e-4,"downsampling must reject ultrasonic aliasing");

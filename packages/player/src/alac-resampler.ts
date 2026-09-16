@@ -16,6 +16,18 @@ export class AlacResampler {
     if (!["alac", "pcm", "adm"].includes(frame.codec)) {
       throw new Error(`Native ${this.targetRate} Hz output requires sample-clock conversion for ${frame.codec} ${frame.sampleRate} Hz`);
     }
+    let prefixSamples = 0;
+    if (!this.template) {
+      // Start SRC on the same rational phase as decoding from sample zero.
+      // Rounding an arbitrary seek origin would shift audio by a fraction of
+      // a sample (44.1 -> 48 kHz needs a 147-input-sample phase period).
+      let a = frame.sampleRate, b = this.targetRate;
+      while (b) { const remainder = a % b; a = b; b = remainder; }
+      const period = frame.sampleRate / a;
+      prefixSamples = frame.samplePos % period;
+      this.inputSamples = frame.samplePos;
+      this.outputSamples = Math.round((frame.samplePos - prefixSamples) * this.targetRate / frame.sampleRate);
+    }
     if (frame.samplePos !== this.inputSamples) throw new Error("PCM resampler received a discontinuous input clock");
     if (this.template && (frame.codec !== this.template.codec || frame.sampleRate !== this.template.sampleRate || frame.labels.join() !== this.template.labels.join())) {
       throw new Error("PCM format changed without reopening the resampler");
@@ -32,8 +44,8 @@ export class AlacResampler {
       const samplePos = Math.round(event.samplePos * ratio);
       this.events.push({ ...event, samplePos, rampDuration: Math.round((event.samplePos + event.rampDuration) * ratio) - samplePos });
     }
-    const interleaved = new Float32Array(samples * count);
-    for (let i = 0; i < samples; i++) for (let ch = 0; ch < count; ch++) interleaved[i * count + ch] = frame.channels[ch]![i]!;
+    const interleaved = new Float32Array((prefixSamples + samples) * count);
+    for (let i = 0; i < samples; i++) for (let ch = 0; ch < count; ch++) interleaved[(prefixSamples + i) * count + ch] = frame.channels[ch]![i]!;
     this.inputSamples += samples;
     return this.output(this.converter.full(interleaved));
   }
