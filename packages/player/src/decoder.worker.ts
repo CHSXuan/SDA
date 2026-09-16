@@ -38,6 +38,8 @@ let frameBatcher = new FrameBatcher(postFrame);
 let outputSampleRate: number | undefined;
 let resampler: AlacResampler | null = null;
 let decodedFrames: DecodedFrameData[] = [];
+/** When set, decoded frames before this sample are silently dropped (seek). */
+let seekTargetSample = 0;
 
 function compactObjectEvents(frame: DecodedFrameData): void {
   const objectIds = new Set<number>();
@@ -91,6 +93,8 @@ function drainFrames(): void {
 
 async function processDecodedFrames(): Promise<void> {
   for (const frame of decodedFrames.splice(0)) {
+    const end = frame.samplePos + (frame.channels[0]?.length ?? 0);
+    if (end <= seekTargetSample) continue;
     const output = outputSampleRate && frame.sampleRate !== outputSampleRate
       ? await (resampler ??= new AlacResampler(outputSampleRate)).push(frame)
       : frame;
@@ -102,6 +106,9 @@ async function processDecodedFrames(): Promise<void> {
 }
 
 function acceptDecodedFrame(frame: DecodedFrameData): void {
+  // Skip frames before the seek target.
+  const end = frame.samplePos + (frame.channels[0]?.length ?? 0);
+  if (end <= seekTargetSample) return;
   if (outputSampleRate && frame.sampleRate !== outputSampleRate) {
     decodedFrames.push(frame);
     return;
@@ -145,6 +152,18 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       sniffPrefix = new Uint8Array(0);
       demuxer = null; // created on first push, after sniffing
       lastObjectTargets.clear();
+      break;
+    }
+    case "seek": {
+      // Reset decoder/demuxer state and skip frames until the target sample.
+      seekTargetSample = msg.sample ?? 0;
+      decoder?.flush();
+      decodedFrames = [];
+      lastObjectTargets.clear();
+      if (resampler) { resampler.destroy(); resampler = null; }
+      loudnessMeter = null;
+      loudnessPostCounter = 0;
+      self.postMessage({ type: "seeked", sample: seekTargetSample });
       break;
     }
     case "flush": {

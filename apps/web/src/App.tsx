@@ -381,6 +381,9 @@ export function App() {
   }, [speakerMixLocked]);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+  /** seekTo 设置后，阻止 onVisualState 回写旧位置，直到播放恢复。 */
+  const seekTargetRef = useRef<number | null>(null);
+  const [seeking, setSeeking] = useState(false);
   const [debug, setDebug] = useState("");
   const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null);
   /** Internal adaptive state, persisted before future player construction. */
@@ -840,6 +843,9 @@ export function App() {
           // Deliver positions at the player's 30 Hz display cadence. Keep
           // diagnostic text/list work at 5 Hz so it does not compete with 3D.
           const now = performance.now();
+          // Seek 期间：跳过旧位置，由 onPlaybackReady 回调解除锁定。
+          const seekTarget = seekTargetRef.current;
+          if (seekTarget !== null) t = seekTarget;
           if (!playingRef.current || pausedRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 30) {
             lastVisualUiUpdateRef.current = now;
             setObjects(objs);
@@ -879,6 +885,13 @@ export function App() {
           else {
             playingRef.current = false;
             setPlaying(false);
+            setSeeking(false);
+          }
+        },
+        onPlaybackReady: () => {
+          if (isCurrent()) {
+            seekTargetRef.current = null;
+            setSeeking(false);
           }
         },
       }, {
@@ -1298,6 +1311,7 @@ export function App() {
       // as active instead of constructing another player/session.
       playingRef.current = true;
       setPlaying(true);
+      setSeeking(false);
       nativeSessionEpochRef.current++;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
@@ -1744,6 +1758,45 @@ export function App() {
     if (source) void play(source);
   }, [play]);
 
+  const seekTo = useCallback((seconds: number) => {
+    const player = playerRef.current;
+    if (!player) return;
+    // 立即更新 UI，不等 onVisualState 下一帧回调
+    const d = player.durationSeconds();
+    const clamped = Math.max(0, Math.min(seconds, d));
+    setPosition(clamped);
+    seekTargetRef.current = clamped;
+    setSeeking(true);
+    if (d > 0) setDuration(d);
+    const sr = track?.sampleRate ?? 48000;
+    const sample = Math.max(0, Math.round(seconds * sr));
+    void player.seekToSample(sample).then(async (fast) => {
+      if (fast) return;
+      // The streaming demuxer cannot seek — re-push file data from the beginning.
+      const source = currentSourceRef.current;
+      if (!source) return;
+      const desktop = window.sdaDesktop;
+      if (source.kind === "file") {
+        await player.playFile(source.file, "auto");
+      } else if (desktop?.openPath && desktop.readSlice && desktop.close) {
+        const opened = await desktop.openPath(source.path);
+        try {
+          const readSlice = desktop.readSlice;
+          await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
+          for await (const chunk of readAhead(opened.size, FILE_CHUNK_SIZE,
+            (offset, length) => readSlice(opened.id, offset, length))) {
+            await player.push(chunk);
+          }
+          player.end();
+        } finally {
+          await desktop.close(opened.id);
+        }
+      }
+    }).catch((error) => {
+      console.warn("[SDA] seek error:", error);
+    });
+  }, [track?.sampleRate]);
+
   const openFile = useCallback(async () => {
     const desktop = window.sdaDesktop;
     if (desktop?.browseMedia) { setMediaPicker("files"); return; }
@@ -1799,6 +1852,7 @@ export function App() {
       pausedRef.current = false;
       setPlaying(false);
       setPaused(false);
+      setSeeking(false);
     }
   }, []);
 
@@ -1820,6 +1874,7 @@ export function App() {
     pausedRef.current = false;
     setPlaying(false);
     setPaused(false);
+    setSeeking(false);
   }, []);
 
   const layoutOptions = [
@@ -2232,6 +2287,8 @@ export function App() {
             playlistOpen={miniPlaylistOpen}
             onTogglePlaylist={() => {setMiniPlaylistOpen(open=>!open);setFloatPanel(current=>current==="playlist"?null:current);}}
             onReplay={()=>void claimPlayback("local").then(replay).catch(error=>setErrors(prev=>[...prev,String(error)]))}
+            onSeek={seekTo}
+            seeking={seeking}
             onVolume={changeVolume}
           >
             <PlaylistPanel embedded playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={id=>void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]))} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setMiniPlaylistOpen(false)}/>

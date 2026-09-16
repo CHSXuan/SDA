@@ -109,6 +109,10 @@ html[data-platform="darwin"][data-fullscreen="true"] .float-panel,
 html[data-platform="darwin"][data-fullscreen="true"] .room-lab,
 html[data-platform="darwin"][data-fullscreen="true"] .cinema-panel,
 html[data-platform="darwin"][data-fullscreen="true"] .head-tracking-panel { top: 88px; }
+/* macOS: transparent drag bar over the traffic-light area. */
+.mac-drag-bar { position: fixed; top: 0; left: 78px; right: 0; height: 34px; -webkit-app-region: drag; z-index: 9999; }
+html[data-fullscreen="true"] .mac-drag-bar { display: none; }
+/* Windows / Linux: custom frameless title bar. */
 .window-titlebar { height: 32px; flex: 0 0 32px; display: flex; align-items: center; justify-content: space-between; background: var(--panel); -webkit-app-region: drag; user-select: none; }
 .window-caption { padding-left: 20px; font-size: 11px; color: var(--dim); }
 .window-actions { display: flex; height: 32px; -webkit-app-region: no-drag; }
