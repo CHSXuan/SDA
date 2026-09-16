@@ -137,6 +137,7 @@ declare global {
       windowControl?: (action: "minimize" | "maximize" | "close") => Promise<void>;
       getWindowMaximized?: () => Promise<boolean>;
       onWindowMaximized?: (callback: (maximized: boolean) => void) => () => void;
+      onWindowFullscreen?: (callback: (fullscreen: boolean) => void) => () => void;
       rendererMode: string;
       getOutputLatencySeconds?: () => 0.1 | 0.2 | 0.3;
       setOutputLatencySeconds?: (seconds: 0.1 | 0.2 | 0.3) => boolean;

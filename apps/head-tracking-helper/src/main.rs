@@ -1,53 +1,84 @@
-mod orientation;
 mod protocol;
+
+#[cfg(target_os = "windows")]
+mod orientation;
+#[cfg(target_os = "windows")]
 mod windows_transport;
+
+#[cfg(not(target_os = "windows"))]
+mod macos_transport;
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "windows")]
+use std::time::Instant;
 
-use orientation::HeadOrientation;
 use protocol::{Command, CommandType, ErrorMessage, Hello, PROTOCOL_VERSION, Pose, Status};
 use serde::Serialize;
+
+#[cfg(not(target_os = "windows"))]
+use macos_transport::HeadphoneMotionTracker;
+
+#[cfg(target_os = "windows")]
+use orientation::HeadOrientation;
+#[cfg(target_os = "windows")]
 use windows_transport::L2capSocket;
 
+// ── Windows BLE AACP constants ───────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
 const HANDSHAKE: &[u8] = &[
     0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const SET_SPECIFIC_FEATURES: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x4d, 0x00, 0xd7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const REQUEST_NOTIFICATIONS: &[u8] = &[0x04, 0x00, 0x04, 0x00, 0x0f, 0x00, 0xff, 0xff, 0xff, 0xff];
+#[cfg(target_os = "windows")]
 const CLAIM_OWNERSHIP: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x06, 0x01, 0x00, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const RELEASE_OWNERSHIP: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const START_HEAD_TRACKING_ALTERNATE: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00, 0x0f, 0x00, 0x08, 0x73, 0x42, 0x0b,
     0x08, 0x10, 0x10, 0x02, 0x1a, 0x05, 0x01, 0x40, 0x9c, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const START_HEAD_TRACKING_STANDARD: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x08, 0xa1, 0x02, 0x42,
     0x0b, 0x08, 0x0e, 0x10, 0x02, 0x1a, 0x05, 0x01, 0x40, 0x9c, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const STOP_HEAD_TRACKING_ALTERNATE: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00, 0x0f, 0x00, 0x08, 0x75, 0x42, 0x0b,
     0x08, 0x10, 0x10, 0x02, 0x1a, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const STOP_HEAD_TRACKING_STANDARD: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00, 0x11, 0x00, 0x08, 0x7e, 0x10, 0x02,
     0x42, 0x0b, 0x08, 0x4e, 0x10, 0x02, 0x1a, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00,
 ];
+#[cfg(target_os = "windows")]
 const START_HEAD_TRACKING_PACKETS: [&[u8]; 2] =
     [START_HEAD_TRACKING_ALTERNATE, START_HEAD_TRACKING_STANDARD];
+#[cfg(target_os = "windows")]
 const STOP_HEAD_TRACKING_PACKETS: [&[u8]; 2] =
     [STOP_HEAD_TRACKING_ALTERNATE, STOP_HEAD_TRACKING_STANDARD];
+#[cfg(target_os = "windows")]
 const MOTION_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "windows")]
 const MOTION_RECOVERY_ATTEMPTS: u8 = 3;
+#[cfg(target_os = "windows")]
 const TAKEOVER_SOURCE_GRACE: Duration = Duration::from_secs(10);
+#[cfg(target_os = "windows")]
 const LOCAL_AUDIO_SOURCE_TYPE: u8 = 2;
 
 enum Control {
@@ -77,11 +108,17 @@ fn run() -> Result<(), String> {
     }
     let session = start.session;
 
+    let source = if cfg!(target_os = "windows") {
+        "windows-airpods-experimental"
+    } else {
+        "macos-airpods"
+    };
+
     emit(&Hello {
         kind: "hello",
         protocol: PROTOCOL_VERSION,
         session: &session,
-        source: "windows-airpods-experimental",
+        source,
         coordinate_system: "sda-adm-right-forward-up",
         orientation: "head-to-world-quaternion",
     })?;
@@ -114,16 +151,116 @@ fn run() -> Result<(), String> {
     tracking_loop(&session, control_rx)
 }
 
+// ── macOS CoreMotion tracking ────────────────────────────────────────────────
+
+#[cfg(not(target_os = "windows"))]
+fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), String> {
+    let mut sequence = 0_u64;
+
+    loop {
+        match poll_control(&controls, session)? {
+            ControlAction::Stop => return Ok(()),
+            ControlAction::Takeover => {} // macOS does not need BLE takeover
+            ControlAction::Continue => {}
+        }
+        emit_status(session, "disconnected", "正在检查 AirPods motion 传感器")?;
+
+        let tracker = match HeadphoneMotionTracker::connect() {
+            Ok(tracker) => tracker,
+            Err(error) => {
+                eprintln!("AirPods transport: {error}");
+                emit_status(session, "unavailable", &macos_public_error(&error))?;
+                if wait_for_retry(&controls, session)? {
+                    return Ok(());
+                }
+                continue;
+            }
+        };
+
+        emit_status(
+            session,
+            "connected",
+            "macOS AirPods motion 已连接，等待姿态数据",
+        )?;
+
+        let disconnected = loop {
+            match poll_control(&controls, session)? {
+                ControlAction::Stop => return Ok(()),
+                ControlAction::Takeover => {}
+                ControlAction::Continue => {}
+            }
+
+            if !tracker.is_connected() {
+                break "AirPods 已断开连接".to_string();
+            }
+
+            match tracker.next_orientation() {
+                Some(orientation) => {
+                    sequence = sequence.saturating_add(1);
+                    emit(&Pose {
+                        kind: "pose",
+                        protocol: PROTOCOL_VERSION,
+                        session,
+                        seq: sequence,
+                        timestamp_ms: unix_time_ms(),
+                        orientation,
+                    })?;
+                    // First pose received — update status.
+                    if sequence == 1 {
+                        emit_status(
+                            session,
+                            "connected",
+                            "AirPods head tracking active (CoreMotion)",
+                        )?;
+                    }
+                }
+                None => {
+                    // Timeout — check connection and retry if needed.
+                    if !tracker.is_active() && tracker.is_connected() {
+                        // Motion updates stopped but device is still connected.
+                        // This can happen when another app takes over.
+                        break "AirPods motion 数据已停止".to_string();
+                    }
+                }
+            }
+        };
+
+        eprintln!("AirPods transport: {disconnected}");
+        emit_status(
+            session,
+            "disconnected",
+            &macos_public_error(&disconnected),
+        )?;
+        if wait_for_retry(&controls, session)? {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn macos_public_error(error: &str) -> &str {
+    if error.contains("not available") {
+        "此 Mac 不支持 AirPods motion 传感器"
+    } else if error.contains("断开") {
+        "AirPods 已断开，等待重新连接"
+    } else if error.contains("停止") {
+        "AirPods motion 数据已停止，正在重试"
+    } else {
+        "AirPods motion 暂不可用，正在重试"
+    }
+}
+
+// ── Windows BLE AACP tracking ────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
 fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), String> {
     let mut orientation = HeadOrientation::default();
     let mut sequence = 0_u64;
     let mut takeover_pending = false;
-    // SDA_HEAD_TRACKING_DEBUG=1: per-frame raw sensor state on stderr,
-    // forwarded to the Electron console by the desktop shell in dev.
     let debug_frames = std::env::var("SDA_HEAD_TRACKING_DEBUG").map(|v| v == "1").unwrap_or(false);
 
     loop {
-        match poll_control(&controls, &mut orientation, session)? {
+        match poll_control(&controls, session)? {
             ControlAction::Stop => return Ok(()),
             ControlAction::Takeover => takeover_pending = true,
             ControlAction::Continue => {}
@@ -134,8 +271,8 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             Ok(socket) => socket,
             Err(error) => {
                 eprintln!("AirPods transport: {error}");
-                emit_status(session, "unavailable", public_connection_error(&error))?;
-                if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
+                emit_status(session, "unavailable", windows_public_connection_error(&error))?;
+                if wait_for_retry(&controls, session)? {
                     return Ok(());
                 }
                 continue;
@@ -144,8 +281,8 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
 
         if let Err(error) = initialize_aacp(&socket) {
             eprintln!("AirPods transport: {error}");
-            emit_status(session, "disconnected", public_connection_error(&error))?;
-            if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
+            emit_status(session, "disconnected", windows_public_connection_error(&error))?;
+            if wait_for_retry(&controls, session)? {
                 return Ok(());
             }
             continue;
@@ -153,8 +290,8 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         let mut head_tracking_packet_index = 0_usize;
         if let Err(error) = recover_motion_stream(&socket, head_tracking_packet_index) {
             eprintln!("AirPods transport: initial motion claim failed: {error}");
-            emit_status(session, "disconnected", public_connection_error(&error))?;
-            if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
+            emit_status(session, "disconnected", windows_public_connection_error(&error))?;
+            if wait_for_retry(&controls, session)? {
                 return Ok(());
             }
             continue;
@@ -170,10 +307,6 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         let mut received_packets = 0_u64;
         let mut last_motion_at = Instant::now();
         let mut recovery_attempts = 0_u8;
-        // AirPods only reports audio-source changes, not necessarily the current
-        // source when AACP reconnects. Treat the local endpoint as current until
-        // a real notification says otherwise so an Electron restart can reclaim
-        // motion without requiring an audio handoff first.
         let mut audio_source = Some(inferred_local_audio_source(socket.local_address()));
         let mut local_media_confirmed = false;
         let mut connected_devices = Vec::new();
@@ -181,7 +314,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         let mut takeover_grace_until = None;
         let mut motion_was_active = false;
         let disconnected = loop {
-            match poll_control(&controls, &mut orientation, session)? {
+            match poll_control(&controls, session)? {
                 ControlAction::Stop => {
                     let _ = stop_motion_stream(&socket);
                     return Ok(());
@@ -361,9 +494,6 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     if let Some(value) = orientation.process_packet(&packet[..length]) {
                         sequence = sequence.saturating_add(1);
                         if debug_frames {
-                            // Every 10th frame also dumps the raw motion frame
-                            // so the field layout can be verified against the
-                            // parsed values during a calibration gesture.
                             let dump_hex = sequence % 10 == 0;
                             let mut hex = String::new();
                             if dump_hex {
@@ -446,14 +576,17 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         emit_status(
             session,
             "disconnected",
-            public_connection_error(&disconnected),
+            windows_public_connection_error(&disconnected),
         )?;
-        if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
+        if wait_for_retry(&controls, session)? {
             return Ok(());
         }
     }
 }
 
+// ── Windows helpers ──────────────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
 fn initialize_aacp(socket: &L2capSocket) -> Result<(), String> {
     socket.send_packet(HANDSHAKE)?;
     thread::sleep(Duration::from_millis(300));
@@ -462,9 +595,8 @@ fn initialize_aacp(socket: &L2capSocket) -> Result<(), String> {
     socket.send_packet(REQUEST_NOTIFICATIONS)
 }
 
+#[cfg(target_os = "windows")]
 fn recover_motion_stream(socket: &L2capSocket, packet_index: usize) -> Result<(), String> {
-    // Head-tracking state is global to the buds and can survive an audio handoff.
-    // Clear either LibrePods packet variant before claiming the new local session.
     for packet in STOP_HEAD_TRACKING_PACKETS {
         socket.send_packet(packet)?;
         thread::sleep(Duration::from_millis(50));
@@ -474,6 +606,7 @@ fn recover_motion_stream(socket: &L2capSocket, packet_index: usize) -> Result<()
     socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
 }
 
+#[cfg(target_os = "windows")]
 fn force_reclaim_entire_connection(
     socket: &L2capSocket,
     packet_index: usize,
@@ -506,6 +639,7 @@ fn force_reclaim_entire_connection(
     socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
 }
 
+#[cfg(target_os = "windows")]
 fn stop_motion_stream(socket: &L2capSocket) -> Result<(), String> {
     for packet in STOP_HEAD_TRACKING_PACKETS {
         socket.send_packet(packet)?;
@@ -514,10 +648,12 @@ fn stop_motion_stream(socket: &L2capSocket) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn inferred_local_audio_source(local_address: u64) -> (u64, u8) {
     (local_address, LOCAL_AUDIO_SOURCE_TYPE)
 }
 
+#[cfg(target_os = "windows")]
 fn parse_connected_devices(packet: &[u8]) -> Option<Vec<u64>> {
     let start = packet
         .windows(9)
@@ -536,6 +672,7 @@ fn parse_connected_devices(packet: &[u8]) -> Option<Vec<u64>> {
     )
 }
 
+#[cfg(target_os = "windows")]
 fn smart_routing_hijack_packet(target_address: u64) -> Vec<u8> {
     let mut packet = vec![0x04, 0x00, 0x04, 0x00, 0x10, 0x00];
     packet.extend_from_slice(&target_address.to_le_bytes()[..6]);
@@ -556,6 +693,7 @@ fn smart_routing_hijack_packet(target_address: u64) -> Vec<u8> {
     packet
 }
 
+#[cfg(target_os = "windows")]
 fn smart_routing_media_information_packet(local_address: u64, target_address: u64) -> Vec<u8> {
     let mut packet = vec![0x04, 0x00, 0x04, 0x00, 0x10, 0x00];
     packet.extend_from_slice(&target_address.to_le_bytes()[..6]);
@@ -580,6 +718,7 @@ fn smart_routing_media_information_packet(local_address: u64, target_address: u6
     packet
 }
 
+#[cfg(target_os = "windows")]
 fn smart_routing_show_ui_packet(target_address: u64) -> Vec<u8> {
     let mut packet = vec![0x04, 0x00, 0x04, 0x00, 0x10, 0x00];
     packet.extend_from_slice(&target_address.to_le_bytes()[..6]);
@@ -600,6 +739,7 @@ fn smart_routing_show_ui_packet(target_address: u64) -> Vec<u8> {
     packet
 }
 
+#[cfg(target_os = "windows")]
 fn format_bluetooth_address(address: u64) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -612,6 +752,7 @@ fn format_bluetooth_address(address: u64) -> String {
     )
 }
 
+#[cfg(target_os = "windows")]
 fn parse_audio_source(packet: &[u8]) -> Option<(u64, u8)> {
     packet.windows(13).find_map(|frame| {
         if frame[..6] != [0x04, 0x00, 0x04, 0x00, 0x0e, 0x00] {
@@ -627,13 +768,17 @@ fn parse_audio_source(packet: &[u8]) -> Option<(u64, u8)> {
     })
 }
 
+#[cfg(target_os = "windows")]
 fn is_local_media_source(source: Option<(u64, u8)>, local_address: u64) -> bool {
     matches!(source, Some((address, 0x02)) if address == local_address)
 }
 
+#[cfg(target_os = "windows")]
 fn is_remote_media_source(source: Option<(u64, u8)>, local_address: u64) -> bool {
     matches!(source, Some((address, 0x01 | 0x02)) if address != local_address)
 }
+
+// ── Shared control logic ─────────────────────────────────────────────────────
 
 enum ControlAction {
     Continue,
@@ -643,7 +788,6 @@ enum ControlAction {
 
 fn poll_control(
     controls: &Receiver<Control>,
-    _orientation: &mut HeadOrientation,
     session: &str,
 ) -> Result<ControlAction, String> {
     loop {
@@ -668,6 +812,7 @@ fn poll_control(
     }
 }
 
+#[cfg(target_os = "windows")]
 fn wait_for_retry(
     controls: &Receiver<Control>,
     orientation: &mut HeadOrientation,
@@ -675,7 +820,7 @@ fn wait_for_retry(
     takeover_pending: &mut bool,
 ) -> Result<bool, String> {
     for _ in 0..15 {
-        match poll_control(controls, orientation, session)? {
+        match poll_control(controls, session)? {
             ControlAction::Stop => return Ok(true),
             ControlAction::Takeover => *takeover_pending = true,
             ControlAction::Continue => {}
@@ -685,7 +830,24 @@ fn wait_for_retry(
     Ok(false)
 }
 
-fn public_connection_error(error: &str) -> &str {
+#[cfg(not(target_os = "windows"))]
+fn wait_for_retry(
+    controls: &Receiver<Control>,
+    session: &str,
+) -> Result<bool, String> {
+    for _ in 0..15 {
+        match poll_control(controls, session)? {
+            ControlAction::Stop => return Ok(true),
+            ControlAction::Takeover => {}
+            ControlAction::Continue => {}
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_public_connection_error(error: &str) -> &str {
     if error.contains("no paired AirPods") {
         "未找到已配对的 AirPods，请先在 Windows 设置中配对"
     } else if error.contains("no paired Bluetooth") {
@@ -705,6 +867,7 @@ fn public_connection_error(error: &str) -> &str {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn motion_stream_timed_out(last_motion_at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(last_motion_at) >= MOTION_IDLE_TIMEOUT
 }
@@ -738,8 +901,10 @@ fn unix_time_ms() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
     use super::*;
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn motion_watchdog_reopens_a_stalled_channel() {
         let started = Instant::now();
@@ -753,6 +918,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn cycles_both_librepods_head_tracking_packet_variants() {
         assert_eq!(START_HEAD_TRACKING_PACKETS.len(), 2);
@@ -764,6 +930,7 @@ mod tests {
         assert_ne!(STOP_HEAD_TRACKING_PACKETS[0], STOP_HEAD_TRACKING_PACKETS[1]);
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn parses_coalesced_audio_source_and_matches_only_local_media() {
         let mut packet = vec![0xaa, 0xbb];
@@ -788,6 +955,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn reconnect_bootstraps_motion_without_an_audio_source_notification() {
         let local_address = 0xe45e_373b_6ec3;
@@ -798,6 +966,7 @@ mod tests {
         assert!(!is_local_media_source(source, local_address));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn parses_connected_devices_for_smart_routing_takeover() {
         let mut packet = vec![0xaa, 0xbb];
@@ -816,6 +985,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn builds_librepods_hijack_v2_packet_for_remote_device() {
         let packet = smart_routing_hijack_packet(0x90ec_ea16_dcee);

@@ -5,11 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const renderer = join(root, "apps", "native-renderer");
-
-if (process.platform !== "win32") {
-  console.log("Native renderer: skipped on non-Windows host");
-  process.exit(0);
-}
+const isWindows = process.platform === "win32";
+const exeSuffix = isWindows ? ".exe" : "";
+const exeName = `sda-native-renderer${exeSuffix}`;
+const targetName = `SdaNativeRenderer${exeSuffix}`;
 
 await new Promise((resolveRun, reject) => {
   const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline"], {
@@ -23,9 +22,13 @@ await new Promise((resolveRun, reject) => {
 
 const destination = join(root, "apps", "desktop", "native-renderer");
 await mkdir(destination, { recursive: true });
-const source = join(renderer, "target", "release", "sda-native-renderer.exe");
-const target = join(destination, "SdaNativeRenderer.exe");
+const source = join(renderer, "target", "release", exeName);
+const target = join(destination, targetName);
 await copyFile(source, target);
+if (!isWindows) {
+  const { chmod } = await import("node:fs/promises");
+  await chmod(target, 0o755);
+}
 const hrtfDestination = join(destination, "hrtf-assets");
 await rm(hrtfDestination, { recursive: true, force: true });
 await mkdir(hrtfDestination, { recursive: true });

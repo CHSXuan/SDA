@@ -12,6 +12,15 @@ export class PresentationClock {
     this.running = false;
   }
 
+  /** Initialize clock at a seek target so the first read() returns the target
+   *  position rather than 0, even if the native renderer hasn't reported yet. */
+  init(sample: number): void {
+    this.confirmed = sample;
+    this.reportedAt = performance.now();
+    this.presented = sample;
+    this.running = false;
+  }
+
   read(confirmed: number, now: number, sampleRate: number, running: boolean): number {
     if (confirmed > this.confirmed || running !== this.running) {
       this.confirmed = Math.max(this.confirmed, confirmed);

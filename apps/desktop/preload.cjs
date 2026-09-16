@@ -1,6 +1,20 @@
 /** Preload: expose the minimal file-access bridge to the web build. */
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Mark the platform on <html> so CSS can adapt (e.g. macOS traffic lights).
+// In Electron's preload the document exists but may be a blank shell;
+// guard against a null root and also run on DOMContentLoaded as fallback.
+try { if (document.documentElement) document.documentElement.dataset.platform = process.platform; } catch {}
+document.addEventListener("DOMContentLoaded", () => {
+  document.documentElement.dataset.platform = process.platform;
+  try {
+    const { ipcRenderer } = require("electron");
+    ipcRenderer.on("sda:window-state", (_event, state) => {
+      if (document.documentElement) document.documentElement.dataset.fullscreen = (typeof state === "object" ? !!state.fullscreen : false) ? "true" : "false";
+    });
+  } catch {}
+});
+
 const rendererModeArg = process.argv.find((arg) => arg.startsWith("--sda-electron-renderer="));
 const rendererMode = rendererModeArg?.split("=", 2)[1] ?? "swiftshader";
 const electron3D = rendererMode !== "2d";
@@ -41,7 +55,8 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   importPersonalHrtf: (sourcePath) => ipcRenderer.invoke("sda:import-personal-hrtf", sourcePath),
   windowControl: action => ipcRenderer.invoke("sda:window-control", action),
   getWindowMaximized: () => ipcRenderer.invoke("sda:window-state"),
-  onWindowMaximized: callback => subscribe("sda:window-state", callback),
+  onWindowMaximized: callback => subscribe("sda:window-state", (state) => callback(typeof state === "object" ? state.maximized : state)),
+  onWindowFullscreen: callback => subscribe("sda:window-state", (state) => callback(typeof state === "object" ? !!state.fullscreen : false)),
   rendererMode,
   getOutputLatencySeconds: () => ipcRenderer.sendSync("sda:get-output-latency-seconds"),
   setOutputLatencySeconds: (seconds) => ipcRenderer.sendSync("sda:set-output-latency-seconds", seconds),

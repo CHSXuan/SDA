@@ -94,6 +94,25 @@
 .app, .app * { letter-spacing: 0; }
 .app { --rail: 76px; --inspector: 410px; --titlebar: 0px; overflow: hidden; }
 .app:has(.window-titlebar) { --titlebar: 32px; }
+/* macOS: native traffic-light buttons sit in the top-left corner (~78 × 34 px).
+   Push header content down and right so the logo + nav sit below the lights. */
+html[data-platform="darwin"] .app > header { padding-left: 20px; padding-top: 34px; height: calc(76px + 34px); flex-basis: calc(76px + 34px); }
+html[data-platform="darwin"] .float-buttons { top: calc(76px + 34px); }
+html[data-platform="darwin"] .float-panel,
+html[data-platform="darwin"] .room-lab,
+html[data-platform="darwin"] .cinema-panel,
+html[data-platform="darwin"] .head-tracking-panel { top: calc(88px + 34px); }
+/* macOS fullscreen: traffic lights are hidden, restore normal header height. */
+html[data-platform="darwin"][data-fullscreen="true"] .app > header { padding-left: 20px; padding-top: 0; height: 76px; flex-basis: 76px; }
+html[data-platform="darwin"][data-fullscreen="true"] .float-buttons { top: 76px; }
+html[data-platform="darwin"][data-fullscreen="true"] .float-panel,
+html[data-platform="darwin"][data-fullscreen="true"] .room-lab,
+html[data-platform="darwin"][data-fullscreen="true"] .cinema-panel,
+html[data-platform="darwin"][data-fullscreen="true"] .head-tracking-panel { top: 88px; }
+/* macOS: transparent drag bar over the traffic-light area. */
+.mac-drag-bar { position: fixed; top: 0; left: 78px; right: 0; height: 34px; -webkit-app-region: drag; z-index: 9999; }
+html[data-fullscreen="true"] .mac-drag-bar { display: none; }
+/* Windows / Linux: custom frameless title bar. */
 .window-titlebar { height: 32px; flex: 0 0 32px; display: flex; align-items: center; justify-content: space-between; background: var(--panel); -webkit-app-region: drag; user-select: none; }
 .window-caption { padding-left: 20px; font-size: 11px; color: var(--dim); }
 .window-actions { display: flex; height: 32px; -webkit-app-region: no-drag; }

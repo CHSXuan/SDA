@@ -93,6 +93,8 @@ const HEAD_TRACKING_TELEMETRY_INTERVAL_MS = 1000 / 30;
 const HEAD_TRACKING_TELEMETRY_HISTORY_MS = 6_000;
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
 const ownedArrayBuffer = (bytes: Uint8Array): ArrayBuffer => Uint8Array.from(bytes).buffer;
+const isMac = typeof navigator !== "undefined"
+  && (/Mac|iPhone|iPad/.test(navigator.userAgent) || document.documentElement?.dataset?.platform === "darwin");
 
 function readOutputLatencySeconds(): OutputLatencySeconds {
   const desktopValue = window.sdaDesktop?.getOutputLatencySeconds?.();
@@ -379,6 +381,9 @@ export function App() {
   }, [speakerMixLocked]);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+  /** seekTo 设置后，阻止 onVisualState 回写旧位置，直到播放恢复。 */
+  const seekTargetRef = useRef<number | null>(null);
+  const [seeking, setSeeking] = useState(false);
   const [debug, setDebug] = useState("");
   const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null);
   /** Internal adaptive state, persisted before future player construction. */
@@ -838,6 +843,9 @@ export function App() {
           // Deliver positions at the player's 30 Hz display cadence. Keep
           // diagnostic text/list work at 5 Hz so it does not compete with 3D.
           const now = performance.now();
+          // Seek 期间：跳过旧位置，由 onPlaybackReady 回调解除锁定。
+          const seekTarget = seekTargetRef.current;
+          if (seekTarget !== null) t = seekTarget;
           if (!playingRef.current || pausedRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 30) {
             lastVisualUiUpdateRef.current = now;
             setObjects(objs);
@@ -877,6 +885,13 @@ export function App() {
           else {
             playingRef.current = false;
             setPlaying(false);
+            setSeeking(false);
+          }
+        },
+        onPlaybackReady: () => {
+          if (isCurrent()) {
+            seekTargetRef.current = null;
+            setSeeking(false);
           }
         },
       }, {
@@ -1296,6 +1311,7 @@ export function App() {
       // as active instead of constructing another player/session.
       playingRef.current = true;
       setPlaying(true);
+      setSeeking(false);
       nativeSessionEpochRef.current++;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
@@ -1742,6 +1758,45 @@ export function App() {
     if (source) void play(source);
   }, [play]);
 
+  const seekTo = useCallback((seconds: number) => {
+    const player = playerRef.current;
+    if (!player) return;
+    // 立即更新 UI，不等 onVisualState 下一帧回调
+    const d = player.durationSeconds();
+    const clamped = Math.max(0, Math.min(seconds, d));
+    setPosition(clamped);
+    seekTargetRef.current = clamped;
+    setSeeking(true);
+    if (d > 0) setDuration(d);
+    const sr = track?.sampleRate ?? 48000;
+    const sample = Math.max(0, Math.round(seconds * sr));
+    void player.seekToSample(sample).then(async (fast) => {
+      if (fast) return;
+      // The streaming demuxer cannot seek — re-push file data from the beginning.
+      const source = currentSourceRef.current;
+      if (!source) return;
+      const desktop = window.sdaDesktop;
+      if (source.kind === "file") {
+        await player.playFile(source.file, "auto");
+      } else if (desktop?.openPath && desktop.readSlice && desktop.close) {
+        const opened = await desktop.openPath(source.path);
+        try {
+          const readSlice = desktop.readSlice;
+          await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
+          for await (const chunk of readAhead(opened.size, FILE_CHUNK_SIZE,
+            (offset, length) => readSlice(opened.id, offset, length))) {
+            await player.push(chunk);
+          }
+          player.end();
+        } finally {
+          await desktop.close(opened.id);
+        }
+      }
+    }).catch((error) => {
+      console.warn("[SDA] seek error:", error);
+    });
+  }, [track?.sampleRate]);
+
   const openFile = useCallback(async () => {
     const desktop = window.sdaDesktop;
     if (desktop?.browseMedia) { setMediaPicker("files"); return; }
@@ -1797,6 +1852,7 @@ export function App() {
       pausedRef.current = false;
       setPlaying(false);
       setPaused(false);
+      setSeeking(false);
     }
   }, []);
 
@@ -1818,6 +1874,7 @@ export function App() {
     pausedRef.current = false;
     setPlaying(false);
     setPaused(false);
+    setSeeking(false);
   }, []);
 
   const layoutOptions = [
@@ -1997,7 +2054,7 @@ export function App() {
           <Select
             value="binaural"
             disabled
-            title="桌面 WASAPI sidecar 当前仅提供固定虚拟扬声器的双耳 HRTF 输出"
+            title={`桌面${isMac ? "CoreAudio" : "WASAPI"}原生渲染器当前仅提供固定虚拟扬声器的双耳 HRTF 输出`}
           >
             <option value="binaural">双耳 (耳机 HRTF)</option>
           </Select>
@@ -2105,7 +2162,7 @@ export function App() {
                     onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
                 </label>
                 <ObjectRenderingStatus direct={directObjectHrtf}/>
-                <label className="settings-switch" title="启动或停止桌面唯一的 Rust/WASAPI 空间输出。停止后桌面不会退回 Web Audio 输出。">
+                <label className="settings-switch" title={`启动或停止桌面唯一的 Rust/${isMac ? "CoreAudio" : "WASAPI"} 空间输出。停止后桌面不会退回 Web Audio 输出。`}>
                   <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <input type="checkbox" role="switch" checked={nativeRendererStatus?.running ?? false}
                     disabled={nativeRendererBusy} aria-label="音频输出" onChange={() => void toggleNativeRenderer()} />
@@ -2169,7 +2226,7 @@ export function App() {
                   通过独立 helper 进程读取已配对 AirPods 的 motion data；不是 Apple Personalized Spatial Audio，不读取配对密钥。相对姿态流存在时变漂移，静止数秒后声像会缓慢回到最近一次重置的朝向（锚定回正）。
                 </p>
                 <p className="settings-description">
-                  Helper：{headTrackingHelper?.usingBundled ? "内置 Windows helper" : headTrackingHelper?.configured ? `外部 ${headTrackingHelper.fileName}` : "未配置"}
+                  Helper：{headTrackingHelper?.usingBundled ? `内置 ${isMac ? "macOS" : "Windows"} helper` : headTrackingHelper?.configured ? `外部 ${headTrackingHelper.fileName}` : "未配置"}
                 </p>
                 <p className="settings-description">
                   状态：{headTrackingStatus?.running ? `运行中（${headTrackingStatus.source}；${headTrackingStatus.detail}）` : headTrackingStatus?.detail ?? "正在读取"}
@@ -2177,7 +2234,7 @@ export function App() {
                 <div className="settings-switch">
                   <span>Helper 来源</span>
                   <div>
-                    <button onClick={() => void selectHeadTrackingHelper()} title="选择其它 Windows AirPods 头追 helper (.exe)">选择外部</button>
+                    <button onClick={() => void selectHeadTrackingHelper()} title={`选择其它${isMac ? "macOS" : "Windows"} AirPods 头追 helper${isMac ? "" : " (.exe)"}`}>选择外部</button>
                     {headTrackingHelper?.bundledAvailable && headTrackingHelper.externalSelected && (
                       <button onClick={() => void useBundledHeadTrackingHelper()} title="恢复使用 SDA 随附的 helper">使用内置</button>
                     )}
@@ -2200,7 +2257,7 @@ export function App() {
                 {headTrackingHelper?.mockAvailable && !headTrackingHelper.configured && (
                   <p className="settings-description">开发模式已启用模拟 yaw 追踪；它不访问 AirPods 或蓝牙硬件。</p>
                 )}
-                <p className="settings-description">请先在 Windows 设置中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
+                <p className="settings-description">请先在{isMac ? " macOS 蓝牙设置" : " Windows 设置"}中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
               </fieldset>
             )}
             </div>
@@ -2230,6 +2287,8 @@ export function App() {
             playlistOpen={miniPlaylistOpen}
             onTogglePlaylist={() => {setMiniPlaylistOpen(open=>!open);setFloatPanel(current=>current==="playlist"?null:current);}}
             onReplay={()=>void claimPlayback("local").then(replay).catch(error=>setErrors(prev=>[...prev,String(error)]))}
+            onSeek={seekTo}
+            seeking={seeking}
             onVolume={changeVolume}
           >
             <PlaylistPanel embedded playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={id=>void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]))} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setMiniPlaylistOpen(false)}/>

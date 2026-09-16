@@ -91,7 +91,13 @@
     "mac": {
       "icon": "assets/icon.png",
       "target": "dmg",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "native-renderer",
+          "to": "native-renderer"
+        }
+      ]
     },
     "beforePack": "./stage-web.cjs"
   },
