@@ -7,6 +7,9 @@ import type {RemoteStatus,RemoteCommand} from "../remote-session";
 import type {OutputDevices} from "./OutputPanel";
 import "./RemotePanel.css";
 
+const isMac = typeof navigator !== "undefined"
+  && (/Mac|iPhone|iPad/.test(navigator.userAgent) || document.documentElement?.dataset?.platform === "darwin");
+
 export default function RemotePanel({status}:{status:RemoteStatus}) {
   const [tab,setTab]=useState("connection");
   const scrollRef=useRef<HTMLDivElement>(null);
@@ -53,7 +56,7 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
       <details className="remote-legacy"><summary>连接旧版 SDA 主机</summary><fieldset className="settings-group" disabled={busy}><legend>原生客户端收听</legend>
         <label>主机配对地址<input aria-label="主机配对地址" autoComplete="off" spellCheck={false} placeholder="粘贴 sda://… 完整地址" value={invite} onChange={e=>setInvite(e.target.value)}/></label>
         <label>收听设备<Select value={deviceId} onChange={e=>setDeviceId(e.target.value)} aria-label="远程收听设备"><option value="">系统默认设备</option>{devices.filter(d=>d.available).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</Select></label>
-        <label>输出方式<Select value={exclusive?"exclusive":"shared"} onChange={e=>setExclusive(e.target.value==="exclusive")} aria-label="远程输出方式"><option value="exclusive">WASAPI 独占 · 推荐</option><option value="shared">WASAPI 共享 · 设备须设为 48 kHz</option></Select></label>
+        <label>输出方式<Select value={exclusive?"exclusive":"shared"} onChange={e=>setExclusive(e.target.value==="exclusive")} aria-label="远程输出方式"><option value="exclusive">{isMac ? "CoreAudio 独占" : "WASAPI 独占"} · 推荐</option><option value="shared">{isMac ? "CoreAudio 共享" : "WASAPI 共享"} · 设备须设为 48 kHz</option></Select></label>
         <button data-button="primary" disabled={!invite.trim()} onClick={()=>void run("join",{invite:invite.trim(),deviceId:deviceId||null,exclusive})}><Headphones size={16}/><span>连接并收听</span></button>
       </fieldset></details>
       <p className="remote-note">接收端可用新版 Chrome、Edge、Firefox 或 Safari，无需安装 SDA。异地使用组网地址，防火墙允许所选 TCP 端口。网页和原生客户端共享你设置的同时连接上限。</p>
@@ -89,7 +92,7 @@ export function RemoteClientView({status}:{status:RemoteStatus}) {
       <div className="remote-options"><label>循环<Select aria-label="远程循环模式" value={state?.playbackMode??"sequence"} disabled={!connected} onChange={e=>void send({action:"playbackMode",value:e.target.value})}><option value="sequence">顺序播放</option><option value="repeat-all">列表循环</option><option value="repeat-one">单曲循环</option></Select></label><label>立体声渲染<Select aria-label="远程立体声渲染" value={state?.stereoMode??"original"} disabled={!connected} onChange={e=>void send({action:"stereoMode",value:e.target.value})}><option value="original">原始立体声</option><option value="dry">双耳渲染</option><option value="room">录音棚房间</option></Select></label></div>
     </div>
     <section className="remote-queue"><h3>主机播放列表 <small>{state?.playlist.length??0} 首</small></h3>{state?.playlist.map((item,i)=><button key={item.id} className={state.currentId===item.id?"active":""} disabled={!connected} onClick={()=>void send({action:"track",value:item.id})}><span>{String(i+1).padStart(2,"0")}</span><strong>{item.title}</strong>{state.currentId===item.id&&<Radio size={16}/>}</button>)}</section>
-    <footer className="remote-client-footer"><div><strong>{status.output?.actualName??"正在打开收听设备"}</strong><small>{status.output?.mode==="exclusive"?"WASAPI 独占":"WASAPI 共享"} · {status.output?.sampleFormat??"48 kHz"} · 缓冲 {Math.round(status.queuedMs)} ms · 已接收 {(status.bytes/1048576).toFixed(1)} MB</small></div><button onClick={()=>void window.sdaDesktop?.remoteSession?.("stop").catch(e=>setError(String(e)))}><Unplug size={16}/><span>断开连接</span></button></footer>
+    <footer className="remote-client-footer"><div><strong>{status.output?.actualName??"正在打开收听设备"}</strong><small>{status.output?.mode==="exclusive"?`${isMac?"CoreAudio":"WASAPI"} 独占`:`${isMac?"CoreAudio":"WASAPI"} 共享`} · {status.output?.sampleFormat??"48 kHz"} · 缓冲 {Math.round(status.queuedMs)} ms · 已接收 {(status.bytes/1048576).toFixed(1)} MB</small></div><button onClick={()=>void window.sdaDesktop?.remoteSession?.("stop").catch(e=>setError(String(e)))}><Unplug size={16}/><span>断开连接</span></button></footer>
     {error&&<p role="alert" className="remote-error">{error}</p>}{pending.size>0&&<small role="status">等待主机应用操作…</small>}
   </div></div>;
 }

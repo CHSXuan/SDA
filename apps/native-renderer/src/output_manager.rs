@@ -1,10 +1,8 @@
-//! WASAPI endpoint lifecycle, isolated from the render worker and its state.
+//! Audio output lifecycle, isolated from the render worker and its state.
+//! Windows: WASAPI exclusive/shared via the `windows` crate.
+//! macOS/Linux: CPAL (CoreAudio/ALSA) callback-driven stream.
 use super::*;
 use std::sync::{OnceLock, mpsc};
-use windows::{
-    Win32::{Devices::Properties::DEVPKEY_Device_FriendlyName, Media::Audio::*, System::Com::*},
-    core::PCWSTR,
-};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -17,8 +15,6 @@ pub struct Settings {
 }
 impl Settings {
     fn normalized(mut self) -> Self {
-        // Remote capture consumes the Windows shared mix. Never allow stale
-        // exclusive or fixed-endpoint preferences to bypass that mix in this mode.
         if self.remote_compatible {
             self.exclusive = false;
             self.device_id = None;
@@ -57,32 +53,7 @@ enum Request {
     Stop,
     Remote(Option<(String,String)>),
 }
-struct ComScope;
-impl ComScope {
-    fn new() -> Result<Self, String> {
-        unsafe {
-            CoInitializeEx(None, COINIT_MULTITHREADED)
-                .ok()
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(Self)
-    }
-}
-impl Drop for ComScope {
-    fn drop(&mut self) {
-        unsafe {
-            CoUninitialize();
-        }
-    }
-}
-struct TimerScope;
-impl Drop for TimerScope {
-    fn drop(&mut self) {
-        unsafe {
-            windows::Win32::Media::timeEndPeriod(1);
-        }
-    }
-}
+
 static CONTROL: OnceLock<mpsc::Sender<Request>> = OnceLock::new();
 pub fn request(settings: Option<Settings>) {
     let settings = settings.map(Settings::normalized);
@@ -112,6 +83,16 @@ pub fn stop() {
         let _ = tx.send(Request::Stop);
     }
 }
+
+// ── Windows WASAPI implementation ───────────────────────────────────────────
+#[cfg(windows)]
+mod platform {
+    use super::*;
+    use windows::{
+        Win32::{Devices::Properties::DEVPKEY_Device_FriendlyName, Media::Audio::*, System::Com::*},
+        core::PCWSTR,
+    };
+
 fn endpoint_id(device: &IMMDevice) -> Result<String, String> {
     unsafe {
         let ptr = device.GetId().map_err(|e| e.to_string())?;
@@ -869,3 +850,409 @@ mod recovery_tests {
         }).unwrap().is_ok());
     }
 }
+
+} // end #[cfg(windows)] mod platform
+
+// ── macOS / Linux CPAL implementation ───────────────────────────────────────
+#[cfg(not(windows))]
+mod platform {
+    use super::*;
+    use super::super::record_callback;
+    use std::sync::{Arc, Mutex};
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    fn list_devices(host: &cpal::Host) -> Vec<Endpoint> {
+        let default_name = host.default_output_device()
+            .and_then(|d| d.name().ok())
+            .unwrap_or_default();
+        let mut endpoints = Vec::new();
+        if let Ok(devices) = host.output_devices() {
+            for device in devices {
+                let name = device.name().unwrap_or_else(|_| "Audio output".into());
+                let is_default = name == default_name;
+                let (sample_rate, channels) = device.default_output_config()
+                    .ok()
+                    .map(|c| (c.sample_rate().0, c.channels()))
+                    .unzip();
+                endpoints.push(Endpoint {
+                    id: name.clone(),
+                    name,
+                    available: true,
+                    is_default,
+                    sample_rate,
+                    channels: Some(channels.unwrap_or(2)),
+                });
+            }
+        }
+        endpoints.sort_by(|a, b| {
+            b.is_default.cmp(&a.is_default)
+                .then(a.name.cmp(&b.name))
+        });
+        endpoints
+    }
+
+    fn status_ready(requested: &Settings, name: &str, rate: u32, channels: u16) -> Status {
+        Status {
+            requested: requested.clone(),
+            actual_id: Some(name.into()),
+            actual_name: Some(name.into()),
+            mode: Some("shared".into()),
+            sample_rate: Some(rate),
+            channels: Some(channels),
+            buffer_ms: None,
+            sample_format: Some("32-bit float".into()),
+            state: "ready".into(),
+            detail: format!("{rate} Hz · {channels}ch · f32"),
+        }
+    }
+
+    fn status_unavailable(requested: &Settings, detail: &str) -> Status {
+        Status {
+            requested: requested.clone(),
+            actual_id: None,
+            actual_name: None,
+            mode: None,
+            sample_rate: None,
+            channels: None,
+            buffer_ms: None,
+            sample_format: None,
+            state: "unavailable".into(),
+            detail: detail.into(),
+        }
+    }
+
+    fn publish(status: Status, devices: Vec<Endpoint>) {
+        write_event(&Event::OutputDevices { status, devices });
+    }
+
+    struct CpalOutput {
+        stream: cpal::Stream,
+        device_name: String,
+        rate: u32,
+        channels: u16,
+        converter: device_output::DeviceOutput,
+        monitor: output_monitor::OutputMonitor,
+        fade: f32,
+        settings: Settings,
+    }
+
+    struct SharedState {
+        fifo: Arc<stereo_fifo::StereoFifo>,
+        telemetry: Arc<RuntimeTelemetry>,
+        converter: Option<device_output::DeviceOutput>,
+        monitor: output_monitor::OutputMonitor,
+        fade: f32,
+        rate: u32,
+        lossless: bool,
+    }
+
+    fn open_device(
+        host: &cpal::Host,
+        settings: &Settings,
+        fifo: Arc<stereo_fifo::StereoFifo>,
+        telemetry: Arc<RuntimeTelemetry>,
+    ) -> Result<CpalOutput, String> {
+        let device = if let Some(id) = &settings.device_id {
+            host.output_devices()
+                .map_err(|e| e.to_string())?
+                .find(|d| d.name().ok().as_deref() == Some(id))
+                .ok_or_else(|| format!("output device not found: {id}"))?
+        } else {
+            host.default_output_device()
+                .ok_or_else(|| "no default output device".to_string())?
+        };
+        let name = device.name().unwrap_or_else(|_| "Audio output".into());
+        let supported = device.default_output_config().map_err(|e| e.to_string())?;
+        let sample_rate = supported.sample_rate().0;
+        let channels = supported.channels();
+        let config = cpal::StreamConfig {
+            channels,
+            sample_rate: cpal::SampleRate(sample_rate),
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let lossless = remote_audio::receiver();
+        let shared = Arc::new(Mutex::new(SharedState {
+            fifo,
+            telemetry,
+            converter: Some(device_output::DeviceOutput::new(sample_rate, STEREO_FIFO_START_FRAMES)),
+            monitor: output_monitor::OutputMonitor::default(),
+            fade: 0.0,
+            rate: sample_rate,
+            lossless,
+        }));
+        let shared_cb = shared.clone();
+        let stream = device.build_output_stream(
+            &config,
+            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                let Ok(mut state) = shared_cb.lock() else { return; };
+                let SharedState { fifo, telemetry, converter, monitor, fade, rate, lossless } = &mut *state;
+                let Some(conv) = converter.as_mut() else {
+                    data.fill(0.0);
+                    return;
+                };
+                // Always acknowledge pending FIFO flushes so the render worker
+                // can proceed after an epoch change, even when output is disabled.
+                fifo.apply_flush_from_consumer();
+                let enabled = telemetry.callback_output_enabled.load(Ordering::Acquire)
+                    && remote_sync::output_allowed();
+                let ch = channels as usize;
+                let sample_pos = telemetry.callback_consumed_sample_pos.load(Ordering::Relaxed);
+                let step = 1.0 / (*rate as f32 * 0.005);
+                let _local_muted = remote_audio::local_muted();
+                let rate_f = *rate;
+                let lossless_flag = *lossless;
+                conv.fill(fifo, enabled, data.len() / ch, |i, frame| {
+                    *fade = if lossless_flag { 1.0 } else {
+                        (*fade + step).min(1.0)
+                    };
+                    monitor.observe(
+                        std::iter::once([frame[0] * *fade, frame[1] * *fade]),
+                        sample_pos + (i as u64 * 48000 / rate_f as u64),
+                        &telemetry.output,
+                    );
+                    for ear in 0..2.min(ch) {
+                        data[i * ch + ear] = frame[ear] * *fade;
+                    }
+                    // Zero extra channels beyond stereo
+                    for c in 2..ch {
+                        data[i * ch + c] = 0.0;
+                    }
+                });
+                let started = Instant::now();
+                let popped = conv.requested_source;
+                record_callback(&telemetry, started, conv.requested_source, popped, enabled);
+            },
+            |err| {
+                eprintln!("[SDA native] output stream error: {err}");
+            },
+            None,
+        ).map_err(|e| format!("failed to build output stream: {e}"))?;
+        stream.play().map_err(|e| format!("failed to start output stream: {e}"))?;
+        Ok(CpalOutput {
+            stream,
+            device_name: name,
+            rate: sample_rate,
+            channels,
+            converter: device_output::DeviceOutput::new(sample_rate, STEREO_FIFO_START_FRAMES),
+            monitor: output_monitor::OutputMonitor::default(),
+            fade: 0.0,
+            settings: settings.clone(),
+        })
+    }
+
+    pub fn run(
+        fifo: Arc<stereo_fifo::StereoFifo>,
+        telemetry: Arc<RuntimeTelemetry>,
+        commands: Arc<render_command::RenderCommandQueue>,
+    ) {
+        let host = cpal::default_host();
+        let (tx, rx) = mpsc::channel();
+        let _ = CONTROL.set(tx.clone());
+        let mut requested: Settings = std::env::var("SDA_OUTPUT_SETTINGS")
+            .ok()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default();
+        requested = requested.normalized();
+        let mut output: Option<CpalOutput> = None;
+        let mut detail = String::new();
+        // Try opening default device
+        match open_device(&host, &requested, fifo.clone(), telemetry.clone()) {
+            Ok(o) => output = Some(o),
+            Err(err) => detail = err,
+        }
+        let mut devices = list_devices(&host);
+        publish(
+            output.as_ref().map_or_else(
+                || status_unavailable(&requested, &detail),
+                |o| status_ready(&requested, &o.device_name, o.rate, o.channels),
+            ),
+            devices.clone(),
+        );
+        write_event(&Event::Ready {
+            protocol: PROTOCOL,
+            sample_rate: 48000,
+            output_channels: 2,
+        });
+        let input_fifo = fifo.clone();
+        let input_t = telemetry.clone();
+        thread::spawn(move || {
+            if remote_audio::receiver() {
+                if let Err(error) = remote_audio::read_receiver(input_fifo, input_t) {
+                    write_event(&Event::Error { detail: error.to_string() });
+                }
+            } else {
+                let _ = protocol::read_frames(&mut io::stdin().lock(), &commands);
+            }
+            stop();
+        });
+        // Device polling thread
+        let tx_poll = tx.clone();
+        thread::spawn(move || {
+            let mut previous = Vec::new();
+            loop {
+                let devices = list_devices(&host);
+                if devices != previous {
+                    previous = devices.clone();
+                    if tx_poll.send(Request::Devices(devices)).is_err() {
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+        let mut remote: Option<remote_audio::HostOutput> = None;
+        let mut remote_selected = false;
+        let mut virtual_tick = Instant::now();
+        let remote_telemetry = RuntimeTelemetry::default();
+        let _ = remote_audio::mirror_fifo();
+        let mut last_retry = Instant::now();
+        loop {
+            let request = rx.recv_timeout(Duration::from_millis(10));
+            match request {
+                Ok(Request::Stop) => break,
+                Ok(Request::Remote(next)) => {
+                    let result = if let Some((address, token)) = next {
+                        remote_audio::HostOutput::connect(&address, &token).map(|sink| {
+                            remote = Some(sink);
+                            remote_selected = true;
+                            remote_audio::HOST_SELECTED.store(true, Ordering::Release);
+                        })
+                    } else {
+                        remote = None;
+                        remote_selected = false;
+                        remote_audio::HOST_SELECTED.store(false, Ordering::Release);
+                        remote_audio::select_mirror(false);
+                        Ok(())
+                    };
+                    let accepted = result.is_ok();
+                    let error = result.err();
+                    write_event(&Event::Ack { command: "setRemoteOutput", accepted, detail: error.as_deref() });
+                    let status = output.as_ref().map_or_else(
+                        || if remote_selected { status_unavailable(&requested, "remote output") }
+                           else { status_unavailable(&requested, &error.unwrap_or_default()) },
+                        |o| status_ready(&requested, &o.device_name, o.rate, o.channels),
+                    );
+                    publish(status, devices.clone());
+                }
+                Ok(Request::List) => {
+                    publish(
+                        output.as_ref().map_or_else(
+                            || status_unavailable(&requested, &detail),
+                            |o| status_ready(&requested, &o.device_name, o.rate, o.channels),
+                        ),
+                        devices.clone(),
+                    );
+                    write_event(&Event::Ack {
+                        command: "listOutputDevices",
+                        accepted: true,
+                        detail: None,
+                    });
+                }
+                Ok(Request::Set(next)) => {
+                    drop(output.take());
+                    match open_device(&cpal::default_host(), &next, fifo.clone(), telemetry.clone()) {
+                        Ok(o) => {
+                            output = Some(o);
+                            requested = next;
+                            detail.clear();
+                        }
+                        Err(err) => {
+                            detail = err;
+                        }
+                    }
+                    let accepted = output.is_some();
+                    publish(
+                        output.as_ref().map_or_else(
+                            || status_unavailable(&requested, &detail),
+                            |o| status_ready(&requested, &o.device_name, o.rate, o.channels),
+                        ),
+                        devices.clone(),
+                    );
+                    write_event(&Event::Ack {
+                        command: "setOutputDevice",
+                        accepted,
+                        detail: if accepted { None } else { Some(&detail) },
+                    });
+                }
+                Ok(Request::Devices(next)) => {
+                    if next != devices {
+                        devices = next;
+                        let wanted = requested.device_id.clone().or_else(|| {
+                            devices.iter().find(|d| d.is_default && d.available).map(|d| d.id.clone())
+                        });
+                        let actual = output.as_ref().map(|o| o.device_name.clone());
+                        if actual != wanted && requested.device_id.is_none() {
+                            drop(output.take());
+                            match open_device(&cpal::default_host(), &requested, fifo.clone(), telemetry.clone()) {
+                                Ok(o) => { output = Some(o); detail.clear(); }
+                                Err(err) => detail = err,
+                            }
+                        }
+                        if output.as_ref().is_some_and(|o| !devices.iter().any(|d| d.id == o.device_name && d.available)) {
+                            drop(output.take());
+                            detail = "selected output device unavailable".into();
+                        }
+                        publish(
+                            output.as_ref().map_or_else(
+                                || status_unavailable(&requested, &detail),
+                                |o| status_ready(&requested, &o.device_name, o.rate, o.channels),
+                            ),
+                            devices.clone(),
+                        );
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                _ => {}
+            }
+            // Remote audio tick
+            let synchronized = remote_sync::ENABLED.load(Ordering::Acquire);
+            remote_audio::select_mirror(remote.is_some() && (output.is_some() || synchronized));
+            if output.is_none() && synchronized {
+                fifo.apply_flush_from_consumer();
+                if virtual_tick.elapsed() >= Duration::from_millis(10) {
+                    let frames = ((virtual_tick.elapsed().as_secs_f64() * 48000.0) as usize).min(4800);
+                    virtual_tick = Instant::now();
+                    if telemetry.callback_output_enabled.load(Ordering::Acquire) && remote_sync::output_allowed() {
+                        let popped = fifo.pop_frames(frames, |_, _| {});
+                        telemetry.callback_consumed_sample_pos.fetch_add(popped as u64, Ordering::Release);
+                    }
+                }
+            } else {
+                virtual_tick = Instant::now();
+            }
+            if let Some(sink) = &mut remote {
+                remote_telemetry.callback_output_enabled.store(
+                    telemetry.callback_output_enabled.load(Ordering::Acquire), Ordering::Release,
+                );
+                let result = if output.is_some() || synchronized {
+                    if !remote_audio::mirror_ready() { Ok(()) }
+                    else if remote_audio::mirror_overflow() { Err("remote receiver overflow".into()) }
+                    else { sink.tick_positioned(remote_audio::mirror_fifo(), &remote_telemetry, remote_audio::mirror_origin()) }
+                } else {
+                    sink.tick(&fifo, &telemetry)
+                };
+                if let Err(error) = result {
+                    remote = None;
+                    remote_selected = false;
+                    remote_audio::HOST_SELECTED.store(false, Ordering::Release);
+                    remote_audio::select_mirror(false);
+                    publish(status_unavailable(&requested, &format!("remote disconnected: {error}")), devices.clone());
+                    write_event(&Event::Error { detail: format!("remote audio: {error}") });
+                }
+            }
+            // Reconnect if output was lost
+            if output.is_none() && last_retry.elapsed() >= Duration::from_secs(1) {
+                last_retry = Instant::now();
+                if let Ok(o) = open_device(&cpal::default_host(), &requested, fifo.clone(), telemetry.clone()) {
+                    output = Some(o);
+                    detail.clear();
+                    let o = output.as_ref().unwrap();
+                    publish(status_ready(&requested, &o.device_name, o.rate, o.channels), devices.clone());
+                }
+            }
+        }
+        drop(output);
+    }
+}
+
+pub use platform::run;
