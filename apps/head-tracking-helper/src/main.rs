@@ -272,7 +272,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             Err(error) => {
                 eprintln!("AirPods transport: {error}");
                 emit_status(session, "unavailable", windows_public_connection_error(&error))?;
-                if wait_for_retry(&controls, session)? {
+                if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
                     return Ok(());
                 }
                 continue;
@@ -282,7 +282,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         if let Err(error) = initialize_aacp(&socket) {
             eprintln!("AirPods transport: {error}");
             emit_status(session, "disconnected", windows_public_connection_error(&error))?;
-            if wait_for_retry(&controls, session)? {
+            if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
                 return Ok(());
             }
             continue;
@@ -291,7 +291,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         if let Err(error) = recover_motion_stream(&socket, head_tracking_packet_index) {
             eprintln!("AirPods transport: initial motion claim failed: {error}");
             emit_status(session, "disconnected", windows_public_connection_error(&error))?;
-            if wait_for_retry(&controls, session)? {
+            if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
                 return Ok(());
             }
             continue;
@@ -578,7 +578,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             "disconnected",
             windows_public_connection_error(&disconnected),
         )?;
-        if wait_for_retry(&controls, session)? {
+        if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
             return Ok(());
         }
     }
@@ -815,7 +815,7 @@ fn poll_control(
 #[cfg(target_os = "windows")]
 fn wait_for_retry(
     controls: &Receiver<Control>,
-    orientation: &mut HeadOrientation,
+    _orientation: &mut HeadOrientation,
     session: &str,
     takeover_pending: &mut bool,
 ) -> Result<bool, String> {
