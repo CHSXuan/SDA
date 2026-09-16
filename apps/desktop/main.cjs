@@ -899,10 +899,13 @@ function processHeadTrackingMessage(message) {
     }
     if (now - headTrackingLastPoseAt < 1000 / HEAD_TRACKING_MAX_RATE_HZ) return;
     headTrackingLastSequence = sequence;
-    headTrackingLastPoseAt = now;
     if (!headTrackingEnabled) return;
-    const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
-    setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${platformLabel} helper）` : "追踪中（外部 helper）");
+    // Only update status text on the first pose to avoid 100Hz redundant IPC.
+    if (headTrackingLastPoseAt === 0) {
+      const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
+      setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${platformLabel} helper）` : "追踪中（外部 helper）");
+    }
+    headTrackingLastPoseAt = now;
     sendHeadTracking("sda:head-tracking-pose", { timestampMs, orientation });
     return;
   }
@@ -972,7 +975,7 @@ function startHeadTracking() {
       true,
       headTrackingHelperSource,
       takeoverSent
-        ? "Windows 正在强制接管整个 AirPods 连接"
+        ? "正在接管 AirPods 连接"
         : hasRecentPose
         ? headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${process.platform === "darwin" ? "macOS" : "Windows"} helper）` : "追踪中（外部 helper）"
         : "正在恢复 AirPods motion",
@@ -1023,7 +1026,7 @@ function startHeadTracking() {
   return setHeadTrackingStatus(
     true,
     headTrackingHelperSource,
-    takeoverSent ? "Windows 正在强制接管整个 AirPods 连接" : "正在连接 AirPods motion 通道",
+    takeoverSent ? "正在接管 AirPods 连接" : "正在连接 AirPods motion 通道",
   );
 }
 
@@ -1119,8 +1122,10 @@ function takeoverHeadTracking() {
     !headTrackingHelper ||
     headTrackingHelperSource !== "bundled-helper"
   ) return false;
+  // macOS uses CoreMotion — no BLE takeover needed.
+  if (process.platform === "darwin") return false;
   const sent = helperCommand("takeover");
-  if (sent) setHeadTrackingStatus(true, headTrackingHelperSource, "Windows 正在强制接管整个 AirPods 连接");
+  if (sent) setHeadTrackingStatus(true, headTrackingHelperSource, "正在接管 AirPods 连接");
   return sent;
 }
 
