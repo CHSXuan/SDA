@@ -88,6 +88,20 @@ pub fn stop() {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    struct ComScope;
+    impl ComScope {
+        fn new() -> Result<Self, String> {
+            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok().map_err(|e| e.to_string())?; }
+            Ok(Self)
+        }
+    }
+    impl Drop for ComScope {
+        fn drop(&mut self) { unsafe { CoUninitialize(); } }
+    }
+    struct TimerScope;
+    impl Drop for TimerScope {
+        fn drop(&mut self) { unsafe { windows::Win32::Media::timeEndPeriod(1); } }
+    }
     use windows::{
         Win32::{Devices::Properties::DEVPKEY_Device_FriendlyName, Media::Audio::*, System::Com::*},
         core::PCWSTR,
