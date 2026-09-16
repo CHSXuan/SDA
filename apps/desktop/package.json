@@ -94,6 +94,10 @@
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "extraResources": [
         {
+          "from": "head-tracking-helper",
+          "to": "head-tracking-helper"
+        },
+        {
           "from": "native-renderer",
           "to": "native-renderer"
         }
