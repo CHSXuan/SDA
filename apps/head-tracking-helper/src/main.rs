@@ -96,6 +96,10 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if std::env::args().any(|arg| arg == "--takeover-audio") {
+        return takeover_audio_once();
+    }
     let stdin = io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let first_line = lines
@@ -312,6 +316,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         let mut local_media_confirmed = false;
         let mut connected_devices = Vec::new();
         let mut force_takeover_attempted = false;
+        let mut audio_takeover_completed = false;
         let mut takeover_grace_until = None;
         let mut motion_was_active = false;
         let disconnected = loop {
@@ -353,6 +358,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 audio_source = Some(inferred_local_audio_source(socket.local_address()));
                 local_media_confirmed = true;
                 force_takeover_attempted = true;
+                audio_takeover_completed = true;
                 motion_was_active = false;
                 recovery_attempts = 0;
                 last_motion_at = Instant::now();
@@ -422,18 +428,24 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                                 "connected",
                                 "Windows 媒体已接管 AirPods，正在启动头追",
                             )?;
-                            if let Err(error) = force_reclaim_entire_connection(
-                                &socket,
-                                head_tracking_packet_index,
-                                &connected_devices,
-                            ) {
+                            // Idle -> playing notifications (notably ASIO) do
+                            // not mean a different host took ownership. Avoid
+                            // releasing/reclaiming the audio connection again.
+                            let recovery = if audio_takeover_completed {
+                                recover_motion_stream(&socket, head_tracking_packet_index)
+                            } else {
+                                force_reclaim_entire_connection(&socket, head_tracking_packet_index, &connected_devices)
+                            };
+                            if let Err(error) = recovery {
                                 break format!("AirPods motion recovery failed: {error}");
                             }
+                            audio_takeover_completed = true;
                             orientation.begin_transport_session();
                             force_takeover_attempted = true;
                             takeover_grace_until = Some(Instant::now() + TAKEOVER_SOURCE_GRACE);
                             last_motion_at = Instant::now();
                         } else if is_remote_media {
+                            audio_takeover_completed = false;
                             motion_was_active = false;
                             recovery_attempts = 0;
                             force_takeover_attempted = false;
@@ -623,6 +635,13 @@ fn force_reclaim_entire_connection(
     connected_devices: &[u64],
 ) -> Result<(), String> {
     stop_motion_stream(socket)?;
+    reclaim_audio_connection(socket, connected_devices)?;
+    socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
+}
+
+// Shared routing operation: ordinary audio must not start motion sensors.
+#[cfg(target_os = "windows")]
+fn reclaim_audio_connection(socket: &L2capSocket, connected_devices: &[u64]) -> Result<(), String> {
     socket.send_packet(RELEASE_OWNERSHIP)?;
     thread::sleep(Duration::from_millis(100));
     socket.send_packet(CLAIM_OWNERSHIP)?;
@@ -646,7 +665,37 @@ fn force_reclaim_entire_connection(
     socket.send_packet(REQUEST_NOTIFICATIONS)?;
     socket.send_packet(CLAIM_OWNERSHIP)?;
     thread::sleep(Duration::from_millis(150));
-    socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn takeover_audio_once() -> Result<(), String> {
+    let socket = L2capSocket::connect_airpods()?;
+    initialize_aacp(&socket)?;
+    let started = Instant::now();
+    let mut devices = Vec::new();
+    let mut packet = [0_u8; 4096];
+    while started.elapsed() < Duration::from_secs(2) {
+        if let Some(length) = socket.receive_packet(&mut packet)? {
+            if let Some(next) = parse_connected_devices(&packet[..length]) {
+                devices = next;
+                break;
+            }
+        }
+    }
+    reclaim_audio_connection(&socket, &devices)?;
+    // A successful write is not proof that the headset accepted the route.
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        if let Some(length) = socket.receive_packet(&mut packet)? {
+            if is_local_media_source(parse_audio_source(&packet[..length]), socket.local_address()) {
+                println!("confirmed");
+                return Ok(());
+            }
+        }
+    }
+    println!("sent");
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

@@ -1,4 +1,5 @@
 import SheetHeading from "./SheetHeading";
+import {useLayoutEffect, useRef} from "react";
 import PlaybackModeButton from "./PlaybackModeButton";
 import { PLAYBACK_MODE_LABELS, type PlaybackMode } from "../playbackOrder";
 import {AudioLines, ListMusic, Pause, Play, Trash2, X} from "lucide-react";
@@ -8,14 +9,30 @@ export default function PlaylistPanel({items,currentId,paused,onPlay,onRemove,on
   items:readonly {id:string;title:string}[];currentId:string|null;paused:boolean;
   onPlay:(id:string)=>void;onRemove:(id:string)=>void;onClear:()=>void;onClose:()=>void;
 }){
-  return <section className={`panel ${embedded?"mp-playlist-panel":"float-panel"} playlist-panel desktop-sheet`} aria-label="播放列表">
+  const panelRef = useRef<HTMLElement>(null);
+  const currentItemRef = useRef<HTMLLIElement>(null);
+  const currentIndex = items.findIndex(item => item.id === currentId);
+  useLayoutEffect(() => {
+    const panel = panelRef.current, item = currentItemRef.current;
+    if (!panel || !item) return;
+    const bounds = panel.getBoundingClientRect();
+    const row = item.getBoundingClientRect();
+    const headingHeight = panel.querySelector(".desktop-sheet-heading")?.getBoundingClientRect().height ?? 0;
+    const visibleTop = bounds.top + panel.clientTop + headingHeight;
+    const visibleBottom = bounds.top + panel.clientTop + panel.clientHeight;
+    if (row.top >= visibleTop && row.bottom <= visibleBottom) return;
+    // Scroll only this sheet, keeping the sticky heading clear of the song.
+    // Do not re-run on playback ticks or pause: users can still browse freely.
+    panel.scrollTop += row.top - visibleTop - Math.max(0, (visibleBottom - visibleTop - row.height) / 2);
+  }, [currentId, currentIndex, embedded]);
+  return <section ref={panelRef} className={`panel ${embedded?"mp-playlist-panel":"float-panel"} playlist-panel desktop-sheet`} aria-label="播放列表">
     <SheetHeading title="播放列表" detail={`${items.length} 首`} onClose={onClose}/>
     {items.length===0?<div className="playlist-empty"><ListMusic size={30}/><strong>还没有歌曲</strong><p>打开音频文件或添加文件夹，即可开始收听。</p></div>:<ol className="playlist-items">
       {items.map((item,index)=>{
         const current=item.id===currentId;
         const extension=item.title.match(/\.(wav|m4a|mp4|mkv|flac|mp3|aac|ac4|ec3|eac3|ac3|ogg|opus|aiff|aif)$/i);
         const title=extension?item.title.slice(0,-extension[0].length):item.title;
-        return <li key={item.id} className={current?"current":""} aria-current={current?"true":undefined}>
+        return <li key={item.id} ref={current?currentItemRef:undefined} className={current?"current":""} aria-current={current?"true":undefined}>
           <button className="playlist-select" onClick={()=>onPlay(item.id)} aria-label={`播放 ${item.title}`}>
             <span className="playlist-index" aria-hidden="true">{current?(paused?<Pause size={17}/>:<AudioLines size={18}/>):<><span className="playlist-number">{String(index+1).padStart(2,"0")}</span><Play className="playlist-hover-play" size={16}/></>}</span>
             <span className="playlist-copy"><b title={item.title}>{title}</b><small>{current?(paused?"已暂停":"正在播放"):"待播放"}{extension?` · ${extension[1]!.toUpperCase()}`:""}</small></span>

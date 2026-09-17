@@ -17,6 +17,7 @@ export default function OutputPanel() {
   const [draft,setDraft] = useState<OutputSettings>({deviceId:null,exclusive:false});
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState("");
+  const [takeoverStatus,setTakeoverStatus] = useState("");
   const bridge=window.sdaDesktop;
   const asio = draft.deviceId?.startsWith("asio:") ?? false;
   const directSound = draft.deviceId?.startsWith("dsound:") ?? false;
@@ -45,6 +46,11 @@ export default function OutputPanel() {
     setBusy(true);setError("");
     try{setData(await bridge.getOutputDevices!());}catch(e){setError(String(e));}finally{setBusy(false);}
   };
+  const takeover=async()=>{
+    setBusy(true);setError("");setTakeoverStatus("正在接管 AirPods…");
+    try { setTakeoverStatus(await bridge.takeoverAirpodsAudio!()); }
+    catch(e){setTakeoverStatus("");setError(String(e));}finally{setBusy(false);}
+  };
   return <fieldset className="settings-group output-manager" disabled={busy}>
     <legend>音频输出设备</legend>
     <label>输出到
@@ -66,6 +72,8 @@ export default function OutputPanel() {
     {directSound&&<small>使用 Windows 共享音频链路，保留双耳渲染与头部追踪。UU 通常可以采集系统播放声音；延迟不一定低于 WASAPI。</small>}
     {asio&&<small>使用驱动的输出 1 / 2 和首选缓冲。缓冲大小、硬件端口请在厂商驱动或 ASIO4ALL 控制面板设置。ASIO 不经过 Windows 共享混音，UU / RDP 可能无法采集；降低缓冲不代表能加快解码或空间渲染。</small>}
     <div className="output-manager-actions"><button data-button="primary" onClick={()=>void apply()} disabled={!data}>{busy?"处理中…":data?.status.state==="unavailable"?"应用并重试":"应用"}</button><button onClick={()=>void refresh()}>刷新设备</button>{asio&&<button onClick={()=>void openPanel()} disabled={data?.status.state!=="ready"||data?.status.mode!=="asio"||data?.status.actualId!==draft.deviceId} title="先应用所选 ASIO 设备，再打开正在使用的驱动面板">打开 ASIO 控制面板</button>}</div>
+    {!isMac&&bridge.takeoverAirpodsAudio&&<div className="output-manager-actions"><button onClick={()=>void takeover()}>接管 AirPods 音频</button><small>从手机切回后连接不稳时使用，无需开启头追。需要已安装 SDA 蓝牙驱动。</small></div>}
+    {takeoverStatus&&<p role="status">{takeoverStatus}</p>}
     <div className="output-manager-status" aria-live="polite">
       <strong>{data?.status.state==="ready"?data.status.actualName:"输出不可用"}</strong>
       {data?.status.state==="ready"&&<span>{data.status.mode==="directsound"?"DirectSound":data.status.mode==="asio"?"ASIO":data.status.mode==="exclusive"?"实际独占":"实际共享"} · {(data.status.sampleRate??0)/1000} kHz · {data.status.channels} 声道 · 缓冲 {data.status.bufferMs?.toFixed(1)} ms</span>}

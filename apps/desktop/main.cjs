@@ -990,7 +990,46 @@ function startHeadTrackingMock() {
   return headTrackingStatus;
 }
 
+let airpodsAudioTakeoverTask = null;
+let airpodsAudioTakeoverChild = null;
+let airpodsAudioTakeoverLastAt = 0;
+
+function takeoverAirpodsAudio() {
+  if (process.platform !== "win32") throw new Error("此接管功能仅用于 Windows AirPods");
+  if (airpodsAudioTakeoverTask) return airpodsAudioTakeoverTask;
+  if (Date.now() - airpodsAudioTakeoverLastAt < 10000) throw new Error("刚刚已发送接管，请等待连接稳定后重试");
+  // Never open a competing L2CAP client while the tracking helper owns it.
+  if (headTrackingHelper) {
+    if (headTrackingHelperSource !== "bundled-helper") throw new Error("请先停止外部头追 helper，再接管 AirPods");
+    if (!helperCommand("takeover")) throw new Error("AirPods 接管命令发送失败");
+    airpodsAudioTakeoverLastAt = Date.now();
+    writeStartupLog("[AirPods audio] takeover delegated to existing helper");
+    return "已发送接管请求，请等待 AirPods 切回电脑";
+  }
+  const helperPath = bundledHeadTrackingHelperPath();
+  if (!helperPath) throw new Error("缺少内置 AirPods helper，请重新安装 SDA");
+  airpodsAudioTakeoverLastAt = Date.now();
+  airpodsAudioTakeoverTask = new Promise((resolve, reject) => {
+    const child = spawn(helperPath, ["--takeover-audio"], {stdio:["ignore","pipe","pipe"],windowsHide:true});
+    airpodsAudioTakeoverChild = child;
+    let stdout = "", stderr = "", timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 20000);
+    child.stdout.on("data", chunk => { stdout = (stdout + chunk).slice(-2048); });
+    child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4096); });
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("close", code => {
+      clearTimeout(timer);
+      writeStartupLog(`[AirPods audio] takeover exit=${code} result=${stdout.trim()} detail=${stderr.trim()}`);
+      if (timedOut) reject(new Error("AirPods 接管超时，请检查耳机连接和 SDA 蓝牙驱动"));
+      else if (code !== 0) reject(new Error(`接管失败，请确认 AirPods 已连接及 SDA 蓝牙驱动已安装。${safeDiagnosticText(stderr, "")}`));
+      else resolve(stdout.trim() === "confirmed" ? "AirPods 已确认切回电脑音频" : "已发送接管请求，尚未收到音频路由确认");
+    });
+  }).finally(() => { airpodsAudioTakeoverTask = null; airpodsAudioTakeoverChild = null; });
+  return airpodsAudioTakeoverTask;
+}
+
 function startHeadTracking() {
+  if (airpodsAudioTakeoverTask) throw new Error("AirPods 正在接管，请稍后开启头追");
   if (headTrackingTimer || headTrackingHelper) {
     headTrackingEnabled = true;
     writeHeadTrackingEnabled(true);
@@ -1402,6 +1441,7 @@ ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
 ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
 ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
+ipcMain.handle("sda:takeover-airpods-audio", () => takeoverAirpodsAudio());
 ipcMain.handle("sda:output-devices", async () => {
   await ensureNativeRenderer();
   const accepted = await nativeRendererCommandAck({type:"listOutputDevices"},"listOutputDevices");
@@ -1973,6 +2013,7 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", event => {
+  airpodsAudioTakeoverChild?.kill();
   if (nativeRendererQuitting) return;
   event.preventDefault();
   nativeRendererQuitting = true;

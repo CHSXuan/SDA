@@ -152,6 +152,7 @@ declare global {
       recenterHeadTracking?: () => Promise<HeadTrackingPose | null>;
       getNativeRendererStatus?: () => Promise<NativeRendererStatus>;
       openAsioControlPanel?: () => Promise<boolean>;
+      takeoverAirpodsAudio?: () => Promise<string>;
       getOutputDevices?: () => Promise<import("./components/OutputPanel").OutputDevices>;
       setOutputDevice?: (settings: import("./components/OutputPanel").OutputSettings) => Promise<import("./components/OutputPanel").OutputDevices & {accepted:boolean}>;
       onRoomLayoutApplied?: (callback:(value:{layout:string;profileId:string})=>void)=>()=>void;

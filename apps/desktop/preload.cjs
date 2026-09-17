@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   recenterHeadTracking: () => ipcRenderer.invoke("sda:head-tracking-recenter"),
   getNativeRendererStatus: () => ipcRenderer.invoke("sda:native-renderer-status"),
   openAsioControlPanel: () => ipcRenderer.invoke("sda:open-asio-control-panel"),
+  takeoverAirpodsAudio: () => ipcRenderer.invoke("sda:takeover-airpods-audio"),
   getOutputDevices: () => ipcRenderer.invoke("sda:output-devices"),
   setOutputDevice: value => ipcRenderer.invoke("sda:set-output-device", value),
   onRoomLayoutApplied: callback => subscribe("sda:room-layout-applied", callback),
