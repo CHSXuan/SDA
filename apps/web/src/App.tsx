@@ -1907,7 +1907,7 @@ export function App() {
     currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,
     playlist:playlist.map(item=>({id:item.id,title:item.title})),
   },async command=>{
-    if(["play","next","previous","track","replay"].includes(command.action))await claimPlayback("remote");
+    if(["play","next","previous","track","replay"].includes(command.action))await claimPlayback(command.controlOnly?"local":"remote");
     switch(command.action){
       case "play":
         if(paused){pausedRef.current=false;setPaused(false);await playerRef.current?.resume();}
@@ -1922,7 +1922,7 @@ export function App() {
         const next=adjacentPlaylistItemId(items,playlistCurrentIdRef.current,command.action==="next"?1:-1);
         if(next)await playPlaylistItem(next);break;
       }
-      case "mediaPaths":appendToPlaylist((command.value as string[]).map(path=>({kind:"path",path})),"remote");break;
+      case "mediaPaths":appendToPlaylist((command.value as string[]).map(path=>({kind:"path",path})),command.controlOnly?"local":"remote");break;
       case "track":if(!playlistRef.current.some(item=>item.id===command.value))throw Error("歌曲已从主机列表移除");playPlaylistItem(String(command.value));break;
       case "replay":if(!lastSourceRef.current)throw Error("主机尚未选择歌曲");replay();break;
       case "volume":changeVolume(Number(command.value));break;

@@ -47,6 +47,9 @@ jobs:
       - name: Prepare decoder build inputs and WASM modules
         uses: ./.github/actions/prepare-decoders
 
+      - name: Prepare ASIO build dependencies
+        uses: ./.github/actions/prepare-asio
+
       - name: Fetch native dependencies for offline build and tests
         run: |
           cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml

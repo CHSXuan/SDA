@@ -3,6 +3,12 @@
 //! macOS/Linux: CPAL (CoreAudio/ALSA) callback-driven stream.
 use super::*;
 use std::sync::{OnceLock, mpsc};
+#[cfg(windows)]
+#[path = "asio_output.rs"]
+mod asio_output;
+#[cfg(windows)]
+#[path = "directsound_output.rs"]
+mod directsound_output;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,6 +24,8 @@ impl Settings {
         if self.remote_compatible {
             self.exclusive = false;
             self.device_id = None;
+        } else if self.device_id.as_deref().is_some_and(|id| id.starts_with("asio:") || id.starts_with("dsound:")) {
+            self.exclusive = false;
         }
         self
     }
@@ -183,10 +191,12 @@ fn list(e: &IMMDeviceEnumerator) -> Result<Vec<Endpoint>, String> {
                 .then(a.name.cmp(&b.name))
                 .then(a.id.cmp(&b.id))
         });
+        result.extend(asio_output::endpoints());
+        result.extend(directsound_output::endpoints());
         Ok(result)
     }
 }
-struct Output {
+struct WasapiOutput {
     client: IAudioClient,
     render: IAudioRenderClient,
     id: String,
@@ -273,14 +283,14 @@ fn initialize_client(
         Ok(client)
     }
 }
-impl Drop for Output {
+impl Drop for WasapiOutput {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
         }
     }
 }
-impl Output {
+impl WasapiOutput {
     fn open(e: &IMMDeviceEnumerator, settings: &Settings) -> Result<Self, String> {
         unsafe {
             let device = if let Some(id) = &settings.device_id {
@@ -522,6 +532,35 @@ impl Output {
         }
     }
 }
+
+// The manager owns exactly one FIFO consumer across WASAPI and ASIO.
+enum Backend { Wasapi(WasapiOutput), Asio(asio_output::AsioOutput), DirectSound(directsound_output::DirectSoundOutput) }
+struct Output { backend:Backend, id:String, settings:Settings, rate:u32, channels:usize }
+impl Output {
+    fn open(e:&IMMDeviceEnumerator,s:&Settings,fifo:&Arc<stereo_fifo::StereoFifo>,t:&Arc<RuntimeTelemetry>)->Result<Self,String>{
+        if s.device_id.as_deref().is_some_and(|id|id.starts_with("asio:")) {
+            let o=asio_output::AsioOutput::open(s,fifo.clone(),t.clone())?;
+            Ok(Self{id:s.device_id.clone().unwrap(),settings:s.clone(),rate:o.rate,channels:o.channels,backend:Backend::Asio(o)})
+        }else if s.device_id.as_deref().is_some_and(|id|id.starts_with("dsound:")) {
+            let o=directsound_output::DirectSoundOutput::open(s)?;
+            Ok(Self{id:s.device_id.clone().unwrap(),settings:s.clone(),rate:48000,channels:2,backend:Backend::DirectSound(o)})
+        }else{
+            let o=WasapiOutput::open(e,s)?;
+            Ok(Self{id:o.id.clone(),settings:o.settings.clone(),rate:o.rate,channels:o.channels,backend:Backend::Wasapi(o)})
+        }
+    }
+    fn start(&self)->Result<(),String>{match &self.backend{Backend::Wasapi(o)=>o.start(),Backend::Asio(o)=>o.start(),Backend::DirectSound(o)=>o.start()}}
+    fn tick(&mut self,fifo:&stereo_fifo::StereoFifo,t:&RuntimeTelemetry,fade:bool)->Result<(),String>{match &mut self.backend{Backend::Wasapi(o)=>o.tick(fifo,t,fade),Backend::Asio(o)=>o.tick(),Backend::DirectSound(o)=>o.tick(fifo,t,fade)}}
+    fn status(&self,s:&Settings,d:String)->Status{match &self.backend{Backend::Wasapi(o)=>o.status(s,d),Backend::Asio(o)=>o.status(s,d),Backend::DirectSound(o)=>o.status(s,d)}}
+    fn drain(&mut self,fifo:&stereo_fifo::StereoFifo,t:&RuntimeTelemetry){match &mut self.backend{
+        Backend::Asio(o)=>o.drain(),Backend::DirectSound(o)=>o.stop(),Backend::Wasapi(o)=>{
+            let end=Instant::now()+Duration::from_millis(80);
+            while Instant::now()<end&&o.fade>0.0{if o.tick(fifo,t,true).is_err(){break;}thread::sleep(Duration::from_millis(2));}
+            while Instant::now()<end&&unsafe{o.client.GetCurrentPadding().unwrap_or(0)}>0{thread::sleep(Duration::from_millis(2));}
+        }
+    }}
+}
+
 fn remote_status(requested:&Settings)->Status {
     Status {requested:requested.clone(),actual_id:None,actual_name:Some("一对一无损远程".into()),
         mode:Some("remote".into()),sample_rate:Some(48000),channels:Some(2),buffer_ms:None,sample_format:Some("32-bit float".into()),state:"ready".into(),detail:"32-bit float PCM · 远端时钟".into()}
@@ -584,7 +623,7 @@ pub fn run(
     requested = requested.normalized();
     let mut output = None;
     let mut detail = String::new();
-    match Output::open(&e, &requested).and_then(|o| {
+    match Output::open(&e, &requested, &fifo, &telemetry).and_then(|o| {
         o.start()?;
         Ok(o)
     }) {
@@ -648,7 +687,7 @@ pub fn run(
                     remote_audio::HostOutput::connect(&address,&token).map(|sink|{remote=Some(sink);remote_selected=true;remote_audio::HOST_SELECTED.store(true,Ordering::Release);})
                 }else{
                     remote=None;remote_selected=false;remote_audio::HOST_SELECTED.store(false,Ordering::Release);remote_audio::select_mirror(false);
-                    if output.is_some(){Ok(())}else{Output::open(&e,&requested).and_then(|o|{o.start()?;output=Some(o);Ok(())})}
+                    if output.is_some(){Ok(())}else{Output::open(&e,&requested,&fifo,&telemetry).and_then(|o|{o.start()?;output=Some(o);Ok(())})}
                 };
                 let accepted=result.is_ok();let error=result.err();
                 write_event(&Event::Ack{command:"setRemoteOutput",accepted,detail:error.as_deref()});
@@ -673,22 +712,11 @@ pub fn run(
                 // Drain a bounded fade before closing the old endpoint. No render
                 // graph/session reset, decoder restart or source reconfiguration.
                 if let Some(old) = &mut output {
-                    let end = Instant::now() + Duration::from_millis(80);
-                    while Instant::now() < end && old.fade > 0.0 {
-                        if old.tick(&fifo, &telemetry, true).is_err() {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    while Instant::now() < end
-                        && unsafe { old.client.GetCurrentPadding().unwrap_or(0) } > 0
-                    {
-                        thread::sleep(Duration::from_millis(2));
-                    }
+                    old.drain(&fifo, &telemetry);
                 }
                 let previous = output.as_ref().map(|o| o.settings.clone());
                 drop(output.take());
-                let result = Output::open(&e, &next).and_then(|o| {
+                let result = Output::open(&e, &next, &fifo, &telemetry).and_then(|o| {
                     o.start()?;
                     Ok(o)
                 });
@@ -702,7 +730,7 @@ pub fn run(
                     Err(err) => {
                         detail = err;
                         if let Some(previous) = previous {
-                            output = Output::open(&e, &previous)
+                            output = Output::open(&e, &previous, &fifo, &telemetry)
                                 .and_then(|o| {
                                     o.start()?;
                                     Ok(o)
@@ -737,7 +765,7 @@ pub fn run(
                     // Remote/session drivers can change their shared mix format
                     // without changing endpoint ID (for example after reconnect).
                     let format_changed = output.as_ref().is_some_and(|o| {
-                        !o.settings.exclusive
+                        !o.settings.exclusive && !o.id.starts_with("asio:") && !o.id.starts_with("dsound:")
                             && devices.iter().any(|d| {
                                 d.id == o.id
                                     && d.available
@@ -746,7 +774,7 @@ pub fn run(
                     });
                     if (actual != wanted && requested.device_id.is_none()) || format_changed {
                         drop(output.take());
-                        match Output::open(&e, &requested).and_then(|o| {
+                        match Output::open(&e, &requested, &fifo, &telemetry).and_then(|o| {
                             o.start()?;
                             Ok(o)
                         }) {
@@ -812,7 +840,7 @@ pub fn run(
             }
         }
         if let Some(result) = recover_output(&mut output,&requested,&mut last_retry,|settings| {
-            Output::open(&e,settings).and_then(|o| {o.start()?;Ok(o)})
+            Output::open(&e,settings,&fifo,&telemetry).and_then(|o| {o.start()?;Ok(o)})
         }) {
             match result {
                 Ok(()) => {
@@ -833,6 +861,14 @@ pub fn run(
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+    #[test]
+    fn asio_settings_preserve_driver_and_remote_mode_clears_it() {
+        let s=Settings {device_id:Some("asio:ASIO4ALL v2".into()),exclusive:true,remote_compatible:false}.normalized();
+        assert_eq!(s.device_id.as_deref(),Some("asio:ASIO4ALL v2"));
+        assert!(!s.exclusive);
+        let remote=Settings{remote_compatible:true,..s}.normalized();
+        assert_eq!(remote.device_id,None);assert!(!remote.exclusive);
+    }
     #[test]
     fn pinned_endpoint_recovers_without_device_change_or_fallback() {
         let settings=Settings{device_id:Some("airpods".into()),exclusive:true,remote_compatible:false};

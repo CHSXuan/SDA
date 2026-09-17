@@ -1,0 +1,15 @@
+name: Prepare Windows ASIO build
+description: LLVM libclang for the native ASIO bindings
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $llvm = 'C:\Program Files\LLVM\bin'
+        if (!(Test-Path "$llvm\libclang.dll")) {
+          $deps = Join-Path $env:RUNNER_TEMP 'asio-libclang'
+          python -m pip install --disable-pip-version-check --target $deps libclang==18.1.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $llvm = Join-Path $deps 'clang\native'
+        }
+        "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV

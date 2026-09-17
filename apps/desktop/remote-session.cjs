@@ -108,11 +108,11 @@ class RemoteSession {
     this.sockets = new Set(); this.bufferMs = 300; this.queued = 0; this.bytes = 0;
   }
   status() {
-    return { capacity:this.capacity(), connectedDevices:[...this.hostPeers].map(p=>({id:p.deviceId??p.remoteAddress,name:p.deviceName??p.remoteAddress,canControl:p.canControl!==false})), devices:this.devices?.list()??[], pendingDevices:this.devices?.pendingList()??[], role: this.role, phase: this.phase, detail: this.detail, peer: this.peer?.remoteAddress ?? null,
+    return { capacity:this.capacity(), connectedDevices:[...this.hostPeers].map(p=>({id:p.deviceId??p.remoteAddress,name:p.deviceName??p.remoteAddress,controlOnly:p.controlOnly===true,canControl:p.canControl!==false})), devices:this.devices?.list()??[], pendingDevices:this.devices?.pendingList()??[], role: this.role, phase: this.phase, detail: this.detail, peer: this.peer?.remoteAddress ?? null,
       port: this.port, addresses: this.role === "host" ? addresses() : [],
       invites: this.role === "host" && this.key && !this.devices ? addresses().map(a => this.invite(a)) : [],
       webInvites: this.role === "host" && this.key ? addresses().map(a => this.webInvite(a)) : [],
-      format: this.peer?.header?.sampleFormat === "hls-flac24" ? "48 kHz · 24-bit FLAC · 双声道" : "48 kHz · 32-bit float PCM · 双声道", localMuted:this.hooks.localMuted?.()??true, hlsAllowed:this.hooks.hlsAllowed?.()===true, bufferMs: this.bufferMs, queuedMs: this.queued / 48,
+      format: this.peer?.controlOnly ? "仅控制 · 不传输音频" : this.peer?.header?.sampleFormat === "hls-flac24" ? "48 kHz · 24-bit FLAC · 双声道" : "48 kHz · 32-bit float PCM · 双声道", localMuted:this.hooks.localMuted?.()??true, hlsAllowed:this.hooks.hlsAllowed?.()===true, bufferMs: this.bufferMs, queuedMs: this.queued / 48,
       bytes: this.bytes, output: this.output ?? null, state: this.role === "client" ? this.state : null };
   }
   invite(address) { return `sda://${address}:${this.port}#${this.key.toString("hex")}.${this.certificate.fingerprint}`; }
@@ -147,6 +147,7 @@ class RemoteSession {
         clearTimeout(timer);
         const device=this.devices?.authenticateToken(auth.subarray(0,32).toString("hex"));
         if(this.devices?!device:!crypto.timingSafeEqual(auth.subarray(0,32),key)){socket.destroy();return;}
+        if(device?.canListen===false){socket.destroy();return;}
         if(device){socket.deviceId=device.id;socket.deviceName=device.name;socket.canControl=device.canControl!==false;}
         socket.pause();socket.off("data",authenticate);
         if (!this.canAccept() || this.role !== "host" || generation !== this.generation) {
@@ -171,11 +172,40 @@ class RemoteSession {
     return this.status();
   }
   disconnectDevice(id){for(const socket of this.hostPeers)if(socket.deviceId===id)this.failPeer(socket,"设备连接已被电脑断开或撤销");}
-  manageDevice(action,value){if(!this.devices)throw Error("设备授权不可用");if(action==="deviceApprove")this.devices.approve(value?.id,value?.canControl);else if(action==="deviceReject")this.devices.reject(value?.id);else if(action==="deviceRevoke")this.devices.revoke(value?.id);else if(action==="devicePermission")this.devices.permission(value?.id,value?.canControl);else if(action==="deviceDisconnect")this.disconnectDevice(value?.id);else throw Error("无效设备操作");return this.status();}
+  manageDevice(action,value){if(!this.devices)throw Error("设备授权不可用");if(action==="deviceApprove")this.devices.approve(value?.id,value?.canControl,value?.canListen);else if(action==="deviceReject")this.devices.reject(value?.id);else if(action==="deviceRevoke")this.devices.revoke(value?.id);else if(action==="devicePermission")this.devices.permission(value?.id,value?.canControl,value?.canListen);else if(action==="deviceDisconnect")this.disconnectDevice(value?.id);else throw Error("无效设备操作");return this.status();}
   capacity(){const value=typeof this.hooks.maxPeers==="function"?this.hooks.maxPeers():this.hooks.maxPeers;return Number.isInteger(value)?Math.max(1,Math.min(16,value)):1;}
   canAccept(){return this.hostPeers.size<this.capacity();}
   reservePeer(socket){if(this.hostPeers.has(socket))return true;if(!this.canAccept()||socket.deviceId&&[...this.hostPeers].some(p=>p.deviceId===socket.deviceId&&!p.destroyed))return false;this.hostPeers.add(socket);this.peer??=socket;socket.once("close",()=>{this.hostPeers.delete(socket);if(this.peer===socket)this.peer=this.hostPeers.values().next().value??null;});return true;}
+  async attachController(socket,generation){
+    if(!this.reservePeer(socket))throw Error("已达到设备连接上限");
+    if(socket.canControl===false)throw Error("此设备未获得控制权限");
+    let ready=false,lastSeen=Date.now(),lastMediaLog=0;
+    const incoming=decodePackets((kind,body)=>{
+      const message=readJson(body);lastSeen=Date.now();
+      if(kind==="H"){if(ready||message.protocol!==1)throw Error("远程协议不兼容");ready=true;}
+      else if(kind==="K"){if(!ready)throw Error("尚未连接");if(message.mediaState&&Date.now()-lastMediaLog>5000){lastMediaLog=Date.now();const m=message.mediaState;this.hooks.diagnostic?.({transport:"control-only",activated:m.activated===true,paused:m.paused!==false,readyState:Number.isInteger(m.readyState)?m.readyState:null,error:typeof m.error==="string"?m.error.slice(0,80):"",hidden:m.hidden===true});}}
+      else if(kind==="C"){
+        if(!ready||typeof message.id!=="string"||message.id.length>64)throw Error("无效远程控制");
+        const command=validateControl(message.command);
+        if(socket.canControl===false)throw Error("控制权限已撤销");
+        if([...this.pendingControls.values()].filter(v=>v.socket===socket).length>=16){socket.write(packet("D",{id:message.id,error:"操作过于频繁，请稍候"}));return;}
+        const id=crypto.randomUUID(),timer=setTimeout(()=>this.completeControl(id,"主机没有响应此操作"),command.action==="roomGenerate"?610000:15000).unref();
+        this.pendingControls.set(id,{socket,remoteId:message.id,timer});
+        if(command.action==="artwork")this.completeControl(id,null,{src:command.value===this.artworkId?this.artwork:""});
+        else if(command.action==="scene")this.completeControl(id,null,this.scene??null);
+        else this.dispatchControl(id,{...command,controlOnly:true});
+      }else if(kind==="Q")socket.end();else throw Error("不支持的控制消息");
+    });
+    socket.on("data",chunk=>{try{incoming(chunk);}catch(e){this.failPeer(socket,e.message);}});
+    const timer=setInterval(()=>{socket.probeTransport?.();if(Date.now()-Math.max(lastSeen,socket.transportLastSeen?.()??0)>15000)this.failPeer(socket,"设备连接心跳超时，请重新连接");else socket.write(packet("T",{}));},1000).unref();
+    socket.once("close",()=>{clearInterval(timer);for(const [id,v]of this.pendingControls)if(v.socket===socket)this.completeControl(id,"设备已断开");if(this.role==="host"){this.phase=this.hostPeers.size?"connected":"waiting";this.detail=this.hostPeers.size?`${this.hostPeers.size} 台设备已连接`:"等待设备连接";this.publish();}});
+    if(socket.destroyed||generation!==this.generation)return;
+    this.phase="connected";this.detail="仅控制设备已连接，声音由电脑播放";this.publish();
+    socket.write(packet("H",{protocol:1,controlOnly:true,canControl:true}));
+    if(this.state)sendState(socket,this.state,packet);
+  }
   async attachHost(socket,generation){
+    if(socket.controlOnly)return this.attachController(socket,generation);
     if(!this.reservePeer(socket))throw Error("已达到设备连接上限");
     await this.detaching;
     if(!this.hostPeers.has(socket)||socket.destroyed||this.generation!==generation)return;
@@ -216,7 +246,7 @@ class RemoteSession {
       for(const [id,v]of this.pendingControls)if(v.socket===socket)this.completeControl(id,"设备已断开");
       if(this.peer===socket)this.peer=this.hostPeers.values().next().value??null;
       if(this.role!=="host")return;
-      if(!this.hostPeers.size){hub.close();if(this.fanout===hub)this.fanout=null;this.local=null;this.localServer=null;this.queued=0;this.phase="waiting";this.detail="设备已断开，等待连接";this.detaching=Promise.resolve(this.hooks.disconnected?.()).catch(()=>{});}
+      if(!hub.peers.size){hub.close();if(this.fanout===hub)this.fanout=null;this.local=null;this.localServer=null;this.queued=0;this.phase=this.hostPeers.size?"connected":"waiting";this.detail=this.hostPeers.size?"仅控制设备已连接":"设备已断开，等待连接";this.detaching=Promise.resolve(this.hooks.disconnected?.()).catch(()=>{});}
       else{this.phase="connected";this.detail=`${this.hostPeers.size} 台设备无损收听中`;hub.pump();}
       this.publish();
     });

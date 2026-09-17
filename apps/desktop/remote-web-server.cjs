@@ -14,7 +14,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
   const cookieMatches=(req,hls)=>hls&&String(req.headers.cookie||"").split(";").some(v=>v.trim()===`sda_hls=${hls.cookie}`);
   const authenticate=(req,token)=>session.devices?session.devices.authenticate(req):typeof token==="string"&&/^[a-f0-9]{64}$/.test(token)&&session.key&&crypto.timingSafeEqual(Buffer.from(token,"hex"),session.key)?{legacy:true,canControl:true}:null;
   const identify=(peer,device)=>{if(device&&!device.legacy){peer.deviceId=device.id;peer.deviceName=device.name;peer.canControl=device.canControl!==false;}};
-  const mediaAuthorized=(req,peer)=>cookieMatches(req,peer)&&(!session.devices||session.devices.authenticate(req)?.id===peer.deviceId);
+  const mediaAuthorized=(req,peer)=>cookieMatches(req,peer)&&(!session.devices||(()=>{const d=session.devices.authenticate(req);return d?.id===peer.deviceId&&d.canListen!==false;})());
   async function pairRequest(req,res){
     if(session.role!=="host"){res.writeHead(404);res.end();return;}
     if(req.url==="/pair/status"&&req.method==="GET"){res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify(session.devices?.status(req)??{status:"authorized",legacy:true}));return;}
@@ -38,7 +38,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
       for await(const chunk of req){bytes=Buffer.concat([bytes,chunk]);if(bytes.length>1024){res.writeHead(413);res.end();return;}}
       let auth;try{auth=JSON.parse(bytes);}catch{res.writeHead(400);res.end();return;}
       const device=authenticate(req,auth.token);
-      if(!device){res.writeHead(403);res.end();return;}
+      if(!device||device.canListen===false){res.writeHead(403);res.end();return;}
       const generation=session.generation;
       if(hls&&!hls.destroyed&&mediaAuthorized(req,hls)){
         const previous=hls;await new Promise(resolve=>{previous.once("close",resolve);previous.destroy();});
@@ -141,7 +141,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self' wss:; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; media-src 'self' blob:; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self' wss:; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     if(req.url?.startsWith("/pair/")){void pairRequest(req,res).catch(()=>{if(!res.headersSent)res.writeHead(500);res.end();});return;}
     if(req.url?.startsWith("/hls/")){void hlsRequest(req,res).catch(()=>{if(!res.headersSent)res.writeHead(500);res.end();});return;}
     if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); res.end(); return; }
@@ -179,6 +179,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
         let auth;
         try { if (binary) throw Error(); auth = JSON.parse(data.toString("utf8")); } catch { ws.close(1008, "配对信息无效"); return; }
         const device=authenticate(req,auth.token);
+        if(device?.canListen===false&&auth.controlOnly!==true){ws.close(1008,"此设备仅允许控制，不允许收听");return;}
         if (session.role !== "host" || session.generation !== generation || auth.protocol !== 1 || !device) {
           ws.close(1008, "配对地址已失效或密钥错误"); return;
         }
@@ -191,12 +192,12 @@ function createRemoteWeb(session, {packet,decodePackets}) {
         }
         if (!session.canAccept()||device.id&&[...session.hostPeers].some(p=>p.deviceId===device.id&&!p.destroyed)) { ws.close(1013, "设备连接尚未释放或已达上限，请稍后重试"); return; }
         let stream;
-        if(auth.pcmPipeline===true&&typeof auth.rtcOffer==='string'&&auth.rtcOffer.length<64000&&session.hooks.rtc){
+        if(auth.controlOnly!==true&&auth.pcmPipeline===true&&typeof auth.rtcOffer==='string'&&auth.rtcOffer.length<64000&&session.hooks.rtc){
           if(session.hostPeers.size+rtcNegotiating>=session.capacity()){ws.close(1013,'已达到设备连接上限');return;}
           rtcNegotiating++;
           try{
             stream=await session.hooks.rtc(auth.rtcOffer,value=>{if(ws.readyState===1)ws.send(JSON.stringify(value));});
-            if(ws.readyState!==1||session.generation!==generation||!authenticate(req,auth.token)){stream.destroy();return;}
+            if(ws.readyState!==1||session.generation!==generation||(!authenticate(req,auth.token)||authenticate(req,auth.token)?.canListen===false)){stream.destroy();return;}
             ws.once('close',()=>stream.destroy());stream.once('close',()=>ws.close());
             stream.remoteTransport='webrtc';
             session.hooks.diagnostic?.({transport:'webrtc',event:'connected'});
@@ -211,6 +212,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
         // page JavaScript / audio feedback is suspended in the background.
         let lastPong=Date.now();
         ws.on("pong",()=>{lastPong=Date.now();});
+        stream.controlOnly=auth.controlOnly===true;
         stream.pcmPipeline=auth.pcmPipeline===true;
         stream.stateDelta=auth.stateDelta===true;
         stream.transportLastSeen=()=>lastPong;

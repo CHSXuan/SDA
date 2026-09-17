@@ -500,7 +500,7 @@ function savedOutputSettings() {
   return validOutputSettings(value) ? normalizeOutputSettings(value) : {deviceId:null,exclusive:false,remoteCompatible:true};
 }
 function normalizeOutputSettings(value) {
-  return {deviceId:value.remoteCompatible ? null : value.deviceId,exclusive:value.remoteCompatible ? false : value.exclusive,remoteCompatible:value.remoteCompatible===true};
+  return {deviceId:value.remoteCompatible ? null : value.deviceId,exclusive:value.remoteCompatible || (value.deviceId?.startsWith("asio:") || value.deviceId?.startsWith("dsound:")) ? false : value.exclusive,remoteCompatible:value.remoteCompatible===true};
 }
 function consumeNativeRendererOutput(chunk) {
   nativeRendererBuffer += chunk;

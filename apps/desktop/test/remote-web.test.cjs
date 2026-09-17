@@ -48,7 +48,7 @@ test("browser reset releases credits, removes old song, and malformed PCM cannot
 });
 test("HTTPS serves only public web assets and no host secrets or arbitrary paths",async()=>{
   const f=await setup();try{
-    const page=await request(f.port);assert.equal(page.status,200);assert.match(page.body,/连接并收听/);assert.ok(!page.body.includes(f.host.key.toString("hex")));
+    const page=await request(f.port);assert.equal(page.status,200);assert.match(page.body,/<button id="connect" class="primary">连接主机<\/button>/);assert.ok(!page.body.includes(f.host.key.toString("hex")));
     assert.match(page.headers["content-security-policy"],/frame-ancestors 'none'/);assert.equal(page.headers["referrer-policy"],"no-referrer");
     for(const route of ["/app.mjs","/app.css","/pcm-worklet.mjs","/pcm-buffer.mjs"])assert.equal((await request(f.port,route)).status,200);
     for(const route of ["/remote-session.cjs","/../main.cjs","/%2e%2e/main.cjs","/?key=anything"])assert.equal((await request(f.port,route)).status,404);
@@ -222,4 +222,35 @@ test('RTC negotiation failure falls back before sending PCM and preserves sample
   await new Promise(r=>ws.once('open',r));ws.send(JSON.stringify({protocol:1,token:f.host.key.toString('hex'),pcmPipeline:true,rtcOffer:'offer'}));
   await until(()=>audio.length===10);assert.deepEqual(audio,f.sent);
  }finally{ws.terminate();await f.close();}
+});
+
+test("control-only browser controls and receives state without starting an audio route",async()=>{
+ const env=await setup(),{host,port,commands,sent}=env;host.hooks.maxPeers=2;
+ const ws=socket(port),messages=[];const incoming=decodePackets((kind,body)=>messages.push({kind,data:body.length?JSON.parse(body):null}));
+ ws.on('message',data=>incoming(data));
+ try{
+  await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+  ws.send(JSON.stringify({protocol:1,token:host.key.toString('hex'),controlOnly:true}));
+  await until(()=>messages.some(m=>m.kind==='H'));assert.equal(messages.find(m=>m.kind==='H').data.controlOnly,true);
+  ws.send(packet('H',{protocol:1}));ws.send(packet('C',{id:'play',command:{action:'play'}}));
+  await until(()=>messages.some(m=>m.kind==='D'&&m.data.id==='play'));
+  assert.equal(commands[0].controlOnly,true);assert.equal(host.fanout,null);assert.equal(sent.length,0);
+  host.publishState({title:'controlled',playing:true,position:12,duration:90});
+  await until(()=>messages.some(m=>m.kind==='S'&&m.data.position===12));
+  assert.equal(host.status().connectedDevices[0].controlOnly,true);
+  assert.ok(!messages.some(m=>m.kind==='A'||m.kind==='Y'));
+  const listener=socket(port);listener.on('error',()=>{});const listenMessages=[];
+  listener.on('message',decodePackets((kind,body)=>{listenMessages.push(kind);if(kind==='H')listener.send(packet('H',{protocol:1}));}));
+  try{
+   await new Promise(r=>listener.once('open',r));listener.send(JSON.stringify({protocol:1,token:host.key.toString('hex')}));
+   await until(()=>listenMessages.includes('A'));assert.equal(host.hostPeers.size,2);assert.ok(!messages.some(m=>m.kind==='A'));
+   listener.close();await until(()=>host.hostPeers.size===1&&host.fanout===null);
+   ws.send(packet('C',{id:'still-control',command:{action:'pause'}}));await until(()=>messages.some(m=>m.kind==='D'&&m.data.id==='still-control'));
+  }finally{listener.terminate();}
+  ws.close();await until(()=>host.hostPeers.size===0);assert.equal(host.phase,'waiting');
+ }finally{ws.terminate();await env.close();}
+});
+
+test("remote page permits local blob media without relaxing scripts",async()=>{
+ const f=await setup();try{const response=await request(f.port);const policy=response.headers['content-security-policy'];assert.match(policy,/media-src 'self' blob:/);assert.match(policy,/script-src 'self';/);assert.ok(!policy.includes("unsafe-inline"));}finally{await f.close();}
 });

@@ -28,7 +28,7 @@ const soundTools = createTools(command,requestCommand,()=>({
 const mediaPicker = createMediaPicker(requestCommand);
 function requestCommand(action,value) {
   if(action==="testAudioSuspend"||action==="testAudioResume") {
-    const owner=session;if(!owner)return Promise.reject(Error("连接已断开"));
+    const owner=session;if(owner?.controlOnly)return Promise.reject(Error("仅控制模式不提供手机试听"));if(!owner)return Promise.reject(Error("连接已断开"));
     owner.testing=action==="testAudioSuspend";
     if(owner.audio) {
       if(owner.testing){owner.testWasPlaying=!owner.audio.paused;owner.audio.pause();return Promise.resolve(stats(owner));}
@@ -41,16 +41,18 @@ function requestCommand(action,value) {
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const FRAMES = 480, MAX_PACKET = 262144;
 let disconnecting=Promise.resolve();
+let serverControlOnly=false;
 let session = null, playback = null, playlistSignature = "", lastVolumeEdit = 0;
 const mediaActions = ["play", "pause", "previoustrack", "nexttrack", "stop"];
 function updateSystemPlayback(force=false) {
   if (!navigator.mediaSession) return;
   try {
-    const state=!session?.ready||!session?.mediaActivated ? "none" : receiverView(session,playback).audible ? "playing" : "paused";
+    const state=!session?.ready||!session?.mediaActivated ? "none" : (session.controlOnly ? (session.controlIntent?.running ?? (!!playback?.playing&&!playback.paused)) : receiverView(session,playback).audible) ? "playing" : "paused";
     if(force||navigator.mediaSession.playbackState!==state)navigator.mediaSession.playbackState=state;
   } catch { /* Optional platform integration must not break PCM playback. */ }
 }
 function startSystemPlayback(owner) {
+  if(owner.systemPlaybackStarted)return;owner.systemPlaybackStarted=true;
   // Safari uses the audio-session category to distinguish music from ambient
   // Web Audio. Request it in the same user gesture as AudioContext.resume().
   try {
@@ -61,11 +63,11 @@ function startSystemPlayback(owner) {
   } catch { /* Older browsers do not expose a configurable audio session. */ }
   if (!navigator.mediaSession) return;
   const actions = {
-    play: () => { if (session === owner) { void resumeAudio(owner).catch(() => stats(owner)); command("play"); } },
-    pause: () => { if (session === owner) { owner.audio?.pause(); owner.pcmOutput?.pause();command("pause"); } },
+    play: () => { if (session === owner) { if(!owner.controlOnly)void resumeAudio(owner).catch(() => stats(owner)); command("play"); } },
+    pause: () => { if (session === owner) { owner.audio?.pause(); owner.controlMedia?.pause(); owner.pcmOutput?.pause();command("pause"); } },
     previoustrack: () => { if (session === owner) command("previous"); },
     nexttrack: () => { if (session === owner) command("next"); },
-    stop: () => { if (session === owner) stop(); },
+    stop: () => { if (session === owner) {if(owner.controlOnly){owner.controlMedia?.pause();command("pause");}else stop();} },
   };
   for (const action of mediaActions) {
     try { navigator.mediaSession.setActionHandler(action, actions[action]); } catch { /* Action unavailable on this browser. */ }
@@ -103,16 +105,21 @@ function command(action, value) {
   if (!session?.ready) return;
   const owner = session;
   if (owner.pending.size >= 16) { message("主机正在处理操作，请稍候"); return; }
-  if(["track","next","previous"].includes(action)){beginTrackSwitch(owner);updateReceiverView();}
+  if(!owner.controlOnly&&["track","next","previous"].includes(action)){beginTrackSwitch(owner);updateReceiverView();}
   const id = crypto.randomUUID();
-  if(["track","next","previous"].includes(action))owner.switchCommand=id;
-  const timer = setTimeout(() => { if(owner.switchCommand===id){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));}owner.pending.delete(id); controlResults.get(id)?.reject(Error("主机未确认操作，请检查当前配置"));controlResults.delete(id);soundTools.acknowledged(id,"主机尚未确认操作，请检查当前配置后重试"); if (session === owner) message("主机尚未确认操作，请稍后重试", true); }, action==="roomGenerate"?611000:16000);
+  if(owner.controlOnly&&["play","pause","next","previous","track","replay","mediaOpen"].includes(action)){
+    owner.controlLastAction=action;owner.controlIntent={id,running:action!=="pause"};
+    if(action==="pause")owner.controlMedia?.pause();
+    else void resumeAudio(owner).then(()=>{if(session===owner)stats(owner);}).catch(()=>{});
+  }
+  if(!owner.controlOnly&&["track","next","previous"].includes(action))owner.switchCommand=id;
+  const timer = setTimeout(() => { if(owner.controlIntent?.id===id){owner.controlIntent=null;syncControlMedia(owner,playback);}if(owner.switchCommand===id){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));}owner.pending.delete(id); controlResults.get(id)?.reject(Error("主机未确认操作，请检查当前配置"));controlResults.delete(id);soundTools.acknowledged(id,"主机尚未确认操作，请检查当前配置后重试"); if (session === owner) message("主机尚未确认操作，请稍后重试", true); }, action==="roomGenerate"?611000:16000);
   owner.pending.set(id, timer);
   if(owner.audio&&owner.socket?.readyState!==WebSocket.OPEN){
     void fetch(`/hls/${owner.hls}/control`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,command:{action,value}})}).then(async res=>{if(!res.ok)throw Error("远程控制连接已失效");const reply=await res.json();if(session===owner)receive("D",encoder.encode(JSON.stringify(reply)),owner);}).catch(error=>message(error.message,true));
     return id;
   }
-  if (!send("C", {id, command:{action, value}}, owner)) { clearTimeout(timer); owner.pending.delete(id); if(owner.switchCommand===id){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));} return; }
+  if (!send("C", {id, command:{action, value}}, owner)) { clearTimeout(timer); owner.pending.delete(id); if(owner.controlIntent?.id===id){owner.controlIntent=null;syncControlMedia(owner,playback);}if(owner.switchCommand===id){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));} return; }
   return id;
 }
 function chooseMenu(id, entries, action) {
@@ -169,7 +176,7 @@ function renderState(state) {
     session.trackKey=key;
   }
   playback = state;
-  if(session&&state.playing)session.mediaActivated=true;
+  if(session&&!session.controlOnly&&state.playing)session.mediaActivated=true;
   if(session)session.songDuration=Number(state.duration)||0;
   if(session&&state.playing&&!state.loading)session.pendingStart=false;
   const source=state.source;
@@ -182,7 +189,8 @@ function renderState(state) {
   $("format-badge").textContent=fields.join(" · ")||"等待歌曲信息";
   $("local-mute").checked=state.localMuted!==false;
   $("volume-balance").checked=state.volumeBalanceEnabled===true;
-  syncHostPlayback(session,state,resumeAudio,()=>{if(session)stats(session);});
+  if(session?.controlOnly)syncControlMedia(session,state);
+  if(!session?.controlOnly)syncHostPlayback(session,state,resumeAudio,()=>{if(session)stats(session);});
   if(session?.pcmOutput){
     const owner=session,running=!!state.playing&&!state.paused;
     if(owner.pcmHostRunning!==running){owner.pcmHostRunning=running;if(running)void resumeAudio(owner).catch(()=>stats(owner));else owner.pcmOutput.pause();}
@@ -227,6 +235,7 @@ function renderState(state) {
   }
 }
 function browserNeedsPlay() {
+  if(session?.controlOnly)return false;
   return !!session && (session.audio ? session.audio.paused : session.context?.state !== "running"||session.pcmOutput?.audio.paused);
 }
 function updatePlayButton() {
@@ -236,7 +245,7 @@ function updatePlayButton() {
 }
 function updateReceiverView() {
   if(!playback)return;
-  const view=receiverView(session,playback);
+  const view=session?.controlOnly?{label:playback.loading?"主机加载中":playback.playing&&!playback.paused?"电脑播放中":playback.paused?"已暂停":"已连接 · 仅控制",buffering:!!playback.loading,position:Number(playback.position)||0}:receiverView(session,playback);
   $("transport-status").textContent=view.label;
   $("transport-status").classList.toggle("buffering",view.buffering);
   $("play").setAttribute("aria-busy",String(view.buffering));
@@ -256,6 +265,7 @@ function stats(owner) {
   updateReceiverView();
   updatePlayButton();
   soundTools.playbackProgress();
+  if(owner.controlOnly){$("connection").textContent="仅控制";$("audio-info").textContent="声音在电脑播放 · 不传输音频";return;}
   if(owner.audio){
     if(!owner.startupProbe)recoverSynchronizedMedia(owner);
     void owner.prefetch?.update(owner,playback?.paused===true);
@@ -287,6 +297,12 @@ function receive(kind, body, owner) {
   }
   const value = JSON.parse(decoder.decode(body));
   if(kind==='Y'&&owner.audio){synchronizeMedia(owner,value,()=>stats(owner));return;}
+  if (kind === "H" && owner.controlOnly) {
+    if(value.protocol!==1||value.controlOnly!==true||value.canControl!==true)throw Error("主机不支持仅控制或未授予控制权限");
+    owner.ready=true;owner.canControl=true;clearTimeout(owner.connectDeadline);send("H",{protocol:1},owner);
+    $("pairing").hidden=true;pages.show();setControls(true);message("");stats(owner);
+    $("local-mute").disabled=true;$("transport-format").textContent="连接：仅控制";$("format-note").textContent="不接收音频，不占用手机音频播放";return;
+  }
   if (kind === "H") {
     if ((!owner.audio && owner.ready) || value.protocol !== 1 || value.sampleRate !== 48000 || value.channels !== 2 || value.sampleFormat !== (owner.audio?"hls-flac24":"f32le")) throw Error("主机音频格式不兼容");
     if(!owner.audio)owner.node.port.postMessage({type:"configure",bufferMs:value.bufferMs});
@@ -308,7 +324,7 @@ function receive(kind, body, owner) {
     const result=controlResults.get(value.id);if(value.error)result?.reject(Error(value.error));else result?.resolve(value.data);controlResults.delete(value.id);
     soundTools.acknowledged(value.id,value.error,value);
     clearTimeout(owner.pending.get(value.id)); owner.pending.delete(value.id);
-    if (value.error) {if(value.id===owner.switchCommand){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));}owner.pendingStart=false;stats(owner);message(value.error, true);}
+    if (value.error) {if(owner.controlIntent?.id===value.id){owner.controlIntent=null;syncControlMedia(owner,playback);}if(value.id===owner.switchCommand){cancelTrackSwitch(owner);syncHostPlayback(owner,playback??{},resumeAudio,()=>stats(owner));}owner.pendingStart=false;stats(owner);message(value.error, true);}
   } else if (kind === "E") {if(value.retryable===true&&!owner.audio){recoverPcm(owner);return;}throw Error(value.error || "主机连接失败");}
   else if(kind==="T"&&owner.audio&&value.clipped>0)$("format-note").textContent=`float32 转 24-bit PCM 后无损编码；已有 ${value.clipped} 个超满幅采样截断，请检查主机输出电平。`;
   else if (kind !== "T") throw Error("无法识别主机消息");
@@ -328,6 +344,11 @@ async function tokenFrom(value) {
   return url.hash.slice(1);
 }
 async function resumeAudio(owner) {
+  if(owner?.controlOnly){
+    if(!owner.controlMedia)owner.controlMedia=createControlMedia();
+    startSystemPlayback(owner);try{await owner.controlMedia.play();owner.controlMediaError="";}catch(error){owner.controlMediaError=String(error?.name||error).slice(0,80);message("手机系统媒体控制启动失败，电脑播放指令已发送",true);throw error;}owner.mediaActivated=true;
+    owner.mediaTitle=undefined;if(session===owner&&playback?.playing&&!playback.paused)renderState(playback);updateSystemPlayback();return;
+  }
   if(owner.synchronized){send('K',{resync:true,clock:localClock()},owner);return;}
   if(!owner.audio){await owner.context.resume();await owner.pcmOutput?.play();return;}
   const audio=owner.audio;
@@ -361,6 +382,7 @@ function openHlsControl(owner) {
   };
 }
 function showRememberedDevice(status){
+  serverControlOnly=status.canListen===false;
   const remembered=status?.status==="authorized"&&!status.legacy;
   for(const id of ["invite","device-name"]){
     $(id).hidden=remembered;
@@ -368,7 +390,7 @@ function showRememberedDevice(status){
   }
   $("remembered-device").hidden=!remembered;
   $("remembered-device").textContent=remembered?`已记住此设备${status.name?` · ${status.name}`:""}，无需再次输入密钥。`:"";
-  $("connect").textContent=remembered?"重新连接并收听":"连接并收听";
+  $("connect").textContent=remembered?"重新连接主机":"连接主机";
   if(remembered){$("invite").value="";try{sessionStorage.removeItem("sda-web-pairing");}catch{}}
 }
 let autoConnectAttempted=false,explicitlyDisconnected=false;
@@ -384,17 +406,18 @@ async function checkRememberedDevice(auto=false){
 async function authorizeDevice(owner,enteredKey){
   const status=await fetch("/pair/status").then(r=>{if(!r.ok)throw Error("无法检查设备授权");return r.json();});
   showRememberedDevice(status);
+  enforceControlPermission(owner,status);
   try{localStorage.setItem("sda-web-device-name",$("device-name").value);}catch{}
   if(status.status==="authorized")return status.legacy?await tokenFrom(enteredKey):"";
   const token=await tokenFrom(enteredKey);
   const response=await fetch("/pair/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token,name:$("device-name").value})});
   const requested=await response.json();if(!response.ok)throw Error(requested.error||"配对请求失败");
-  if(requested.status==="authorized")return "";
+  if(requested.status==="authorized"){enforceControlPermission(owner,await fetch("/pair/status").then(r=>r.json()));return "";}
   message("请在电脑的远程设置中批准此设备，可选择仅收听或允许控制。");
   for(let i=0;i<120;i++){
     await new Promise(resolve=>setTimeout(resolve,1000));if(owner.closed||session!==owner)throw Error("连接已取消");
     const next=await fetch("/pair/status").then(r=>r.json());
-    if(next.status==="authorized"){message("设备已授权，正在连接…");try{sessionStorage.removeItem("sda-web-pairing");}catch{}return "";}
+    if(next.status==="authorized"){enforceControlPermission(owner,next);message("设备已授权，正在连接…");try{sessionStorage.removeItem("sda-web-pairing");}catch{}return "";}
     if(next.status!=="pending")throw Error("配对已拒绝或过期，请重新申请");
   }
   throw Error("等待授权超时，请重新连接");
@@ -424,9 +447,10 @@ async function connectHls(enteredKey){
     await resumeAudio(owner).catch(()=>{if(audio.paused&&owner.hostRunning!==false)message("点击播放按钮开始收听");stats(owner);});
     if(owner.hostRunning===false)audio.pause();
     owner.timer=setInterval(()=>{if(owner.audio.paused&&!owner.synchronized)send("K",{},owner);stats(owner);},250);
-  }catch(error){if(session===owner)stop(error.message,true);}
+  }catch(error){if(error.controlOnlyRequired){useControlOnly();return;}if(session===owner)stop(error.message,true);}
 }
 function recoverPcm(owner){
+  if(owner?.controlOnly){stop("控制连接已断开，请重新连接",true);return;}
   if(session!==owner||owner.closed||owner.reconnect)return;
   if((owner.reconnectAttempts??0)>=5){stop("网络多次重连失败，请检查连接后重试",true);return;}
   owner.ready=false;owner.buffering=true;owner.pcmHostRunning=undefined;
@@ -444,13 +468,13 @@ function openPcmSocket(owner){
   if(session!==owner||owner.closed)return;
   owner.ready=false;owner.consumed=0;owner.queued=0;owner.bytes=0;owner.lastHost=Date.now();
   owner.pcmEpoch=(owner.pcmEpoch??0)+1;
-  owner.node.port.postMessage({type:"new-session",epoch:owner.pcmEpoch});
+  owner.node?.port.postMessage({type:"new-session",epoch:owner.pcmEpoch});
     const socket = owner.socket = new WebSocket(`wss://${location.host}/stream`); socket.binaryType = "arraybuffer";
     socket.onopen = async () => {
       if (owner.closed || session!==owner || owner.socket!==socket) { socket.close(); return; }
-      if(!owner.rtcFailed)owner.rtc=await prepareRtc(event=>socket.onmessage(event),()=>{owner.rtcFailed=true;recoverPcm(owner);});
+      if(!owner.controlOnly&&!owner.rtcFailed)owner.rtc=await prepareRtc(event=>socket.onmessage(event),()=>{owner.rtcFailed=true;recoverPcm(owner);});
       if(owner.closed||session!==owner||owner.socket!==socket){owner.rtc?.close();return;}
-      socket.send(JSON.stringify({protocol:1, token:owner.key,pcmPipeline:true,stateDelta:true,...(owner.rtc?{rtcOffer:owner.rtc.offer}:{})}));
+      socket.send(JSON.stringify({protocol:1, token:owner.key,controlOnly:owner.controlOnly===true,pcmPipeline:!owner.controlOnly,stateDelta:true,...(owner.rtc?{rtcOffer:owner.rtc.offer}:{})}));
       try { sessionStorage.setItem("sda-web-pairing", owner.key); } catch { /* Private browsing can disable storage. */ }
     };
     let pending = new Uint8Array(0);
@@ -491,11 +515,18 @@ async function connect() {
   if (session) return;
   const enteredKey = $("invite").value;
   $("invite").blur();
+  const controlOnly=serverControlOnly;
   const nativeHls = hlsAllowedByHost && !!document.createElement("audio").canPlayType("application/vnd.apple.mpegurl");
-  if (!window.isSecureContext || (!nativeHls && !window.AudioWorkletNode)) { message("此浏览器未提供安全音频环境。请使用 HTTPS 链接，在 Chrome、Edge、Firefox 或 Safari 新版中打开。", true); return; }
-  $("connect").disabled = true; message("正在连接音频…");
+  if (!window.isSecureContext || (!controlOnly && !nativeHls && !window.AudioWorkletNode)) { message("此浏览器未提供安全音频环境。请使用 HTTPS 链接，在 Chrome、Edge、Firefox 或 Safari 新版中打开。", true); return; }
+  $("connect").disabled = true; message(controlOnly?"正在连接主机控制…":"正在连接音频…");
   let owner;
   try {
+    if(controlOnly){
+      owner=session={controlOnly:true,closed:false,ready:false,pending:new Map(),lastHost:Date.now()};
+      $("disconnect").hidden=false;owner.key=await authorizeDevice(owner,enteredKey);
+      if(session!==owner||owner.closed)return;openPcmSocket(owner);
+      owner.timer=setInterval(()=>{if(session!==owner||!owner.ready)return;if(Date.now()-owner.lastHost>20000){stop("控制连接已断开，请重新连接",true);return;}send("K",{mediaState:{activated:owner.mediaActivated===true,paused:owner.controlMedia?.paused??true,readyState:owner.controlMedia?.readyState??0,error:owner.controlMediaError??"",hidden:document.hidden}},owner);stats(owner);},1000);return;
+    }
     if(nativeHls){await connectHls(enteredKey);return;}
     const context = new AudioContext({sampleRate:48000, latencyHint:"playback"});
     owner = session = {context, node:null, socket:null, closed:false, ready:false, consumed:0, queued:0, bytes:0, buffering:true, pending:new Map(), lastHost:Date.now()};
@@ -540,7 +571,7 @@ async function connect() {
       else if(health==="alive"&&owner.connectionProbing){owner.connectionProbing=false;message("");}
       if (owner.ready) send("K", {consumed:owner.consumed}, owner); stats(owner);
     }, 1000);
-  } catch (error) { if (!owner || session === owner) stop(error.message || "无法启动浏览器音频", true); }
+  } catch (error) { if(error.controlOnlyRequired){useControlOnly();return;}if (!owner || session === owner) stop(error.message || "无法启动浏览器音频", true); }
 }
 function stop(reason = "已断开连接", error = false) {
   for(const result of controlResults.values())result.reject(Error(reason));controlResults.clear();
@@ -551,6 +582,7 @@ function stop(reason = "已断开连接", error = false) {
     owner.closed = true; owner.startupProbe?.cancel(); clearInterval(owner.timer);clearTimeout(owner.syncTimer);clearTimeout(owner.connectDeadline);
     owner.prefetch?.cancel();
     owner.pcmOutput?.close();
+    if(owner.controlMedia){owner.controlMedia.pause();const url=owner.controlMedia.src;owner.controlMedia.removeAttribute("src");owner.controlMedia.load();owner.controlMedia.remove();URL.revokeObjectURL(url);}
     for (const timer of owner.pending.values()) clearTimeout(timer);
     if (!owner.audio && owner.socket?.readyState === WebSocket.OPEN) owner.socket.send(wire("Q", {}));
     owner.rtc?.close();owner.socket?.close(1000); owner.node?.port.postMessage({type:"stop"}); owner.node?.disconnect();
@@ -582,9 +614,10 @@ $("connect").addEventListener("click", async () => {
 });
 $("disconnect").addEventListener("click", () => void disconnectDevice());
 $("play").addEventListener("click", () => {
-  const pause=playback?.playing&&!playback.paused&&!browserNeedsPlay();
+  const pause=session?.controlOnly&&session.controlIntent?session.controlIntent.running:playback?.playing&&!playback.paused&&!browserNeedsPlay();
+  if(session?.controlOnly){command(pause?"pause":"play");return;}
   if(session&&!pause&&session.canControl!==false){session.pendingStart=true;updateReceiverView();}
-  if(session){const owner=session;if(pause){if(!owner.synchronized)owner.audio?.pause();}else void resumeAudio(owner).then(()=>{message("");stats(owner);}).catch(()=>stats(owner));}
+  if(session){const owner=session;if(pause){if(!owner.synchronized){owner.audio?.pause();owner.controlMedia?.pause();}}else void resumeAudio(owner).then(()=>{message("");stats(owner);}).catch(()=>stats(owner));}
   if(session?.canControl!==false)command(pause?"pause":"play");
 });
 for (const button of document.querySelectorAll("[data-action]")) button.addEventListener("click", () => command(button.dataset.action));
@@ -662,3 +695,33 @@ function initGlass(){
 }
 
 $("device-name").value=/iPad/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1)?"iPad":/iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android":"浏览器设备";
+
+function enforceControlPermission(owner,status){
+  serverControlOnly=status.canListen===false;
+  if(serverControlOnly!==!!owner.controlOnly){const error=Error("主机设备权限已更新");error.controlOnlyRequired=true;throw error;}
+}
+function useControlOnly(){
+  stop("正在按照主机权限连接…");void connect();
+}
+
+// An entirely local silent media session carries iOS controls; no song PCM is received.
+function createControlMedia(){
+  const rate=48000,length=rate*30*2,bytes=new ArrayBuffer(44+length),view=new DataView(bytes);
+  const tag=(offset,value)=>{for(let i=0;i<value.length;i++)view.setUint8(offset+i,value.charCodeAt(i));};
+  tag(0,"RIFF");view.setUint32(4,36+length,true);tag(8,"WAVE");tag(12,"fmt ");view.setUint32(16,16,true);
+  view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,rate,true);view.setUint32(28,rate*2,true);
+  view.setUint16(32,2,true);view.setUint16(34,16,true);tag(36,"data");view.setUint32(40,length,true);
+  const media=document.createElement("audio");media.src=URL.createObjectURL(new Blob([bytes],{type:"audio/wav"}));
+  media.loop=true;media.hidden=true;media.setAttribute("playsinline","");document.body.append(media);return media;
+}
+
+
+function syncControlMedia(owner,state){
+  const running=!!state?.playing&&!state.paused;
+  if(owner.controlIntent){
+    if(owner.controlIntent.running!==running)return;
+    owner.controlIntent=null;
+  }
+  if(!running)owner.controlMedia?.pause();
+  else if(owner.mediaActivated&&owner.controlMedia?.paused)void owner.controlMedia.play().catch(error=>{owner.controlMediaError=String(error?.name||error).slice(0,80);});
+}

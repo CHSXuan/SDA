@@ -10,7 +10,7 @@ class RemoteDevices {
  pendingList(){this.clean();return [...this.pending.values()].map(({hash,...v})=>v);}
  authenticateToken(token){if(typeof token!=='string'||!/^[a-f0-9]{64}$/.test(token))return null;const digest=hash(token);return this.records().find(v=>crypto.timingSafeEqual(Buffer.from(v.hash,'hex'),Buffer.from(digest,'hex')))||null;}
  authenticate(req){return this.authenticateToken(cookie(req));}
- status(req){this.clean();const device=this.authenticate(req);if(device)return {status:'authorized',name:device.name,canControl:device.canControl!==false};const digest=hash(cookie(req));const pending=[...this.pending.values()].find(v=>v.hash===digest);return {status:pending?'pending':'unpaired'};}
+ status(req){this.clean();const device=this.authenticate(req);if(device)return {status:'authorized',name:device.name,canControl:device.canControl!==false,canListen:device.canListen!==false};const digest=hash(cookie(req));const pending=[...this.pending.values()].find(v=>v.hash===digest);return {status:pending?'pending':'unpaired'};}
  request(req,key,token,name){
   this.clean();if(this.authenticate(req))return {status:'authorized'};
   const current=this.status(req);if(current.status==='pending')return current;
@@ -23,10 +23,10 @@ class RemoteDevices {
   this.pending.set(id,{id,hash:hash(secret),name:typeof name==='string'?name.replace(/[\x00-\x1f]/g,'').trim().slice(0,60)||'浏览器设备':'浏览器设备',address:ip,expires:Date.now()+120000});this.changed();
   return {status:'pending',cookie:`sda_device=${secret}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=31536000`};
  }
- approve(id,canControl){this.clean();const pending=this.pending.get(id);if(!pending)throw Error('配对申请已过期');if(this.records().length>=16)throw Error('已授权设备达到上限，请先撤销旧设备');if(typeof canControl!=='boolean')throw Error('无效设备权限');const {address,expires,...record}=pending;this.write([...this.records(),{...record,canControl,createdAt:Date.now()}]);this.pending.delete(id);this.changed();}
+ approve(id,canControl,canListen=true){this.clean();const pending=this.pending.get(id);if(!pending)throw Error('配对申请已过期');if(this.records().length>=16)throw Error('已授权设备达到上限，请先撤销旧设备');if(typeof canControl!=='boolean'||typeof canListen!=='boolean'||(!canControl&&!canListen))throw Error('无效设备权限');const {address,expires,...record}=pending;this.write([...this.records(),{...record,canControl,canListen,createdAt:Date.now()}]);this.pending.delete(id);this.changed();}
  reject(id){this.pending.delete(id);this.changed();}
  revoke(id){this.write(this.records().filter(v=>v.id!==id));this.kick(id);this.changed();}
- permission(id,canControl){if(typeof canControl!=='boolean')throw Error('无效设备权限');this.write(this.records().map(v=>v.id===id?{...v,canControl}:v));this.kick(id);this.changed();}
+ permission(id,canControl,canListen=true){if(typeof canControl!=='boolean'||typeof canListen!=='boolean'||(!canControl&&!canListen))throw Error('无效设备权限');this.write(this.records().map(v=>v.id===id?{...v,canControl,canListen}:v));this.kick(id);this.changed();}
  logout(req){const device=this.authenticate(req);if(device)this.revoke(device.id);const digest=hash(cookie(req));for(const [id,value] of this.pending)if(value.hash===digest)this.pending.delete(id);this.changed();}
  clearPending(){this.pending.clear();this.attempts.clear();}
 }

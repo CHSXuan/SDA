@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from "react";
-export interface RemoteCommand { id?:string; action:string; value?:unknown }
+export interface RemoteCommand { controlOnly?:boolean; id?:string; action:string; value?:unknown }
 export interface RemoteTools {
   generator?:{available:boolean;running:boolean;current:number;total:number};
   layout:string;head:string;locked:boolean;dense?:boolean;calibrated?:boolean;error?:string;
@@ -22,7 +22,7 @@ export interface RemotePlayback {
   currentId:string; playbackMode:string; stereoMode:string; playlist:{id:string;title:string}[];
 }
 export interface RemoteStatus {
-  capacity?:number;connectedDevices?:{id:string;name:string;canControl:boolean}[];devices?:{id:string;name:string;canControl:boolean;createdAt:number}[];pendingDevices?:{id:string;name:string;address:string;expires:number}[];
+  capacity?:number;connectedDevices?:{id:string;name:string;canControl:boolean;controlOnly?:boolean}[];devices?:{id:string;name:string;canControl:boolean;canListen?:boolean;createdAt:number}[];pendingDevices?:{id:string;name:string;address:string;expires:number}[];
   localMuted?:boolean;
   hlsAllowed?:boolean;
   role:"off"|"host"|"client"; phase:string; detail:string; peer:string|null;

@@ -46,7 +46,7 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
     guard.current=true;setBusy(true);setHeard(false);setError("");const token=++epoch.current;
     try{
       const output=await window.sdaDesktop?.getOutputDevices?.();
-      if(output?.status.mode?.toLowerCase().includes("exclusive")||output?.status.requested.exclusive)throw new Error("请先在输出设置中切换为共享模式，再进行定位测试。");
+      if(output?.status.mode==="asio"||output?.status.mode?.toLowerCase().includes("exclusive")||output?.status.requested.exclusive)throw new Error("请先在输出设置中切换为共享模式，再进行定位测试。");
       await (audition.current??=new PersonalHrtfAudition()).play(trial,gain,onVisual);
       if(alive.current&&token===epoch.current)setHeard(true);
     }catch(e){if(alive.current&&token===epoch.current)setError(String(e));}
