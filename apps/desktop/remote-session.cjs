@@ -183,7 +183,7 @@ class RemoteSession {
     const incoming=decodePackets((kind,body)=>{
       const message=readJson(body);lastSeen=Date.now();
       if(kind==="H"){if(ready||message.protocol!==1)throw Error("远程协议不兼容");ready=true;}
-      else if(kind==="K"){if(!ready)throw Error("尚未连接");if(message.mediaState&&Date.now()-lastMediaLog>5000){lastMediaLog=Date.now();const m=message.mediaState;this.hooks.diagnostic?.({transport:"control-only",activated:m.activated===true,paused:m.paused!==false,readyState:Number.isInteger(m.readyState)?m.readyState:null,error:typeof m.error==="string"?m.error.slice(0,80):"",hidden:m.hidden===true});}}
+      else if(kind==="K"){if(!ready)throw Error("尚未连接");if(typeof message.background==="boolean")socket.backgroundUntil=message.background?Date.now()+300000:0;if(message.mediaState&&Date.now()-lastMediaLog>5000){lastMediaLog=Date.now();const m=message.mediaState;this.hooks.diagnostic?.({transport:"control-only",activated:m.activated===true,paused:m.paused!==false,readyState:Number.isInteger(m.readyState)?m.readyState:null,error:typeof m.error==="string"?m.error.slice(0,80):"",hidden:m.hidden===true,keepAlive:["running","suspended","interrupted","closed","unavailable"].includes(m.keepAlive)?m.keepAlive:"unknown",keepAliveTime:Number.isFinite(m.keepAliveTime)?m.keepAliveTime:null,keepAliveError:typeof m.keepAliveError==="string"?m.keepAliveError.slice(0,80):""});}}
       else if(kind==="C"){
         if(!ready||typeof message.id!=="string"||message.id.length>64)throw Error("无效远程控制");
         const command=validateControl(message.command);
@@ -197,7 +197,7 @@ class RemoteSession {
       }else if(kind==="Q")socket.end();else throw Error("不支持的控制消息");
     });
     socket.on("data",chunk=>{try{incoming(chunk);}catch(e){this.failPeer(socket,e.message);}});
-    const timer=setInterval(()=>{socket.probeTransport?.();if(Date.now()-Math.max(lastSeen,socket.transportLastSeen?.()??0)>15000)this.failPeer(socket,"设备连接心跳超时，请重新连接");else socket.write(packet("T",{}));},1000).unref();
+    const timer=setInterval(()=>{socket.probeTransport?.();if(Date.now()-Math.max(lastSeen,socket.transportLastSeen?.()??0)>15000&&Date.now()>=(socket.backgroundUntil??0))this.failPeer(socket,"设备连接心跳超时，请重新连接");else socket.write(packet("T",{}));},1000).unref();
     socket.once("close",()=>{clearInterval(timer);for(const [id,v]of this.pendingControls)if(v.socket===socket)this.completeControl(id,"设备已断开");if(this.role==="host"){this.phase=this.hostPeers.size?"connected":"waiting";this.detail=this.hostPeers.size?`${this.hostPeers.size} 台设备已连接`:"等待设备连接";this.publish();}});
     if(socket.destroyed||generation!==this.generation)return;
     this.phase="connected";this.detail="仅控制设备已连接，声音由电脑播放";this.publish();
@@ -216,6 +216,7 @@ class RemoteSession {
         if(p.ready||message.protocol!==1)throw Error("远程协议不兼容");p.ready=true;p.lastFeedback=Date.now();if(p.reset){p.reset=false;socket.write(packet("R"));}hub.pump();
       }else if(kind==="K"){
         if(!p.ready||!Number.isSafeInteger(message.consumed)||message.consumed<p.consumed||message.consumed>p.sent)throw Error("无效音频确认");
+        if(typeof message.background==="boolean")socket.backgroundUntil=message.background?Date.now()+300000:0;
         p.consumed=message.consumed;hub.feedback(p,message.queuedFrames);p.lastFeedback=Date.now();this.queued=Math.max(0,...[...hub.peers.values()].map(v=>v.sent-v.consumed));hub.pump();
         if(message.mediaState&&Date.now()-(p.mediaReportAt??0)>1000){
           const m=message.mediaState;p.mediaReportAt=Date.now();
@@ -238,7 +239,7 @@ class RemoteSession {
     const timer=setInterval(()=>{
       socket.probeTransport?.();
       const lastSeen=Math.max(p.lastFeedback,socket.transportLastSeen?.()??0);
-      if(Date.now()-lastSeen>15000)this.failPeer(socket,"设备连接心跳超时，请重新连接");
+      if(Date.now()-lastSeen>15000&&Date.now()>=(socket.backgroundUntil??0))this.failPeer(socket,"设备连接心跳超时，请重新连接");
       else{socket.write(packet("T",{}));this.publish();}
     },1000).unref();
     socket.once("close",()=>{
