@@ -49,6 +49,7 @@ fn handle_command(
         Command::SetRemoteLocalMute {muted} => { remote_audio::LOCAL_MUTED.store(muted,Ordering::Release); write_event(&Event::Ack {command:"setRemoteLocalMute",accepted:true,detail:None}); },
         Command::SetRemoteOutput {address,token} => output_manager::remote_request(address,token),
         Command::ListOutputDevices => output_manager::request(None),
+        Command::OpenAsioControlPanel => output_manager::control_panel(),
         Command::SetOutputDevice {settings} => output_manager::request(Some(settings)),
         Command::Hello { protocol } => write_event(&Event::Ack {
             command: "hello",
@@ -382,13 +383,17 @@ fn handle_command(
         }
         Command::ClearHeadPose => {
             state.head_pose = None;
+            state.pending_pose = None;
+            state.last_pose_apply = None;
+            state.pose_route_base = None;
+            let ramp = if state.output_active && !state.paused { convolution::DEFAULT_PARTITION as u32 } else { 0 };
             let ids: Vec<String> = state
                 .sources
                 .iter()
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in ids {
-                let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
+                let _ = state.route_source_now(&id, ramp);
             }
             write_event(&Event::Ack {
                 command: "clearHeadPose",
@@ -1145,12 +1150,31 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetRemoteSync {..} => "setRemoteSync",
         Command::SetRemoteOutput {..} => "setRemoteOutput",
         Command::ListOutputDevices => "listOutputDevices",
+        Command::OpenAsioControlPanel => "openAsioControlPanel",
         Command::SetOutputDevice { .. } => "setOutputDevice",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clear_pose_removes_old_throttle_and_accepts_new_reference_immediately() {
+        let mut engine = Engine::new(48_000, 2);
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        let old = [0.0, 0.0, 0.5, 0.8660254];
+        handle_command(&mut engine, Command::HeadPose { orientation:old }, &fifo, &telemetry);
+        handle_command(&mut engine, Command::ClearHeadPose, &fifo, &telemetry);
+        assert!(engine.head_pose.is_none());
+        assert!(engine.pending_pose.is_none());
+        assert!(engine.last_pose_apply.is_none());
+        assert!(engine.pose_route_base.is_none());
+        let zero = [0.0,0.0,0.0,1.0];
+        handle_command(&mut engine, Command::HeadPose { orientation:zero }, &fifo, &telemetry);
+        assert_eq!(engine.head_pose, Some(zero));
+        assert_eq!(engine.pose_route_base, Some(zero));
+    }
+
     #[test]
     fn remote_clock_gate_bypasses_the_render_command_queue(){
         let json=br#"{"type":"setRemoteSync","enabled":false}"#;

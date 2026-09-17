@@ -36,6 +36,11 @@ export default function OutputPanel() {
       if(!result.accepted)setError(result.status?.detail || "切换失败，原输出恢复失败时请重试");
     }catch(e){setError(String(e));}finally{setBusy(false);}
   };
+  const openPanel=async()=>{
+    setBusy(true);setError("");
+    try { if(!await bridge.openAsioControlPanel?.()) setError("控制面板打开失败，请检查驱动状态"); }
+    catch(e){setError(String(e));}finally{setBusy(false);}
+  };
   const refresh=async()=>{
     setBusy(true);setError("");
     try{setData(await bridge.getOutputDevices!());}catch(e){setError(String(e));}finally{setBusy(false);}
@@ -60,7 +65,7 @@ export default function OutputPanel() {
     {draft.exclusive&&<small role="note">独占绕过系统混音，UU 等远程软件可能听不到。远程听音请选择「远程兼容」。</small>}
     {directSound&&<small>使用 Windows 共享音频链路，保留双耳渲染与头部追踪。UU 通常可以采集系统播放声音；延迟不一定低于 WASAPI。</small>}
     {asio&&<small>使用驱动的输出 1 / 2 和首选缓冲。缓冲大小、硬件端口请在厂商驱动或 ASIO4ALL 控制面板设置。ASIO 不经过 Windows 共享混音，UU / RDP 可能无法采集；降低缓冲不代表能加快解码或空间渲染。</small>}
-    <div className="output-manager-actions"><button data-button="primary" onClick={()=>void apply()} disabled={!data}>{busy?"处理中…":data?.status.state==="unavailable"?"应用并重试":"应用"}</button><button onClick={()=>void refresh()}>刷新设备</button></div>
+    <div className="output-manager-actions"><button data-button="primary" onClick={()=>void apply()} disabled={!data}>{busy?"处理中…":data?.status.state==="unavailable"?"应用并重试":"应用"}</button><button onClick={()=>void refresh()}>刷新设备</button>{asio&&<button onClick={()=>void openPanel()} disabled={data?.status.state!=="ready"||data?.status.mode!=="asio"||data?.status.actualId!==draft.deviceId} title="先应用所选 ASIO 设备，再打开正在使用的驱动面板">打开 ASIO 控制面板</button>}</div>
     <div className="output-manager-status" aria-live="polite">
       <strong>{data?.status.state==="ready"?data.status.actualName:"输出不可用"}</strong>
       {data?.status.state==="ready"&&<span>{data.status.mode==="directsound"?"DirectSound":data.status.mode==="asio"?"ASIO":data.status.mode==="exclusive"?"实际独占":"实际共享"} · {(data.status.sampleRate??0)/1000} kHz · {data.status.channels} 声道 · 缓冲 {data.status.bufferMs?.toFixed(1)} ms</span>}

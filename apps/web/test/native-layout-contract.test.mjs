@@ -16,7 +16,7 @@ assert.match(app, /await enqueueNative\(`startAt \$\{origin\}`/);
 assert.match(app, /const layoutIdRef = useRef<LayoutId \| "auto">\("auto"\)/);
 assert.match(app, /const requestedLayout = layoutIdRef\.current/);
 assert.match(app, /if \(requestedLayout !== lid\)/);
-assert.match(app, /const resolver = \(labels: readonly string\[\], hasDynamics: boolean\) => \{/);
+assert.match(app, /const resolver = \(labels: readonly string\[\], hasDynamics: boolean, codec\?: string\) => \{/);
 assert.match(app, /lid === "auto",/);
 
 console.log("native layout web contract tests passed");

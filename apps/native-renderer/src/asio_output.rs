@@ -7,8 +7,12 @@ use std::sync::{
 };
 
 pub(super) fn endpoints() -> Vec<Endpoint> {
-    asio_sys::Asio::new()
-        .driver_names()
+    // The SDK's temporary AsioDriverList calls CoInitialize(STA) and
+    // unconditionally CoUninitialize. Keep enumeration isolated from the output thread:
+    // an apartment-mode mismatch must not uninitialize the caller's COM instead.
+    thread::spawn(|| asio_sys::Asio::new().driver_names())
+        .join()
+        .unwrap_or_default()
         .into_iter()
         .map(|name| Endpoint {
             id: format!("asio:{name}"),
@@ -26,6 +30,7 @@ pub(super) struct AsioOutput {
     driver: Arc<asio_sys::Driver>,
     message_id: Option<asio_sys::MessageCallbackId>,
     callbacks: Arc<AtomicU64>,
+    silent_frames: Arc<AtomicU64>,
     last_callback: (u64, Instant),
     failed: Arc<AtomicBool>,
     fading: Arc<AtomicBool>,
@@ -80,6 +85,7 @@ impl AsioOutput {
         let failed = Arc::new(AtomicBool::new(false));
         let fading = Arc::new(AtomicBool::new(false));
         let callbacks = Arc::new(AtomicU64::new(0));
+        let silent_frames = Arc::new(AtomicU64::new(0));
         let format = default.sample_format();
         let stream = match format {
             cpal::SampleFormat::F32 => build::<f32>(
@@ -90,6 +96,7 @@ impl AsioOutput {
                 failed.clone(),
                 fading.clone(),
                 callbacks.clone(),
+                silent_frames.clone(),
             ),
             cpal::SampleFormat::I16 => build::<i16>(
                 &device,
@@ -99,6 +106,7 @@ impl AsioOutput {
                 failed.clone(),
                 fading.clone(),
                 callbacks.clone(),
+                silent_frames.clone(),
             ),
             cpal::SampleFormat::I32 => build::<i32>(
                 &device,
@@ -108,6 +116,7 @@ impl AsioOutput {
                 failed.clone(),
                 fading.clone(),
                 callbacks.clone(),
+                silent_frames.clone(),
             ),
             _ => return Err(format!("ASIO 不支持此驱动的采样格式：{format:?}")),
         }?;
@@ -135,6 +144,7 @@ impl AsioOutput {
             driver: device.driver.clone(),
             message_id: Some(message_id),
             callbacks,
+            silent_frames,
             last_callback: (0, Instant::now()),
             failed,
             fading,
@@ -161,9 +171,59 @@ impl AsioOutput {
             Ok(())
         }
     }
+    pub(super) fn control_panel(&self) -> Result<(), String> {
+        // ASIO drivers may require controlPanel on the same STA that loaded them.
+        let code = unsafe { asio_sys::bindings::asio_import::show_control_panel() };
+        if code == 0 || code == 0x3f4847a0 { Ok(()) }
+        else { Err(format!("ASIO 控制面板打开失败（{code}）")) }
+    }
+    pub(super) fn pump_panel() -> bool {
+        use windows::Win32::{Foundation::{BOOL, HWND, LPARAM}, System::Threading::GetCurrentProcessId, UI::WindowsAndMessaging::*};
+        unsafe extern "system" fn visible_window(hwnd: HWND, param: LPARAM) -> BOOL {
+            unsafe {
+                let mut pid = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid == GetCurrentProcessId() && IsWindowVisible(hwnd).as_bool() {
+                    *(param.0 as *mut bool) = true;
+                }
+            }
+            BOOL(1)
+        }
+        let mut message = MSG::default();
+        unsafe {
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        let mut visible = false;
+        unsafe { let _ = EnumWindows(Some(visible_window), LPARAM((&mut visible as *mut bool) as isize)); }
+        visible
+    }
     pub(super) fn drain(&self) {
+        self.drain_silence(false);
+    }
+    pub(super) fn drain_shutdown(&self) {
+        self.drain_silence(true);
+    }
+    fn drain_silence(&self, shutdown: bool) {
+        let mut input_latency = 0;
+        let mut output_latency = 0;
+        let result = unsafe { asio_sys::bindings::asio_import::ASIOGetLatencies(&mut input_latency, &mut output_latency) };
+        if result != 0 && result != 0x3f4847a0 { output_latency = 0; }
+        let target = drain_frames(self.rate, self.frames, output_latency.max(0) as u64, shutdown);
+        let before = self.silent_frames.load(Ordering::Acquire);
         self.fading.store(true, Ordering::Release);
-        thread::sleep(Duration::from_millis(20));
+        // ASIO4ALL may have a WDM/Bluetooth queue beyond its two ASIO buffers.
+        // Feed actual silence through that queue while the driver is still
+        // running. Sleeping after ASIOStop cannot replace its retained audio.
+        let deadline = Instant::now() + Duration::from_secs_f64(target as f64 / self.rate as f64 + 1.0);
+        while self.silent_frames.load(Ordering::Acquire).saturating_sub(before) < target
+            && Instant::now() < deadline && !self.failed.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(2));
+        }
+        eprintln!("ASIO silence drain: shutdown={shutdown} frames={}/{} latency={output_latency}",
+            self.silent_frames.load(Ordering::Acquire).saturating_sub(before), target);
     }
     pub(super) fn status(&self, requested: &Settings, detail: String) -> Status {
         Status {
@@ -195,6 +255,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     failed: Arc<AtomicBool>,
     fading: Arc<AtomicBool>,
     callbacks: Arc<AtomicU64>,
+    silent_frames: Arc<AtomicU64>,
 ) -> Result<cpal::platform::AsioStream, String> {
     let rate = config.sample_rate.0;
     let mut converter = device_output::DeviceOutput::new(rate, STEREO_FIFO_START_FRAMES);
@@ -217,6 +278,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
                 let origin = telemetry
                     .callback_consumed_sample_pos
                     .load(Ordering::Relaxed);
+                let mut all_silent = true;
                 let popped = converter.fill(&fifo, enabled, data.len() / 2, |i, frame| {
                     fade = if lossless && !muted {
                         1.0
@@ -226,6 +288,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
                         (fade + 1.0 / (rate as f32 * 0.005)).min(1.0)
                     };
                     let frame = [frame[0] * fade, frame[1] * fade];
+                    all_silent &= frame == [0.0; 2];
                     monitor.observe(
                         std::iter::once(frame),
                         origin + i as u64 * 48000 / rate as u64,
@@ -234,6 +297,9 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
                     data[i * 2] = T::from_sample(frame[0].clamp(-1.0, 1.0));
                     data[i * 2 + 1] = T::from_sample(frame[1].clamp(-1.0, 1.0));
                 });
+                if muted && all_silent {
+                    silent_frames.fetch_add((data.len() / 2) as u64, Ordering::Release);
+                }
                 record_callback(
                     &telemetry,
                     started,
@@ -248,4 +314,23 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
             None,
         )
         .map_err(|e| format!("无法启动 ASIO：{e}"))
+}
+
+fn drain_frames(rate: u32, buffer_frames: usize, latency: u64, shutdown: bool) -> u64 {
+    // Some Bluetooth bridges under-report their downstream queue (~1 second
+    // observed on reconnect). This guard affects teardown only, never playback.
+    let minimum = rate as u64 * if shutdown { 1500 } else { 20 } / 1000;
+    latency.saturating_add((buffer_frames as u64).saturating_mul(2))
+        .max(minimum).min(rate as u64 * 3)
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    #[test]
+    fn silence_covers_downstream_latency_and_both_driver_buffers() {
+        assert_eq!(super::drain_frames(48000,512,0,true),72000);
+        assert_eq!(super::drain_frames(48000,4096,96000,true),104192);
+        assert_eq!(super::drain_frames(48000,512,1024,false),2048);
+        assert_eq!(super::drain_frames(48000,512,u64::MAX,true),144000);
+    }
 }

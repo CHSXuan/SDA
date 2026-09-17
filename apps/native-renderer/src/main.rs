@@ -183,6 +183,7 @@ enum Command {
     },
     Health,
     ListOutputDevices,
+    OpenAsioControlPanel,
     SetRemoteLocalMute { muted: bool },
     SetRemoteEnd { sample:u64 },
     SetRemoteSync { enabled: bool, #[serde(rename="startAtMs",default)] start_at_ms: u64, #[serde(rename="stopAtMs",default)] stop_at_ms: u64, #[serde(rename="bufferMs",default)] buffer_ms: u64 },
@@ -1072,6 +1073,9 @@ impl Engine {
         self.pcm_coverage=pcm_coverage::PcmCoverage::default();
         self.clear_object_activity(origin);
         self.head_pose = None;
+        self.pending_pose = None;
+        self.last_pose_apply = None;
+        self.pose_route_base = None;
         self.lfe_muted = false;
         self.lfe_path.reset();
         self.hardware_lfe.reset();
@@ -2713,6 +2717,9 @@ mod tests {
     fn reset_discards_old_sources_pose_and_lfe_tail() {
         let mut engine = calibrated_engine();
         engine.head_pose = Some([0.0, 0.0, 0.5, 0.5]);
+        engine.pending_pose = engine.head_pose;
+        engine.pose_route_base = engine.head_pose;
+        engine.last_pose_apply = Some(std::time::Instant::now());
         engine.lfe_muted = true;
         let _ = engine.lfe_path.process(1.0);
         engine.sources.insert(
@@ -2726,6 +2733,9 @@ mod tests {
         engine.reset_session(0);
         assert!(engine.sources.is_empty());
         assert!(engine.head_pose.is_none());
+        assert!(engine.pending_pose.is_none());
+        assert!(engine.pose_route_base.is_none());
+        assert!(engine.last_pose_apply.is_none());
         assert!(!engine.lfe_muted);
         assert_eq!(engine.lfe_path.process(0.0), 0.0);
         assert!(!engine.output_active);

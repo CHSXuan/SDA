@@ -55,6 +55,7 @@ pub struct Status {
     detail: String,
 }
 enum Request {
+    ControlPanel,
     List,
     Set(Settings),
     Devices(Vec<Endpoint>),
@@ -86,6 +87,11 @@ pub fn remote_request(address:Option<String>,token:Option<String>) {
     let accepted=CONTROL.get().is_some_and(|tx|tx.send(Request::Remote(address.zip(token))).is_ok());
     if !accepted {write_event(&Event::Ack {command:"setRemoteOutput",accepted:false,detail:Some("output manager unavailable")});}
 }
+pub fn control_panel() {
+    if !CONTROL.get().is_some_and(|tx| tx.send(Request::ControlPanel).is_ok()) {
+        write_event(&Event::Ack {command:"openAsioControlPanel", accepted:false, detail:Some("output manager unavailable")});
+    }
+}
 pub fn stop() {
     if let Some(tx) = CONTROL.get() {
         let _ = tx.send(Request::Stop);
@@ -99,7 +105,7 @@ mod platform {
     struct ComScope;
     impl ComScope {
         fn new() -> Result<Self, String> {
-            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok().map_err(|e| e.to_string())?; }
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().map_err(|e| e.to_string())?; }
             Ok(Self)
         }
     }
@@ -677,10 +683,33 @@ pub fn run(
     let mut virtual_tick=Instant::now();
     let remote_telemetry=RuntimeTelemetry::default();
     let _=remote_audio::mirror_fifo();
+    let mut panel = false;
+    let mut deferred = std::collections::VecDeque::new();
     let mut last_retry = Instant::now();
     loop {
-        let request = rx.recv_timeout(Duration::from_millis(2));
+        if panel && !asio_output::AsioOutput::pump_panel() {
+            panel = false;
+            write_event(&Event::Ack {command:"openAsioControlPanel", accepted:true, detail:None});
+        }
+        let request = if !panel && !deferred.is_empty() {
+            Ok(deferred.pop_front().unwrap())
+        } else { rx.recv_timeout(Duration::from_millis(2)) };
+        // Never destroy or reconfigure a driver while its control panel is active.
+        let request = if panel {
+            if let Ok(request) = request { deferred.push_back(request); }
+            Err(mpsc::RecvTimeoutError::Timeout)
+        } else { request };
         match request {
+            Ok(Request::ControlPanel) => {
+                let result = match output.as_ref().map(|o| &o.backend) {
+                    Some(Backend::Asio(asio)) => asio.control_panel(),
+                    _ => Err("请先应用 ASIO 输出设备".to_string()),
+                };
+                match result {
+                    Ok(()) => panel = true,
+                    Err(error) => write_event(&Event::Ack {command:"openAsioControlPanel", accepted:false, detail:Some(&error)}),
+                }
+            }
             Ok(Request::Stop) => break,
             Ok(Request::Remote(next)) => {
                 let result=if let Some((address,token))=next {
@@ -831,6 +860,7 @@ pub fn run(
                 write_event(&Event::Error{detail:format!("remote audio: {error}")});
             }
         }
+        if panel { continue; }
         if let Some(active) = &mut output {
             if let Err(err) = active.tick(&fifo, &telemetry, false) {
                 detail = format!("音频输出会话失效，正在重新初始化：{err}");
@@ -852,6 +882,15 @@ pub fn run(
                     if detail!=next {detail=next;publish(unavailable(&requested,detail.clone()),devices.clone());}
                 }
             }
+        }
+    }
+    // Keep the device running until its queue contains silence. In particular,
+    // dropping ASIO immediately can replay the old downstream tail on reopen.
+    telemetry.callback_output_enabled.store(false, Ordering::Release);
+    if let Some(active) = &mut output {
+        match &mut active.backend {
+            Backend::Asio(asio) => asio.drain_shutdown(),
+            _ => active.drain(&fifo, &telemetry),
         }
     }
     drop(output);
@@ -1159,6 +1198,9 @@ mod platform {
         loop {
             let request = rx.recv_timeout(Duration::from_millis(10));
             match request {
+                Ok(Request::ControlPanel) => {
+                    write_event(&Event::Ack {command:"openAsioControlPanel", accepted:false, detail:Some("ASIO is only supported on Windows")});
+                }
                 Ok(Request::Stop) => break,
                 Ok(Request::Remote(next)) => {
                     let result = if let Some((address, token)) = next {

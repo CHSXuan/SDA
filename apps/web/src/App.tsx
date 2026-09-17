@@ -517,6 +517,7 @@ export function App() {
       let createdPlayer: SdaPlayer | null = null;
       let endedHandled = false;
       let nativeSessionReady = false;
+      let playbackHeadCentered = false;
       const nativeSessionEpoch = nativeSessionEpochRef.current;
       const isNativeSessionCurrent = () => nativeSessionEpochRef.current === nativeSessionEpoch && isCurrent();
       const ownsNativeSession = () => nativeSessionReady && isNativeSessionCurrent();
@@ -526,6 +527,11 @@ export function App() {
       }
       let nativeStatus = await desktop.getNativeRendererStatus();
       if (!nativeStatus.running) await desktop.startNativeRenderer();
+      if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
+      // Silence and discard the previous session before potentially expensive
+      // HRTF/room initialization. A reloaded UI has no old player to dispose.
+      const resetQueued = await desktop.nativeRendererReset?.(0);
+      if (resetQueued !== true) throw new Error("native renderer could not reset the replacement session");
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.04);
       if(desktop.nativeRendererComparisonGain && !await desktop.nativeRendererComparisonGain(comparisonGain.current))throw new Error("参考电平设置失败");
@@ -544,12 +550,7 @@ export function App() {
       }
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
-      // A replacement session owns the sidecar from this exact point. Reset it
-      // before any new source declaration; an outgoing player must never reset
-      // or remove sources later, after this session starts submitting PCM.
-      const resetQueued = await desktop.nativeRendererReset?.(0);
-      if (resetQueued === false) throw new Error("native renderer could not reset the replacement session");
-      if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
+      // Configuration is ready; only this replacement may submit new sources.
       nativeSessionReady = true;
       nativeRendererRunningRef.current = true;
       nativeRendererSampleRef.current = 0;
@@ -719,7 +720,7 @@ export function App() {
               nativeSourceDeclarations.clear();
             },
             setHeadPose: (pose) => {
-              if (ownsNativeSession()) void enqueueNative("headPose", () => desktop.nativeRendererPose?.(pose.orientation)).catch((error) => {
+              if (ownsNativeSession() && playbackHeadCentered) void enqueueNative("headPose", () => desktop.nativeRendererPose?.(pose.orientation)).catch((error) => {
                 console.warn("[SDA] native head pose rejected:", error);
               });
             },
@@ -731,7 +732,17 @@ export function App() {
             startAt: async (origin) => {
               if (!ownsNativeSession()) return false;
               try {
-                await enqueueNative(`startAt ${origin}`, () => desktop.nativeRendererStartAt?.(origin) ?? false);
+                await enqueueNative(`startAt ${origin}`, async () => {
+                  // Reset at execution time, after queued decoding/configuration,
+                  // and keep live poses gated until start is acknowledged.
+                  if (!playbackHeadCentered) {
+                    headTrackingSessionRef.current.beginPlayback();
+                    if (!await desktop.nativeRendererClearPose?.()) throw new Error("head pose reset rejected");
+                  }
+                  const accepted = await desktop.nativeRendererStartAt?.(origin) ?? false;
+                  if (accepted) playbackHeadCentered = true;
+                  return accepted;
+                });
                 return true;
               } catch (error) {
                 console.warn("[SDA] native startAt rejected:", error);
@@ -772,7 +783,9 @@ export function App() {
         onTrack: (t) => {
           if (!isCurrent()) return;
           const formatLayout = formatAutoLayout(t.codec);
-          if (formatLayout || layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2") {
+          const keep360Layout = formatLayout === "360RA-13"
+            && (layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2");
+          if (!keep360Layout && (formatLayout || layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2")) {
             layoutIdRef.current = "auto";
             immersiveLayoutRef.current = "auto";
             setLayoutId("auto");
@@ -986,13 +999,20 @@ export function App() {
   useEffect(() => {
     const desktop = window.sdaDesktop;
     if (!desktop?.getHeadTrackingStatus) return;
-    void desktop.getHeadTrackingStatus().then(setHeadTrackingStatus).catch((error) => {
+    const applyTrackingStatus = (status: HeadTrackingStatus) => {
+      setHeadTrackingStatus(status);
+      if (!status.running) {
+        headTrackingSessionRef.current.clear();
+        playerRef.current?.clearHeadPose();
+      }
+    };
+    void desktop.getHeadTrackingStatus().then(applyTrackingStatus).catch((error) => {
       console.warn("[SDA] 读取头部追踪状态失败:", error);
     });
     void desktop.getHeadTrackingHelper?.().then(setHeadTrackingHelper).catch((error) => {
       console.warn("[SDA] 读取头追 helper 配置失败:", error);
     });
-    const stopStatus = desktop.onHeadTrackingStatus?.(setHeadTrackingStatus);
+    const stopStatus = desktop.onHeadTrackingStatus?.(applyTrackingStatus);
     const applyPose = (pose: HeadTrackingPose) => {
       headTrackingSessionRef.current.update(rendererHeadPose(pose));
       const timestampMs = performance.now();

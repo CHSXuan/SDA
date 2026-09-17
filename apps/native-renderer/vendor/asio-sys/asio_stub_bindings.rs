@@ -163,6 +163,10 @@ pub unsafe extern "C" fn ASIOGetBufferSize(
     0
 }
 #[no_mangle]
+pub unsafe extern "C" fn ASIOGetLatencies(_input: *mut c_long, _output: *mut c_long) -> ASIOError {
+    0
+}
+#[no_mangle]
 pub unsafe extern "C" fn ASIOGetSamplePosition(
     _pos: *mut ASIOSamples,
     _stamp: *mut ASIOTimeStamp,
@@ -196,3 +200,5 @@ pub unsafe extern "C" fn set_sample_rate(_rate: c_double) -> ASIOError {
 pub unsafe extern "C" fn can_sample_rate(_rate: c_double) -> ASIOError {
     0
 }
+
+extern "C" { pub fn show_control_panel() -> ::std::os::raw::c_long; }

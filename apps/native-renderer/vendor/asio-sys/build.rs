@@ -49,6 +49,8 @@ fn main() {
         return;
     }
 
+    println!("cargo:rerun-if-changed=asio-link/helpers.hpp");
+    println!("cargo:rerun-if-changed=asio-link/helpers.cpp");
     println!("cargo:rerun-if-env-changed={}", CPAL_ASIO_DIR);
 
     // ASIO SDK directory
@@ -58,16 +60,12 @@ fn main() {
     // Directory where bindings and library are created
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("bad path"));
 
-    // Check if library exists,
-    // if it doesn't create it
-    let mut lib_path = out_dir.clone();
-    lib_path.push("libasio.a");
-    if !lib_path.exists() {
-        if is_msvc() {
-            invoke_vcvars_if_not_set();
-        }
-        create_lib(&cpal_asio_dir);
+    // Cargo already tracks inputs; rebuild the archive whenever this script runs.
+    // Reusing an existing archive silently omits newly added C wrapper symbols.
+    if is_msvc() {
+        invoke_vcvars_if_not_set();
     }
+    create_lib(&cpal_asio_dir);
 
     // Print out links to needed libraries
     println!("cargo:rustc-link-lib=dylib=advapi32");
@@ -232,8 +230,10 @@ fn create_bindings(cpal_asio_dir: &PathBuf) {
         .allowlist_function("ASIOGetChannels")
         .allowlist_function("ASIOGetChannelInfo")
         .allowlist_function("ASIOGetBufferSize")
+        .allowlist_function("ASIOGetLatencies")
         .allowlist_function("ASIOGetSamplePosition")
         .allowlist_function("ASIOOutputReady")
+        .allowlist_function("show_control_panel")
         .allowlist_function("get_sample_rate")
         .allowlist_function("set_sample_rate")
         .allowlist_function("can_sample_rate")

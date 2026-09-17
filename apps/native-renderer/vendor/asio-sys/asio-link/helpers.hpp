@@ -1,4 +1,5 @@
 #pragma once
+extern "C" long show_control_panel();
 #include "asiodrivers.h"
 #include "asio.h"
 

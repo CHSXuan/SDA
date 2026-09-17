@@ -49,6 +49,8 @@ const BIAS_LEARN_INNOVATION_LIMIT: f64 = 40.0;
 /// the attitude at ~7°/s. A wrong estimate can now never out-correct the
 /// renderer's 5°/s anchor ease.
 const BIAS_MAX_COUNTS: f64 = 12.0;
+// Only repay the short motion-detection window, never minutes of genuine drift.
+const BIAS_REPAY_LIMIT: f64 = BIAS_MAX_COUNTS * 8.0;
 
 #[derive(Clone, Copy)]
 struct PendingDiscontinuity {
@@ -137,7 +139,12 @@ impl HeadOrientation {
 
     pub fn process_packet(&mut self, packet: &[u8]) -> Option<Orientation> {
         let packet = head_tracking_frame(packet)?;
-        self.last_subtype = packet[10];
+        let subtype = packet[10];
+        // Reject the other bud BEFORE it can alter unwrap or drift state.
+        if self.stream_subtype.or(self.calibration_subtype).is_some_and(|locked| locked != subtype) {
+            return None;
+        }
+        self.last_subtype = subtype;
 
         let raw = [
             read_i16(packet, 43)?,
@@ -264,7 +271,9 @@ impl HeadOrientation {
         // holds and no motion is pending — the lock itself guarantees these
         // deltas are pure drift. Adapting during unlocked head motion absorbed
         // real turn rates and pumped the attitude away afterwards.
-        if self.bias_learning {
+        // A lock takes a few frames to release. Do not learn a real nod/turn
+        // during that delay and then subtract its frozen rate for minutes.
+        if self.bias_learning && folded[1..].iter().all(|delta| delta.abs() <= BIAS_MAX_COUNTS as i64) {
             for axis in 0..2 {
                 let innovation = (folded[axis + 1] as f64 - self.bias[axis])
                     .clamp(-BIAS_LEARN_INNOVATION_LIMIT, BIAS_LEARN_INNOVATION_LIMIT);
@@ -278,22 +287,23 @@ impl HeadOrientation {
             // during unlocked motion the subtraction is legitimate drift
             // cancellation, not something a motion confirmation should undo.
             if index >= 1 && self.bias_learning {
-                self.bias_applied_total[index - 1] += bias;
+                self.bias_applied_total[index - 1] =
+                    (self.bias_applied_total[index - 1] + bias).clamp(-BIAS_REPAY_LIMIT, BIAS_REPAY_LIMIT);
             }
             self.unwrapped[index] += folded[index] as f64 - bias;
         }
         Some(self.unwrapped)
     }
 
-    /// Discard the drift estimate and give everything it subtracted back to
-    /// the accumulator, so a suspected real motion resumes from where the
-    /// attitude truly is.
+    /// Repay only the bounded motion-confirmation window; preserve the
+    /// stationary bias so a nod does not disable horizontal drift correction.
     fn reset_bias_owing(&mut self) {
         for axis in 0..2 {
             self.unwrapped[axis + 1] += self.bias_applied_total[axis];
         }
         self.bias_applied_total = [0.0; 2];
-        self.bias = [0.0; 2];
+        // Keep the stationary estimate during deliberate motion. Resetting it
+        // here lets yaw drift accumulate through a pure pitch gesture.
     }
 
     fn filter_orientation(&mut self, orientation: [f64; 2]) -> [f64; 2] {
@@ -334,9 +344,8 @@ impl HeadOrientation {
                 }
             } else if displacement >= DISCONTINUITY_RADIANS {
                 if self.pending_discontinuity.is_none() {
-                    // Real motion is suspected: give back everything the bias
-                    // estimate ate since it was last reset and relearn from
-                    // zero once the movement is confirmed.
+                    // Real motion is suspected: repay only recent correction,
+                    // never the full stationary history.
                     self.reset_bias_owing();
                 }
                 let pending =
@@ -351,9 +360,7 @@ impl HeadOrientation {
                 self.pending_stationary_release = None;
                 self.locked_orientation = None;
                 self.stationary_samples.clear();
-                // The attitude just jumped: relearn from zero (the owed bias
-                // was already given back when the suspicion first arose).
-                self.bias = [0.0; 2];
+                // Keep the last stationary drift estimate during the turn.
                 self.bias_applied_total = [0.0; 2];
                 self.slewing_discontinuity = true;
                 filtered = limit_orientation_step(
@@ -772,6 +779,35 @@ mod tests {
             (after.z - baseline.z).abs() < 1e-12 && (after.w - baseline.w).abs() < 1e-12,
             "foreign-bud frame moved the attitude: {after:?}"
         );
+    }
+
+    #[test]
+    fn looking_down_for_thirty_seconds_does_not_repay_old_yaw_drift() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES { tracker.process_packet(&packet(19000, 1000, 1000)); }
+        let mut frame = 0i16;
+        let mut sample = |pitch: i16| {
+            frame += 1;
+            let pose = tracker.process_packet(&packet(19000, 1000 + pitch + frame * 3, 1000 + pitch - frame * 3));
+            pose
+        };
+        for step in 1..=60 { sample(step * 80); }
+        for _ in 0..900 { sample(4800); }
+        for step in (0..60).rev() { sample(step * 80); }
+        let mut last = None;
+        for _ in 0..60 { last = sample(0); }
+        let pose = last.unwrap();
+        let yaw = 2.0 * pose.z.atan2(pose.w).to_degrees();
+        assert!(yaw.abs() < 2.0, "look-down/return introduced yaw: {yaw}");
+    }
+
+    #[test]
+    fn foreign_bud_burst_never_references_the_active_unwrapper() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES { tracker.process_packet(&packet_with_subtype(0x45, 19000, 1000, 1000)); }
+        for _ in 0..30 { assert!(tracker.process_packet(&packet_with_subtype(0x44, 19000, 30000, -30000)).is_none()); }
+        let pose = tracker.process_packet(&packet_with_subtype(0x45, 19000, 1000, 1000)).unwrap();
+        assert!(pose.z.abs() < 1e-12);
     }
 
     #[test]

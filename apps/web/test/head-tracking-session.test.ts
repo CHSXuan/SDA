@@ -66,3 +66,24 @@ for(let frame=60;frame<110;frame++)spikeSession.update({orientation:yaw(30),time
 assert.ok(yawDegrees(spikeSession.latestPose.orientation)>20,"sustained intentional movement must pass the median filter");
 spikeSession.recenter({orientation:yaw(30),timestampMs:2200});
 assert.ok(Math.abs(yawDegrees(spikeSession.latestPose.orientation))<1e-6,"recenter must discard pre-reset median history");
+
+const freshTrack = new HeadTrackingSession();
+freshTrack.update({orientation:yaw(35),timestampMs:0});
+assert.equal(freshTrack.beginPlayback(), null, "do not reuse a pre-playback pose as the new reference");
+assert.ok(Math.abs(yawDegrees(freshTrack.update({orientation:yaw(35),timestampMs:10}).orientation))<1e-8);
+assert.ok(Math.abs(yawDegrees(freshTrack.update({orientation:yaw(45),timestampMs:20}).orientation)-10)<1e-8,"intentional turn after playback start must remain audible");
+const waitingTrack = new HeadTrackingSession();
+assert.equal(waitingTrack.beginPlayback(),null);
+assert.ok(Math.abs(yawDegrees(waitingTrack.update({orientation:yaw(-30),timestampMs:0}).orientation))<1e-8,"first late pose becomes the new track's forward reference");
+
+for (const startup of [[80,25,25],[25,80,25],[25,25,80]]) {
+ const sample = new HeadTrackingSession({smoothingMs:220,deadZoneDegrees:2.5});
+ sample.update({orientation:yaw(-45),timestampMs:0});
+ sample.beginPlayback();
+ for(let frame=0;frame<30;frame++) {
+   const pose=sample.update({orientation:yaw(startup[frame]??25),timestampMs:5000+frame*20});
+   assert.ok(Math.abs(yawDegrees(pose.orientation))<1e-8, "stale idle attitude and one startup spike cannot bias the next song");
+ }
+ for(let frame=30;frame<60;frame++)sample.update({orientation:yaw(55),timestampMs:5000+frame*20});
+ assert.ok(yawDegrees(sample.latestPose!.orientation)>20,"real turns still work after fresh startup calibration");
+}

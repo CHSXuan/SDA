@@ -303,6 +303,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             "Windows 媒体已连接，正在启动 AirPods motion",
         )?;
 
+        let connected_at = Instant::now();
         let mut packet = [0_u8; 4096];
         let mut received_packets = 0_u64;
         let mut last_motion_at = Instant::now();
@@ -329,7 +330,9 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 }
                 ControlAction::Continue => {}
             }
-            if takeover_pending && !connected_devices.is_empty() {
+            // Briefly allow the device list to arrive, but never require it:
+            // ASIO/resume must not leave an explicit takeover pending forever.
+            if takeover_pending && (!connected_devices.is_empty() || connected_at.elapsed() >= MOTION_IDLE_TIMEOUT) {
                 if let Err(error) = force_reclaim_entire_connection(
                     &socket,
                     head_tracking_packet_index,
@@ -337,6 +340,9 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 ) {
                     break format!("AirPods full connection takeover failed: {error}");
                 }
+                // A reclaimed stream can use a different packet subtype/raw
+                // reference. Recalibrate it while retaining the displayed pose.
+                orientation.begin_transport_session();
                 takeover_pending = false;
                 emit_status(
                     session,
@@ -423,6 +429,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                             ) {
                                 break format!("AirPods motion recovery failed: {error}");
                             }
+                            orientation.begin_transport_session();
                             force_takeover_attempted = true;
                             takeover_grace_until = Some(Instant::now() + TAKEOVER_SOURCE_GRACE);
                             last_motion_at = Instant::now();
@@ -441,7 +448,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                             emit_status(
                                 session,
                                 "connected",
-                                "AirPods 已连接，等待 Windows 媒体播放",
+                                "AirPods 已连接，正在等待 motion",
                             )?;
                         }
                     }
@@ -529,7 +536,9 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 Err(error) => break error,
             }
             if motion_stream_timed_out(last_motion_at, Instant::now()) {
-                if !is_local_media_source(audio_source, socket.local_address()) {
+                // ASIO need not report an active Windows media source. Only yield
+                // motion recovery when another device is actually using media.
+                if is_remote_media_source(audio_source, socket.local_address()) {
                     last_motion_at = Instant::now();
                     continue;
                 }
@@ -540,7 +549,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 head_tracking_packet_index =
                     (head_tracking_packet_index + 1) % START_HEAD_TRACKING_PACKETS.len();
                 eprintln!(
-                    "AirPods transport: motion idle on local media; soft recovery {recovery_attempts} (head-tracking packet {})",
+                    "AirPods transport: motion idle without remote media; soft recovery {recovery_attempts} (head-tracking packet {})",
                     head_tracking_packet_index + 1
                 );
                 let force_reclaim = local_media_confirmed && !force_takeover_attempted;
@@ -552,7 +561,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     } else if motion_was_active {
                         "AirPods motion 暂停，正在自动恢复"
                     } else {
-                        "Windows 媒体已连接，正在等待 AirPods motion"
+                        "正在恢复 AirPods motion（不依赖媒体播放）"
                     },
                 )?;
                 let recovery = if force_reclaim {
@@ -567,6 +576,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 if let Err(error) = recovery {
                     break format!("AirPods motion recovery failed: {error}");
                 }
+                orientation.begin_transport_session();
                 force_takeover_attempted |= force_reclaim;
                 last_motion_at = Instant::now();
             }
@@ -953,6 +963,18 @@ mod tests {
             Some((0x90ec_ea16_dcee, 0x02)),
             0xe45e_373b_6ec3
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn motion_recovery_allows_idle_or_unknown_source_but_yields_to_remote_media() {
+        let local = 0xe45e_373b_6ec3;
+        assert!(!is_remote_media_source(None, local));
+        assert!(!is_remote_media_source(Some((local, 0)), local));
+        assert!(!is_remote_media_source(Some((local, 2)), local));
+        assert!(!is_remote_media_source(Some((123, 0)), local));
+        assert!(is_remote_media_source(Some((123, 1)), local));
+        assert!(is_remote_media_source(Some((123, 2)), local));
     }
 
     #[cfg(target_os = "windows")]

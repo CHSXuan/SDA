@@ -260,6 +260,8 @@ const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
 const NATIVE_RENDERER_PROTOCOL = 7;
 const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
 let nativeRenderer = null;
+let nativeRendererExit = Promise.resolve();
+let nativeRendererQuitting = false;
 let nativeRendererWritable = true;
 // PCM batches that arrived during pipe backpressure. They are flushed in order
 // on drain so the codec timeline never loses a frame to congestion.
@@ -593,6 +595,12 @@ function clearNativeRendererSession(reason) {
   nativeRendererPendingCommands.clear();
 }
 
+async function ensureNativeRenderer() {
+  await nativeRendererExit;
+  if (nativeRendererQuitting) return nativeRendererStatus;
+  return startNativeRenderer();
+}
+
 function startNativeRenderer() {
   if (remoteSession.role === "client") return nativeRendererStatus;
   writeStartupLog(`startNativeRenderer() called; executable=${bundledNativeRendererPath() ?? "missing"}`);
@@ -618,10 +626,12 @@ function startNativeRenderer() {
       writeStartupLog(`native renderer priority unchanged: ${error.message}`);
     }
   }
+  const renderer = nativeRenderer;
   nativeRendererWritable = true;
   nativeRenderer.stdout.setEncoding("utf8");
-  nativeRenderer.stdout.on("data", consumeNativeRendererOutput);
+  nativeRenderer.stdout.on("data", chunk => { if (nativeRenderer === renderer) consumeNativeRendererOutput(chunk); });
   nativeRenderer.stdin.on("drain", () => {
+    if (nativeRenderer !== renderer) return;
     nativeRendererWritable = true;
     // Preserve each frame's own backend ACK; a writable pipe is not an ACK.
     for (const queued of nativeRendererBatchQueue.splice(0)) {
@@ -632,22 +642,25 @@ function startNativeRenderer() {
   // and transition the renderer into the explicit stopped state instead of
   // letting Node surface an uncaught main-process exception.
   nativeRenderer.stdin.on("error", (error) => {
-    if (nativeRenderer) nativeRenderer = null;
+    if (nativeRenderer !== renderer) return;
+    nativeRenderer = null;
     clearNativeRendererSession(`native renderer pipe error: ${error.code ?? error.message}`);
     setNativeRendererStatus(false, `native renderer 管道已关闭: ${error.code ?? error.message}`);
   });
   nativeRendererHealthTimer = setInterval(() => {
-    if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed) return;
+    if (nativeRenderer !== renderer || !renderer.stdin || renderer.stdin.destroyed) return;
     nativeRendererCommand({ type: "health" });
   }, 100).unref();
   nativeRenderer.stderr.setEncoding("utf8");
   nativeRenderer.stderr.on("data", (chunk) => writeStartupLog(`[SDA native renderer] ${String(chunk).trim()}`));
   nativeRenderer.once("error", (error) => {
+    if (nativeRenderer !== renderer) return;
     nativeRenderer = null;
     clearNativeRendererSession(`native renderer error: ${error.message}`);
     setNativeRendererStatus(false, `native renderer 异常: ${error.message}`);
   });
   nativeRenderer.once("exit", (code) => {
+    if (nativeRenderer !== renderer) return;
     nativeRenderer = null;
     clearNativeRendererSession("native renderer exited");
     setNativeRendererStatus(false, `native renderer 已退出${code === null ? "" : ` (${code})`}，播放已停止`);
@@ -660,9 +673,17 @@ function startNativeRenderer() {
 function stopNativeRenderer() {
   const renderer = nativeRenderer;
   if (renderer) {
+    nativeRendererExit = new Promise(resolve => {
+      const timeout = setTimeout(() => {
+        writeStartupLog("native renderer graceful shutdown timed out; terminating");
+        if (!renderer.killed) renderer.kill();
+      }, 8000);
+      // Keep Electron alive until the driver is released; new output starts
+      // also await this promise instead of opening ASIO over the retiring one.
+      renderer.once("exit", () => { clearTimeout(timeout); resolve(); });
+    });
     try { nativeRendererCommand({ type: "shutdown" }); } catch {}
     nativeRenderer = null;
-    setTimeout(() => { if (!renderer.killed) renderer.kill(); }, 500).unref();
   }
   clearNativeRendererSession("native renderer stopped");
   return setNativeRendererStatus(false, "已停止，桌面播放不可用");
@@ -707,7 +728,7 @@ async function setRemoteLocalMute(muted) {
 }
 const remoteSession = new RemoteSession({
   rtc:require("./remote-rtc.cjs")({BrowserWindow,ipcMain}),
-  gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;startNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
+  gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;await ensureNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
   position:()=>Number(nativeRendererStatus.samplePos??0)/48000,
   diagnostic:health=>writeStartupLog(`remote-receiver ${JSON.stringify(health)}`),
   maxPeers:()=>readSettings().remoteMaxPeers??2,
@@ -743,7 +764,7 @@ const remoteSession = new RemoteSession({
   },
   route: async ({address,token}) => {
     if (!address && !nativeRenderer) return true;
-    startNativeRenderer();
+    await ensureNativeRenderer();
     if(address)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:effectiveRemoteLocalMute()},"setRemoteLocalMute");
     const changed=nativeRendererCommandAck({type:"setRemoteOutput",address,token},"setRemoteOutput",15000);
     // Ending remote output succeeds even when no physical endpoint is available.
@@ -753,8 +774,7 @@ const remoteSession = new RemoteSession({
     remoteBroadcast("sda:remote-suspend", {replaceOutput:true});
     const renderer = nativeRenderer;
     if (!renderer) return;
-    const exited = new Promise(resolve => { renderer.once("exit",resolve); setTimeout(resolve,2000).unref(); });
-    stopNativeRenderer(); await exited;
+    stopNativeRenderer(); await nativeRendererExit;
   },
 });
 ipcMain.handle("sda:remote-pairing-key", () => readSettings().remoteCustomPairingKey??"");
@@ -900,8 +920,10 @@ function processHeadTrackingMessage(message) {
     if (now - headTrackingLastPoseAt < 1000 / HEAD_TRACKING_MAX_RATE_HZ) return;
     headTrackingLastSequence = sequence;
     if (!headTrackingEnabled) return;
-    // Only update status text on the first pose to avoid 100Hz redundant IPC.
-    if (headTrackingLastPoseAt === 0) {
+    // Restore tracking status after recovery/source notifications, without
+    // publishing status on every pose. ASIO can send idle media notifications
+    // while motion packets are already flowing.
+    if (headTrackingLastPoseAt === 0 || now - headTrackingLastPoseAt > 1000 || /等待|恢复|启动|接管/.test(headTrackingStatus.detail ?? "")) {
       const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
       setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? `追踪中（内置 ${platformLabel} helper）` : "追踪中（外部 helper）");
     }
@@ -925,13 +947,16 @@ function processHeadTrackingMessage(message) {
 
 function consumeHeadTrackingOutput(chunk) {
   headTrackingBuffer += chunk;
-  if (Buffer.byteLength(headTrackingBuffer, "utf8") > HEAD_TRACKING_MAX_BUFFER_BYTES) {
-    stopHeadTracking(true, "helper 输出超出限制");
-    return;
-  }
   for (;;) {
     const newline = headTrackingBuffer.indexOf("\n");
-    if (newline < 0) return;
+    if (newline < 0) {
+      // A pipe read may batch many valid lines after UI/CPU contention. Limit
+      // the unfinished message, not the total bytes in that valid batch.
+      if (Buffer.byteLength(headTrackingBuffer, "utf8") > HEAD_TRACKING_MAX_BUFFER_BYTES) {
+        stopHeadTracking(true, "helper 输出超出限制");
+      }
+      return;
+    }
     const line = headTrackingBuffer.slice(0, newline).replace(/\r$/, "");
     headTrackingBuffer = headTrackingBuffer.slice(newline + 1);
     if (!line) continue;
@@ -1223,11 +1248,17 @@ function createWindow() {
   win.on("unmaximize", publishWindowState);
   win.on("enter-full-screen", publishWindowState);
   win.on("leave-full-screen", publishWindowState);
+  // This window owns the decoder. Reloading destroys that owner, so neither
+  // queued PCM nor an orphaned sidecar may outlive it and play on next open.
+  win.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && remoteSession.role !== "client") stopNativeRenderer();
+  });
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     writeStartupLog(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
     dialog.showErrorBox("SDA 页面加载失败", `${errorDescription}\n${validatedURL}`);
   });
   win.webContents.on("render-process-gone", (_event, details) => {
+    if (remoteSession.role !== "client") stopNativeRenderer();
     writeStartupLog(`[SDA] renderer 退出: ${details.reason}${details.exitCode ? ` (${details.exitCode})` : ""}`);
     if (details.reason !== "clean-exit") {
       dialog.showErrorBox(
@@ -1342,16 +1373,24 @@ ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
 ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
 ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
 ipcMain.handle("sda:output-devices", async () => {
-  startNativeRenderer();
+  await ensureNativeRenderer();
   const accepted = await nativeRendererCommandAck({type:"listOutputDevices"},"listOutputDevices");
   if (!accepted) throw new Error("无法读取输出设备，请确认原生输出已启动");
   return outputDevicesState;
+});
+ipcMain.handle("sda:open-asio-control-panel", () => {
+  const task = outputSettingsChain.then(async () => {
+    if (outputDevicesState?.status?.mode !== "asio" || outputDevicesState.status.state !== "ready") throw new Error("请先应用 ASIO 输出设备");
+    return nativeRendererCommandAck({type:"openAsioControlPanel"}, "openAsioControlPanel", 24 * 60 * 60 * 1000);
+  });
+  outputSettingsChain = task.catch(() => {});
+  return task;
 });
 ipcMain.handle("sda:set-output-device", (_event, value) => {
   if (!validOutputSettings(value)) throw new Error("无效的输出设置");
   const settings = normalizeOutputSettings(value);
   const task = outputSettingsChain.then(async () => {
-    startNativeRenderer();
+    await ensureNativeRenderer();
     const accepted = await nativeRendererCommandAck({type:"setOutputDevice",...settings},"setOutputDevice",15000);
     if (accepted) writeSettings({audioOutput:settings});
     return {accepted, ...outputDevicesState};
@@ -1359,8 +1398,8 @@ ipcMain.handle("sda:set-output-device", (_event, value) => {
   outputSettingsChain = task.catch(() => {});
   return task;
 });
-ipcMain.handle("sda:native-renderer-start", () => {
-  const status = startNativeRenderer();
+ipcMain.handle("sda:native-renderer-start", async () => {
+  const status = await ensureNativeRenderer();
   writeStartupLog(`ipc startNativeRenderer -> ${JSON.stringify(status)}`);
   return status;
 });
@@ -1518,7 +1557,11 @@ ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
   if (!Array.isArray(orientation) || orientation.length !== 4 || !orientation.every(Number.isFinite)) return false;
   return nativeRendererCommand({ type: "headPose", orientation });
 });
-ipcMain.handle("sda:native-renderer-clear-pose", () => nativeRendererCommand({ type: "clearHeadPose" }));
+ipcMain.handle("sda:native-renderer-clear-pose", async () => {
+  const accepted = await nativeRendererCommandAck({ type: "clearHeadPose" }, "clearHeadPose");
+  writeStartupLog(`clearHeadPose neutral -> ${accepted}`);
+  return accepted;
+});
 ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
   if ((!/^hrtf(?:-dense(?:-raw)?|-raw|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
@@ -1899,9 +1942,18 @@ app.whenReady().then(() => {
   });
 });
 
+app.on("before-quit", event => {
+  if (nativeRendererQuitting) return;
+  event.preventDefault();
+  nativeRendererQuitting = true;
+  void (async () => {
+    stopNativeRenderer();
+    await Promise.allSettled([remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+  })().catch(error => writeStartupLog(`graceful exit failed: ${error}`)).finally(() => app.quit());
+});
+
 app.on("window-all-closed", async () => {
-  await remoteSession.stop();
-  await stopHeadTrackingGracefully(false);
   stopNativeRenderer();
+  await Promise.allSettled([remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   if (process.platform !== "darwin") app.quit();
 });

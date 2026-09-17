@@ -14,7 +14,7 @@ function trackingYaw(q: Quaternion): Quaternion {
   return normalizeQuaternion([0,0,q[2],q[3]]) ?? [0,0,0,1];
 }
 
-/** Keeps the listener's forward reference stable across player/renderer replacement. */
+/** Stabilizes tracking and establishes a fresh forward reference for each song. */
 export class HeadTrackingSession {
   private readonly tracker: HeadPoseTracker;
   private readonly rejectSpikes: boolean;
@@ -28,6 +28,8 @@ export class HeadTrackingSession {
     this.renderedPose=this.tracker.currentPose(nowMs);
     return this.renderedPose;
   }
+  private centerNextPose = false;
+  private startupYawSamples: number[] = [];
   private origin: Quaternion | null = null;
   private rawPose: HeadPose | null = null;
   private renderedPose: HeadPose | null = null;
@@ -37,6 +39,26 @@ export class HeadTrackingSession {
   }
 
   update(pose: HeadPose): HeadPose {
+    if (this.centerNextPose) {
+      // Never anchor a new song to an idle/stale sample or a single noisy
+      // packet. Stay exactly neutral until fresh provider samples establish it.
+      const q = trackingYaw(pose.orientation);
+      const yaw = 2 * Math.atan2(q[2], q[3]);
+      const previous = this.startupYawSamples.at(-1) ?? yaw;
+      this.startupYawSamples.push(previous + Math.atan2(Math.sin(yaw-previous), Math.cos(yaw-previous)));
+      this.rawPose = pose;
+      if (this.startupYawSamples.length < (this.rejectSpikes ? 3 : 1)) {
+        this.renderedPose = {...pose, orientation:[0,0,0,1]};
+        return this.renderedPose;
+      }
+      const values = [...this.startupYawSamples].sort((a,b)=>a-b);
+      const center = values[Math.floor(values.length/2)]!;
+      this.origin = [0,0,Math.sin(center/2),Math.cos(center/2)];
+      this.centerNextPose = false;
+      this.startupYawSamples = [];
+      this.yawSamples = [0,0,0];
+      this.sampleTime = pose.timestampMs ?? performance.now();
+    }
     this.rawPose = pose;
     let relative=this.relativePose(pose);
     const now=pose.timestampMs??performance.now();
@@ -58,8 +80,18 @@ export class HeadTrackingSession {
     return this.renderedPose;
   }
 
+  /** Start neutral, then establish forward from fresh poses; seek/pause do not recenter. */
+  beginPlayback(): HeadPose | null {
+    this.tracker.clear();this.yawSamples=[];this.sampleTime=Number.NEGATIVE_INFINITY;
+    this.origin=null;this.rawPose=null;this.startupYawSamples=[];
+    this.renderedPose=null;this.centerNextPose=true;
+    return null;
+  }
+
   recenter(pose: HeadPose | null = this.rawPose): HeadPose | null {
     if (!pose) return null;
+    this.centerNextPose = false;
+    this.startupYawSamples = [];
     this.rawPose = pose;
     this.origin = pose.orientation;
     this.tracker.clear();this.yawSamples=[];this.sampleTime=Number.NEGATIVE_INFINITY;
@@ -69,6 +101,8 @@ export class HeadTrackingSession {
   clear(): void {
     this.tracker.clear();this.yawSamples=[];this.sampleTime=Number.NEGATIVE_INFINITY;
     this.origin = null;
+    this.centerNextPose = false;
+    this.startupYawSamples = [];
     this.rawPose = null;
     this.renderedPose = null;
   }

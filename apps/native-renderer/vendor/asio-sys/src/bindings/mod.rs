@@ -535,7 +535,7 @@ impl Driver {
 
         let buffer_size = match buffer_size {
             Some(v) => {
-                if v <= buffer_sizes.max {
+                if v > 0 && v <= buffer_sizes.max {
                     v
                 } else {
                     return Err(AsioError::InvalidBufferSize);
@@ -565,6 +565,19 @@ impl Driver {
             ))?;
         }
         *state = DriverState::Prepared;
+
+        // CPAL starts the driver during stream construction, before enabling its
+        // data callback. Driver allocations can retain audio from a prior stream
+        // (or process), so silence both halves before ASIOStart can see them.
+        let initialized = unsafe {
+            silence_output_buffers(buffer_infos, buffer_size, |channel| {
+                Ok(asio_channel_info(channel, false)?.type_)
+            })
+        };
+        if let Err(error) = initialized {
+            state.dispose_buffers()?;
+            return Err(error);
+        }
 
         Ok(buffer_size)
     }
@@ -901,6 +914,89 @@ fn asio_get_buffer_sizes() -> Result<BufferSizes, AsioError> {
         asio_result!(res)?;
     }
     Ok(b)
+}
+
+// Storage width, not valid bit depth: the aligned Int32 variants occupy four bytes.
+fn pcm_storage_bytes(sample_type: i32) -> Result<usize, AsioError> {
+    match sample_type {
+        0 | 16 => Ok(2),
+        1 | 17 => Ok(3),
+        2 | 3 | 8..=11 | 18 | 19 | 24..=27 => Ok(4),
+        4 | 20 => Ok(8),
+        // SDA/CPAL use PCM. DSD has a different silence pattern; never zero it.
+        _ => Err(AsioError::InvalidInput),
+    }
+}
+
+/// Buffers must be writable driver allocations of `frames` samples per channel,
+/// and the driver must not be running. The query must return their actual format.
+unsafe fn silence_output_buffers(
+    infos: &[AsioBufferInfo],
+    frames: i32,
+    mut sample_type: impl FnMut(c_long) -> Result<i32, AsioError>,
+) -> Result<(), AsioError> {
+    if frames <= 0 {
+        return Err(AsioError::InvalidBufferSize);
+    }
+    for info in infos {
+        if info.is_input != 0 {
+            continue;
+        }
+        let bytes = (frames as usize)
+            .checked_mul(pcm_storage_bytes(sample_type(info.channel_num)?)?)
+            .filter(|bytes| *bytes <= isize::MAX as usize)
+            .ok_or(AsioError::InvalidBufferSize)?;
+        for buffer in info.buffers {
+            if buffer.is_null() {
+                return Err(AsioError::InvalidInput);
+            }
+            std::ptr::write_bytes(buffer.cast::<u8>(), 0, bytes);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod startup_silence_tests {
+    use super::*;
+
+    #[test]
+    fn clears_both_halves_for_each_pcm_storage_format_without_touching_input_or_guards() {
+        for (kind, width) in [(0,2),(16,2),(1,3),(17,3),(2,4),(3,4),(8,4),(9,4),
+            (10,4),(11,4),(18,4),(19,4),(24,4),(25,4),(26,4),(27,4),(4,8),(20,8)] {
+            let size = 7 * width;
+            let mut left = vec![0x7bu8; size + 2];
+            let mut right = left.clone();
+            let mut input = left.clone();
+            let infos = [
+                AsioBufferInfo { is_input: 1, channel_num: 9,
+                    buffers: [input.as_mut_ptr().cast(); 2] },
+                AsioBufferInfo { is_input: 0, channel_num: 3,
+                    buffers: [unsafe { left.as_mut_ptr().add(1).cast() },
+                              unsafe { right.as_mut_ptr().add(1).cast() }] },
+            ];
+            unsafe { silence_output_buffers(&infos, 7, |channel| {
+                assert_eq!(channel, 3);
+                Ok(kind)
+            }).unwrap(); }
+            for buffer in [&left, &right] {
+                assert!(buffer[1..=size].iter().all(|byte| *byte == 0));
+                assert_eq!((buffer[0], buffer[size + 1]), (0x7b, 0x7b));
+            }
+            assert!(input.iter().all(|byte| *byte == 0x7b));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_allocations_and_non_pcm_formats() {
+        let infos = [AsioBufferInfo { is_input: 0, channel_num: 0,
+            buffers: [std::ptr::null_mut(); 2] }];
+        assert!(unsafe { silence_output_buffers(&infos, 4, |_| Ok(16)) }.is_err());
+        assert!(unsafe { silence_output_buffers(&infos, 0, |_| Ok(16)) }.is_err());
+        for kind in [32, 33, 40, 999] {
+            assert!(pcm_storage_bytes(kind).is_err());
+        }
+    }
 }
 
 /// Retrieve the `ASIOChannelInfo` associated with the channel at the given index on either the

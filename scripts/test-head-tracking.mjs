@@ -16,6 +16,7 @@ const bundledTests = [
 const directTests = [
   "packages/renderer/test/head-tracking-object-schedule.test.mjs",
   "apps/desktop/test/head-tracking-helper-contract.test.mjs",
+  "apps/desktop/test/head-tracking-pipe.test.mjs",
   "apps/desktop/test/head-tracking-installer-contract.test.mjs",
   "apps/web/test/head-tracking-replay-contract.test.mjs",
 ];
