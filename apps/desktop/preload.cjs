@@ -1,5 +1,10 @@
 /** Preload: expose the minimal file-access bridge to the web build. */
 const { contextBridge, ipcRenderer } = require("electron");
+let nativeBackdrop = process.argv.find(arg => arg.startsWith("--sda-native-backdrop="))?.split("=")[1] === "acrylic" ? "acrylic" : "none";
+ipcRenderer.on("sda:window-backdrop", (_event, material) => {
+  nativeBackdrop = material === "acrylic" ? "acrylic" : "none";
+  if (document.documentElement) document.documentElement.dataset.nativeBackdrop = nativeBackdrop;
+});
 
 // Mark the platform on <html> so CSS can adapt (e.g. macOS traffic lights).
 // In Electron's preload the document exists but may be a blank shell;
@@ -7,6 +12,12 @@ const { contextBridge, ipcRenderer } = require("electron");
 try { if (document.documentElement) document.documentElement.dataset.platform = process.platform; } catch {}
 document.addEventListener("DOMContentLoaded", () => {
   document.documentElement.dataset.platform = process.platform;
+  document.documentElement.dataset.nativeBackdrop = nativeBackdrop;
+  if (process.platform === "win32") {
+    const syncTheme = () => ipcRenderer.send("sda:window-theme", document.documentElement.dataset.theme === "light" ? "light" : "dark");
+    syncTheme();
+    new MutationObserver(syncTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  }
   try {
     const { ipcRenderer } = require("electron");
     ipcRenderer.on("sda:window-state", (_event, state) => {

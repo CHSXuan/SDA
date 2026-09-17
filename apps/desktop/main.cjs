@@ -7,7 +7,7 @@
  *  - native WASAPI endpoint management and shared/exclusive binaural output
  */
 
-const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor, nativeTheme } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -1217,13 +1217,27 @@ function readStoredProfile(id) {
   return validateProfilePackage(JSON.parse(fs.readFileSync(path.join(directory, "profile.json"), "utf8")), directory);
 }
 
+function windowsBackdropEnabled() {
+  return process.platform === "win32" && Number(os.release().split(".")[2]) >= 22621
+    && !nativeTheme.prefersReducedTransparency && !nativeTheme.inForcedColorsMode
+    && !nativeTheme.shouldUseHighContrastColors;
+}
+
+ipcMain.on("sda:window-theme", (event, theme) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.sdaRtcWorker || !["light", "dark"].includes(theme)) return;
+  if (process.platform === "win32") nativeTheme.themeSource = theme;
+});
+
 function createWindow() {
   const isMac = process.platform === "darwin";
+  const nativeBackdrop = windowsBackdropEnabled();
   const win = new BrowserWindow({
     icon: path.join(__dirname, "assets", process.platform === "win32" ? "icon.ico" : "icon.png"),
     width: 1440,
     height: 900,
-    backgroundColor: "#171819",
+    backgroundColor: nativeBackdrop ? "#00000000" : "#171819",
+    ...(nativeBackdrop ? { backgroundMaterial: "acrylic" } : {}),
     // macOS: keep native traffic-light buttons, hide the rest of the title bar.
     // Windows / Linux: fully frameless with custom renderer-side controls.
     ...(isMac
@@ -1235,9 +1249,25 @@ function createWindow() {
       nodeIntegration: false,
       // Keep the renderer active when the window is covered or detached.
       backgroundThrottling: false,
-      additionalArguments: [`--sda-electron-renderer=${rendererMode}`],
+      additionalArguments: [`--sda-electron-renderer=${rendererMode}`, `--sda-native-backdrop=${nativeBackdrop ? "acrylic" : "none"}`],
     },
   });
+
+  const updateBackdrop = () => {
+    if (win.isDestroyed() || process.platform !== "win32") return;
+    let enabled = windowsBackdropEnabled();
+    try {
+      if (Number(os.release().split(".")[2]) >= 22621) win.setBackgroundMaterial(enabled ? "acrylic" : "none");
+    } catch (error) {
+      enabled = false;
+      writeStartupLog(`Windows backdrop unavailable: ${error}`);
+    }
+    win.setBackgroundColor(enabled ? "#00000000" : nativeTheme.shouldUseDarkColors ? "#171819" : "#eceeed");
+    win.webContents.send("sda:window-backdrop", enabled ? "acrylic" : "none");
+  };
+  nativeTheme.on("updated", updateBackdrop);
+  win.webContents.on("did-finish-load", updateBackdrop);
+  win.on("closed", () => nativeTheme.removeListener("updated", updateBackdrop));
 
   win.on("closed",()=>{if(!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker))for(const worker of BrowserWindow.getAllWindows())worker.destroy();});
   win.setMenu(null);

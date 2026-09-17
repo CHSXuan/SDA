@@ -94,6 +94,27 @@
 .app, .app * { letter-spacing: 0; }
 .app { --rail: 76px; --inspector: 410px; --titlebar: 0px; overflow: hidden; }
 .app:has(.window-titlebar) { --titlebar: 32px; }
+/* Windows draws Acrylic behind the client area. Expose it only through the
+   chrome; an opaque root would hide the native blur completely. */
+html[data-native-backdrop="acrylic"] { --windows-chrome-opacity: 88%; }
+html[data-native-backdrop="acrylic"][data-theme="light"] { --windows-chrome-opacity: 86%; }
+html[data-native-backdrop="acrylic"],
+html[data-native-backdrop="acrylic"] body,
+html[data-native-backdrop="acrylic"] #root,
+html[data-native-backdrop="acrylic"] .app { background: transparent; }
+html[data-native-backdrop="acrylic"] .app > main { background: var(--bg); }
+html[data-native-backdrop="acrylic"] .window-titlebar,
+html[data-native-backdrop="acrylic"] .app > header,
+html[data-native-backdrop="acrylic"] .float-buttons {
+  --dim: color-mix(in srgb, var(--text) 85%, transparent);
+  background: color-mix(in srgb, var(--panel) var(--windows-chrome-opacity), transparent);
+  border-color: color-mix(in srgb, var(--text) 10%, transparent);
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  html[data-native-backdrop="acrylic"] .window-titlebar,
+  html[data-native-backdrop="acrylic"] .app > header,
+  html[data-native-backdrop="acrylic"] .float-buttons { background: var(--panel); }
+}
 /* macOS: native traffic-light buttons sit in the top-left corner (~78 × 34 px).
    Push header content down and right so the logo + nav sit below the lights. */
 html[data-platform="darwin"] .app > header { padding-left: 20px; padding-top: 34px; height: calc(76px + 34px); flex-basis: calc(76px + 34px); }

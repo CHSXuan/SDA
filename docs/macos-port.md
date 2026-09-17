@@ -2,6 +2,8 @@
 
 将 SDA 原生渲染器从 Windows 移植到 macOS 的技术记录。本文档面向希望了解跨平台适配细节的开发者。
 
+窗口 UI 的原生模糊待适配，具体交接见 [macOS 窗口原生模糊适配](macos-window-vibrancy.md)。该文档独立于音频移植，包含现状、改动入口和实机验收要求。
+
 ## 概述
 
 SDA 的 Rust 原生渲染器原本仅支持 Windows WASAPI 输出。移植工作使用 [CPAL](https://github.com/RustAudio/cpal) 作为跨平台音频抽象层，通过 `#[cfg]` 条件编译在同一代码库中保留 Windows WASAPI 和 macOS CoreAudio 两条路径。DSP 管线（HRTF、房间卷积、VBAP、对象混音等）完全平台无关，无需修改。
