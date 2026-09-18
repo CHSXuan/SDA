@@ -489,3 +489,12 @@ html[data-fullscreen="true"] .mac-drag-bar { display: none; }
 :root .app .playlist-panel button.playlist-remove:hover {
   border-color: transparent; box-shadow: none;
 }
+
+.error-toast {
+  position: fixed; top: 48px; left: 50%; transform: translateX(-50%);
+  z-index: 9999; max-width: 600px; padding: 8px 16px;
+  background: #c0392b; color: #fff; border-radius: 6px;
+  font-size: 13px; cursor: pointer; box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+  animation: error-fade 0.3s ease;
+}
+@keyframes error-fade { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } }

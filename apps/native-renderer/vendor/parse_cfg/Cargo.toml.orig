@@ -1,0 +1,20 @@
+[package]
+version = "4.1.1"
+name = "parse_cfg"
+authors = ["Kornel <kornel@geekhood.net>"]
+description = "Parse and evaluate Rust's `cfg(any(condition))` attribute syntax and target triples"
+documentation = "https://docs.rs/parse_cfg"
+homepage = "https://lib.rs/crates/parse_cfg"
+repository = "https://gitlab.com/kornelski/parse_cfg"
+categories = ["parsing", "rust-patterns"]
+keywords = ["cfg", "syntax", "attr", "target", "rust"]
+license = "CC0-1.0 OR MIT"
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
+nom = "7.1.3"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--generate-link-to-definition"]

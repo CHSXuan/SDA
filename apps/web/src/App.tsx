@@ -392,7 +392,8 @@ export function App() {
   const [initialOutputLatencySeconds] = useState(readOutputLatencySeconds);
   const outputLatencySecondsRef = useRef<OutputLatencySeconds>(initialOutputLatencySeconds);
   /** 运行期错误只进 console，不再在页面上显示日志面板。 */
-  const [, setErrors] = useState<string[]>([]);
+  const [errors, setErrors] = useState<string[]>([]);
+  useEffect(() => { if (errors.length > 0) { const t = setTimeout(() => setErrors([]), 8000); return () => clearTimeout(t); } }, [errors]);
   const [playing, setPlaying] = useState(false);
   const [paused, setPaused] = useState(false);
   /** 暂停意图的 ref 镜像：player 还在创建中（createPlayer 未 resolve）时按暂停，
@@ -2071,6 +2072,7 @@ export function App() {
       onDrop={onDrop}
     >
       <WindowTitlebar />
+      {errors.length > 0 && <div className="error-toast" onClick={() => setErrors([])}>{errors[errors.length - 1]}</div>}
       {mediaPicker && <MediaPicker mode={mediaPicker} onClose={() => setMediaPicker(null)} onSelect={paths => appendToPlaylist(paths.map(path => ({kind:"path",path})))}/>}
       <header>
         <h1><SdaLogo /><span>SDA<small>空间音频工作台</small></span></h1>

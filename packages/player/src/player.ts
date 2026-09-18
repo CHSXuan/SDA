@@ -1833,6 +1833,9 @@ export class SdaPlayer {
 
   private handleWorkerFailure(message: string): void {
     this.rejectPendingWorkerPushes(message);
+    // Unblock init() so the player can be disposed normally instead of hanging
+    // forever when the decoder worker fails to load (e.g. WASM in packaged app).
+    this.readyResolve();
     if (this.disposed) return;
     this.cb.onError?.(message);
     this.ended = true;
