@@ -1161,12 +1161,14 @@ impl Engine {
     /// stopping all beds and objects at the next convolution boundary.
     fn prepare_source_renderers(source: &mut Source, set: Option<&hrtf::NativeHrtfSet>, wet: f32,
         directional: bool, effective_direct: bool, near_active: bool) {
-        source.continuous_active = source.kind == SourceKind::Object && directional && source.zone_exclusion.is_empty();
+        source.continuous_active = source.kind == SourceKind::Object && directional
+            && source.zone_exclusion.is_empty();
         if source.continuous_active && source.continuous.is_none() {
             source.continuous = set.and_then(|set| directional::ContinuousSource::new(set).ok()).map(Box::new);
             if source.direct.is_none() && source.continuous.is_some() {source.continuous_mix=1.0;}
         }
         if source.kind == SourceKind::Object && effective_direct && source.direct.is_none()
+            && !set.is_some_and(|set|set.cinema.monitor.hardware.enabled)
             && (!source.continuous_active || source.continuous.is_none()) {
             source.direct=set.and_then(|set|direct_renderer::DirectSource::new(set,wet).ok()).map(Box::new);
         }
@@ -1199,7 +1201,7 @@ impl Engine {
         self.fast_activity.clear();
         for source in self.sources.values_mut(){source.fast_mixed=false;}
         #[cfg(test)] if self.disable_fast_objects {return;}
-        if frames==0 || !self.directional_hrtf || self.cinema.monitor.hardware.enabled
+        if frames==0 || !self.directional_hrtf
             || self.cinema_bass_mix>1e-6 || (self.cinema.monitor.enabled && self.cinema.monitor.bass_enabled) {return;}
         let end=self.sample_pos+frames as u64;
         let eligible=|source:&Source| source.kind==SourceKind::Object && source.continuous_active
@@ -1267,11 +1269,11 @@ impl Engine {
             vbap::speakers(self.layout).get(bus).map_or(1.0, |speaker| self.speaker_target(speaker.name))
         });
         let lfe_target = self.speaker_target("LFE");
-            let near_active = self.near_field.enabled && !self.cinema.monitor.hardware.enabled;
-            let effective_direct = (self.direct_objects || near_active || self.directional_hrtf) && !self.cinema.monitor.hardware.enabled;
+            let near_active = self.near_field.enabled && (!self.cinema.monitor.hardware.enabled || self.directional_hrtf);
+            let effective_direct = self.directional_hrtf || ((self.direct_objects || near_active) && !self.cinema.monitor.hardware.enabled);
         for source in self.sources.values_mut() {
             Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
-                self.directional_hrtf && !self.cinema.monitor.hardware.enabled,effective_direct,near_active);
+                self.directional_hrtf,effective_direct,near_active);
         }
         if self.block_offset==0 {self.bus_renderer.as_mut().unwrap().begin_block();}
         self.mix_continuous_objects(output.len()/channels,speaker_targets,effective_direct,near_active);
@@ -1352,7 +1354,7 @@ impl Engine {
                     if let Some(event) = source.spatial_events.remove(&at) {
                         changed = Self::start_source_motion(source, event);
                         if changed {Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
-                            self.directional_hrtf && !self.cinema.monitor.hardware.enabled,effective_direct,near_active);}
+                            self.directional_hrtf,effective_direct,near_active);}
                     }
                     // Preserve the authored motion resolution independently of
                     // the FFT partition used by long room/headphone filters.
@@ -1471,7 +1473,7 @@ impl Engine {
                     }
                 }
                 if source.kind == SourceKind::Object {
-                    let target=if self.source_extent.enabled {source.diffuse.max(self.source_extent.diffusion)}else{0.0};
+                    let target=if self.source_extent.enabled && !source.continuous_active {source.diffuse.max(self.source_extent.diffusion)}else{0.0};
                     source.diffusion_mix+=(target-source.diffusion_mix).clamp(-1.0/9600.0,1.0/9600.0);
                     if source.diffusion_mix>0.0 {
                         if block_index==0 {source.diffuse_route=bus_renderer::route_zoned(&vbap,source.position,head_pose,0.0,1.0,source.horizontal_only,&source.zone_exclusion);}
@@ -1482,7 +1484,12 @@ impl Engine {
                 // ADM masters carry silent PCM for inactive objects. Keep their
                 // clocks, filters and envelopes running, but avoid zero bus work.
                 let bus_sample = sample * ROOM_SPEAKER_REFERENCE_GAIN
-                    * if source.direct.is_some() || source.continuous.is_some() { 1.0 - self.direct_mix } else { 1.0 };
+                    * if source.direct.is_some() { 1.0 - self.direct_mix }
+                    else if source.continuous.is_some() {
+                        // Hardware exclusion-zone fallback has no legacy object
+                        // convolver. Return its faded share to the hardware bus.
+                        1.0 - self.direct_mix * source.continuous_mix
+                    } else { 1.0 };
                 if bus_sample != 0.0 {
                     self.bus_renderer.as_mut().expect("checked above").add(
                         bus_sample,
@@ -1503,6 +1510,8 @@ impl Engine {
                             let mut position=source.position;
                             if source.horizontal_only {position[2]=0.0;}
                             directional::Direction { position, head:head_pose,
+                                diffuse: source.diffuse.max(if self.source_extent.enabled {self.source_extent.diffusion}else{0.0}),
+                                horizontal_only: source.horizontal_only,
                                 width: if self.source_extent.enabled {source.extent[0].max(self.source_extent.width)*120.0}else{source.spread*120.0},
                                 height: if source.horizontal_only {0.0}else if self.source_extent.enabled {source.extent[2]*120.0}else{source.spread*120.0},
                                 depth: if self.source_extent.enabled {source.extent[1]}else{0.0} }

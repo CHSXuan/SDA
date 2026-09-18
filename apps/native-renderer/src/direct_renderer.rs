@@ -148,7 +148,7 @@ mod tests {
         let mut original=DirectSource::new(&set,0.04).unwrap();
         let mut near=DirectSource::new(&set,0.04).unwrap();
         near.near_reference=Some(Box::new(DirectSource::new(&set,0.0).unwrap()));
-        if directional { near.direction=Some(crate::directional::Direction {position:[0.7,-0.4,0.3],head:None,width:0.0,height:0.0,depth:0.0}); }
+        if directional { near.direction=Some(crate::directional::Direction {diffuse:0.0,horizontal_only:false,position:[0.7,-0.4,0.3],head:None,width:0.0,height:0.0,depth:0.0}); }
         let mut gains=[0.0;vbap::MAX_BUS_COUNT];gains[0]=1.0;
         let mut direct_changed=false;let mut reflection_found=false;
         for block in 0..80 {

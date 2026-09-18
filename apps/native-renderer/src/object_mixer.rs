@@ -260,7 +260,7 @@ fn mix_source(
             buffer.underruns += 1;
         }
         if source.kind == SourceKind::Object {
-            let target = if ctx.extent.enabled {
+            let target = if ctx.extent.enabled && !source.continuous_active {
                 source.diffuse.max(ctx.extent.diffusion)
             } else {
                 0.0
@@ -310,6 +310,8 @@ fn mix_source(
             let direction = crate::directional::Direction {
                 position,
                 head: head_pose,
+                diffuse: source.diffuse.max(if ctx.extent.enabled {ctx.extent.diffusion}else{0.0}),
+                horizontal_only: source.horizontal_only,
                 width: if ctx.extent.enabled {
                     source.extent[0].max(ctx.extent.width) * 120.0
                 } else {
