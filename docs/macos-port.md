@@ -4,6 +4,8 @@
 
 窗口 UI 的原生模糊待适配，具体交接见 [macOS 窗口原生模糊适配](macos-window-vibrancy.md)。该文档独立于音频移植，包含现状、改动入口和实机验收要求。
 
+第三方应用的系统音频、Atmos / DTS:X / 360RA 输入接入，见独立的 [macOS 系统音频与空间码流接入交接](macos-system-audio-integration.md)。其中区分 Core Audio Tap 的 PCM 捕获与保留对象的原始码流输入，尚未在 Mac 实机验证。
+
 ## 概述
 
 SDA 的 Rust 原生渲染器原本仅支持 Windows WASAPI 输出。移植工作使用 [CPAL](https://github.com/RustAudio/cpal) 作为跨平台音频抽象层，通过 `#[cfg]` 条件编译在同一代码库中保留 Windows WASAPI 和 macOS CoreAudio 两条路径。DSP 管线（HRTF、房间卷积、VBAP、对象混音等）完全平台无关，无需修改。
