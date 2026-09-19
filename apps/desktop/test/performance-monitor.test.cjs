@@ -3,6 +3,13 @@ const {fork}=require('node:child_process');
 const {DebugSequence}=require('../performance-monitor.cjs');
 function key(sequence,key,extra={}){return sequence.input({type:'keyDown',key,control:false,alt:false,shift:false,...extra});}
 function arm(sequence){key(sequence,'Shift',{control:true,alt:true,shift:true});key(sequence,'Shift',{type:'keyUp'});}
+test('macOS uses Command Option Shift and keeps the production timeout',()=>{
+ let now=0;const s=new DebugSequence(4000,()=>now,'darwin');
+ arm(s);for(const k of 'debug')assert.equal(key(s,k),false);
+ const macArm=()=>{key(s,'Shift',{meta:true,alt:true,shift:true});key(s,'Shift',{type:'keyUp'});};
+ macArm();now=3999;for(const k of 'debu')assert.equal(key(s,k),false);assert.equal(key(s,'g'),true);
+ macArm();now+=4001;for(const k of 'debug')assert.equal(key(s,k),false);
+});
 test('debug gesture enforces development and production deadlines',()=>{
  for(const timeout of [10000,4000]){let now=0;const s=new DebugSequence(timeout,()=>now);assert.equal(key(s,'d'),false);arm(s);now=timeout-1;for(const k of 'debu')assert.equal(key(s,k),false);assert.equal(key(s,'g'),true);
  arm(s);now+=timeout+1;for(const k of 'debug')assert.equal(key(s,k),false);

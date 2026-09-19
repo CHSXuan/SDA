@@ -83,3 +83,14 @@ Windows 已进行本机计数与独立进程采集验证；macOS/Linux 采样代
 第一次匹配后结果保存生成器版本和参数；再次导入该结果会锁定同一生成配方，执行新代码，不重新搜索替代输入。因此可以用同一份结果对比改动前后。配方只允许内置生成器及有界数字参数，不接受脚本、命令、音频字节或外部文件路径。Windows/macOS 都使用同一 WASM 和格式解析规则；本机测试仍不证明另一个系统的驱动行为。
 
 构建：`node scripts/build-core.mjs` 同时生成 Web/Node WASM、共享解析器 CJS 和构建标识。桌面打包前将 Node WASM 复制到 `performance-core`，正式包不依赖开发机仓库路径。
+
+
+### WebGPU 与 macOS 快捷键
+
+Windows/Linux 使用 Ctrl + Alt + Shift，macOS 使用 Command + Option（Alt）+ Shift；按下组合键后松开，在开发/测试环境 10 秒、正式包 4 秒内输入 `debug`。不修改超时时间或正式包隐藏入口规则。
+
+声场和房间视图优先初始化 WebGPURenderer，无可用 WebGPU 时回退 WebGL 2；显式软件模式保留 WebGLRenderer。房间宽线使用后端对应材质，轮廓使用通用边缘几何。画布的 `data-sda-renderer` 标明实际后端，不以 navigator.gpu 存在就认定启用成功。
+
+性能监视器对 WebGPU 使用异步 timestamp query 读取，显示“GPU 批次耗时（非单帧）”，不得与 WebGL 的单次绘制耗时直接等同；不支持 GPU 时间查询时明确显示不可测，CPU 提交与帧间隔仍记录。GPU 时间查询只在开启性能采集时启用。
+
+Windows Electron 已验证 WebGPU 声场、房间射线、计时以及缺少 GPU API 时的 WebGL 回退。macOS 组合键通过平台参数测试，但尚未在 macOS 实机验证性能或快捷键；启用 WebGPU 不保证所有机器更快。

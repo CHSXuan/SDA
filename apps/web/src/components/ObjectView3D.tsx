@@ -1,4 +1,5 @@
 import Performance3D from "./Performance3D";
+import {spatialRenderer} from '../spatial-renderer';
 import AvatarSkinControl from "./AvatarSkinControl";
 import { type HrtfTestVisual, testVisualPosition } from "../phrtf";
 /**
@@ -531,6 +532,7 @@ export function ObjectView({
   const toggleFullscreen=async()=>{try{setNavigationError("");if(document.fullscreenElement===shell.current)await document.exitFullscreen();else await shell.current?.requestFullscreen();}catch{setNavigationError("无法进入全屏，请重试。");}};
   const rendererMode = window.sdaDesktop?.rendererMode;
   const isSwiftShader = mobile || rendererMode === "swiftshader";
+  const createRenderer=useMemo(()=>spatialRenderer(rendererMode==='swiftshader',isSwiftShader),[rendererMode,isSwiftShader]);
   return (
     <div data-field-shape={spherical ? "sphere" : "room"} ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
     <Canvas
@@ -540,7 +542,7 @@ export function ObjectView({
       // SwiftShader is software rasterization: render one device pixel per CSS
       // pixel and skip MSAA to avoid multiplying the fill cost.
       dpr={isSwiftShader ? 1 : [1, 1.5]}
-      gl={{ antialias: !isSwiftShader, powerPreference: isSwiftShader ? "low-power" : "high-performance" }}
+      gl={createRenderer}
     >
       {/* Object motion paints on the same vsync path as camera drags (drei's
           controls invalidate at full rate regardless). Only SwiftShader —

@@ -4,15 +4,15 @@ const crypto=require('node:crypto');
 const {performance}=require('node:perf_hooks');
 
 class DebugSequence {
-  constructor(timeoutMs,clock=()=>Date.now()){this.timeoutMs=timeoutMs;this.clock=clock;this.deadline=0;this.text='';this.held=false;}
+  constructor(timeoutMs,clock=()=>Date.now(),platform=process.platform){this.timeoutMs=timeoutMs;this.clock=clock;this.platform=platform;this.deadline=0;this.text='';this.held=false;}
   input(input){
-    const chord=input.control&&input.alt&&input.shift;
+    const chord=(this.platform==='darwin'?input.meta:input.control)&&input.alt&&input.shift;
     if(chord&&!this.held){this.deadline=this.clock()+this.timeoutMs;this.text='';}
     this.held=chord;
     if(input.type!=='keyDown'||input.isAutoRepeat||!this.deadline)return false;
     if(this.clock()>this.deadline){this.deadline=0;return false;}
     const key=String(input.key).toLowerCase();
-    if(['control','alt','shift','meta'].includes(key))return false;
+    if(['control','alt','shift','meta','command','option'].includes(key))return false;
     if(key.length!==1){this.deadline=0;return false;}
     this.text+=key;
     if(!'debug'.startsWith(this.text)){this.deadline=0;return false;}
