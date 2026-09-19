@@ -33,7 +33,9 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
   function openWindow(){
     if(monitorWindow&&!monitorWindow.isDestroyed()){monitorWindow.show();monitorWindow.focus();return;}
     monitorWindow=new BrowserWindow({width:1160,height:800,title:'SDA 性能监视器',webPreferences:{preload:path.join(__dirname,'performance-preload.cjs'),contextIsolation:true,nodeIntegration:false}});
-    monitorWindow.sdaPerformance=true;monitorWindow.setMenu(null);monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html'));
+    monitorWindow.sdaPerformance=true;monitorWindow.setMenu(null);
+    monitorWindow.webContents.on('dom-ready',()=>{monitorWindow.webContents.send('sda:performance-theme',currentTheme);});
+    monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html'));
   }
   async function activate(){
     if(child){openWindow();return;}
