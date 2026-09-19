@@ -191,7 +191,16 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       seekGate = new SeekFrameGate(msg.seekSeconds ?? 0);
       seekPackets = new SeekPacketGate(msg.seekSeconds ?? 0);
       mpeghSeek = new MpeghSeekPackets(msg.seekSeconds ?? 0);
-      decoder?.free();
+      // When seeking within the same file, preserve the existing decoder
+      // (including any codec-specific instance from onTrack) to avoid
+      // redundant WASM instantiation and codec detection overhead.
+      if (!msg.preserve) decoder?.free();
+      if (!msg.preserve) {
+        decoder = new SdaDecoder(msg.codec as Exclude<CodecName, "alac">);
+        decoderConfigurationError = null;
+      } else {
+        decoder?.flush();
+      }
       resampler?.destroy();
       resampler = null;
       decodedFrames = [];
@@ -201,12 +210,8 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       frameBatcher = new FrameBatcher(postFrame);
       loudnessMeter = null;
       loudnessPostCounter = 0;
-      // Keep the existing immediate decoder for raw and legacy MP4 streams.
-      // ALAC replaces it in onTrack before MP4Box starts delivering packets,
-      // because only the discovered track carries its required codec cookie.
-      decoder = new SdaDecoder(msg.codec as Exclude<CodecName, "alac">);
-      decoderConfigurationError = null;
       sniffPrefix = new Uint8Array(0);
+      // Reset demuxer so it re-parses from the fresh data stream.
       demuxer = null; // created on first push, after sniffing
       lastObjectTargets.clear();
       break;

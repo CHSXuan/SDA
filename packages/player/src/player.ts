@@ -954,13 +954,13 @@ export class SdaPlayer {
   }
 
   /** Play a File/Blob (browser) end-to-end. */
-  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto"): Promise<void> {
+  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", preserve = false): Promise<void> {
     if (this.outputBackend === "web-audio" && !this.renderer) throw new Error("call init() first");
     await this.renderer?.ctx.resume();
     if (this.disposed) return;
     console.log(`[SDA] player#${this.id} playFile`);
     const epoch=this.decodeEpoch;
-    const startOffset = await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
+    const startOffset = await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec, preserve);
     if (this.disposed || epoch !== this.decodeEpoch) return;
 
     const stream = file.slice(startOffset).stream();
@@ -984,6 +984,7 @@ export class SdaPlayer {
     readRange: (offset: number, length: number) => Promise<Uint8Array>,
     size: number,
     codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
+    preserve = false,
   ): Promise<number> {
     this.balanceAnalysisAbort.abort();
     const analysisAbort = this.balanceAnalysisAbort = new AbortController();
@@ -999,18 +1000,21 @@ export class SdaPlayer {
     // PCM/ADM has a fixed byte stride; retain 100 ms for SRC filter warm-up.
     const startSample = metadata && this.seekSeconds > 0
       ? Math.floor(Math.max(0, this.seekSeconds - 0.1) * metadata.format.sampleRate) : 0;
-    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata, startSample);
+    // For seeks within compressed (non-BWF) files, preserve the existing
+    // decoder to avoid redundant WASM instantiation and codec detection.
+    const shouldPreserve = preserve && !metadata;
+    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata, startSample, shouldPreserve);
     return metadata && startSample > 0 ? metadata.dataOffset + startSample * metadata.format.blockAlign : 0;
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata, startSample = 0): void {
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata, startSample = 0, preserve = false): void {
     this.sourceBwfMetadata = bwfMetadata;
     this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, startSample, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined, seekSeconds:this.seekSeconds });
+    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, startSample, preserve, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined, seekSeconds:this.seekSeconds });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 

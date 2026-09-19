@@ -1798,7 +1798,7 @@ export function App() {
     void (async () => {
       await player.prepareSeek(target);
       if (!current()) return;
-      if (source.kind === "file") await player.playFile(source.file, "auto");
+      if (source.kind === "file") await player.playFile(source.file, "auto", true);
       else {
         const api=window.sdaDesktop;
         if (!api?.openPath || !api.readSlice || !api.close) throw Error("桌面文件读取接口不可用");
@@ -1806,7 +1806,7 @@ export function App() {
         try {
           if (!current()) return;
           const read=(offset:number,length:number)=>api.readSlice!(opened.id,offset,length);
-          const startOffset = await player.openSeekable(read,opened.size,"auto");
+          const startOffset = await player.openSeekable(read,opened.size,"auto",true);
           if (!current()) return;
           for await (const chunk of readAhead(opened.size,FILE_CHUNK_SIZE,read,startOffset)) {
             if (!current()) return;
