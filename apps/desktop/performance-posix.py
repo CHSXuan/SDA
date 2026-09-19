@@ -41,7 +41,12 @@ while True:
             else:row['ioUnavailable']='unsupported OS' 
             rows.append(row)
         previous=next_previous
-        print(json.dumps(dict(time=round(now*1000),processes=rows,cpuPercent=sum(r['cpuPercent'] for r in rows),workingSetBytes=sum(r['workingSetBytes'] for r in rows),readBytesPerSecond=sum(r['readBytesPerSecond'] or 0 for r in rows) if any(r['readBytesPerSecond'] is not None for r in rows) else None,writeBytesPerSecond=sum(r['writeBytesPerSecond'] or 0 for r in rows) if any(r['writeBytesPerSecond'] is not None for r in rows) else None)),flush=True)
+        totalCpu=sum(r['cpuPercent'] for r in rows)
+        # ps %cpu and proc_pid_rusage both report against a single core (100% = one core).
+        # Supply totalMachinePercent (= totalCpu / coreCount) so the dashboard can show
+        # whole-machine utilisation, and keep cpuPercent for backward compatibility.
+        coreCount=os.cpu_count() or 1
+        print(json.dumps(dict(time=round(now*1000),processes=rows,cpuPercent=totalCpu,totalMachinePercent=totalCpu/coreCount,workingSetBytes=sum(r['workingSetBytes'] for r in rows),readBytesPerSecond=sum(r['readBytesPerSecond'] or 0 for r in rows) if any(r['readBytesPerSecond'] is not None for r in rows) else None,writeBytesPerSecond=sum(r['writeBytesPerSecond'] or 0 for r in rows) if any(r['writeBytesPerSecond'] is not None for r in rows) else None)),flush=True)
         time.sleep(1)
     except ProcessLookupError:break
     except Exception as e:
