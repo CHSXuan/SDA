@@ -267,9 +267,11 @@ let nativeRendererWritable = true;
 // on drain so the codec timeline never loses a frame to congestion.
 const nativeRendererBatchQueue = [];
 let nativeRendererBuffer = "";
+let currentAppTheme = "dark";
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
   app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeExecutable:()=>bundledNativeRendererPath(),
-  nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
+  nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid,
+  initialTheme:currentAppTheme
 });
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
 let nativeRendererObjectActivity = [];
@@ -1276,6 +1278,7 @@ function windowsBackdropEnabled() {
 ipcMain.on("sda:window-theme", (event, theme) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.sdaRtcWorker || !["light", "dark"].includes(theme)) return;
+  currentAppTheme = theme;
   if (process.platform === "win32") nativeTheme.themeSource = theme;
   performanceMonitor.setTheme(theme);
 });

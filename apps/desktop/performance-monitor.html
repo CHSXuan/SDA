@@ -62,13 +62,7 @@ dialog{padding:0;border:1px solid color-mix(in srgb,var(--text) 14%,transparent)
 dialog::backdrop{background:#0008;backdrop-filter:blur(5px)}
 .dialog-head{display:flex;align-items:center;gap:20px;padding:20px 24px;position:sticky;top:0;z-index:2;background:var(--panel-translucent);backdrop-filter:blur(20px) saturate(110%);border-radius:22px 22px 0 0}
 .dialog-head h2{margin:0;font-size:21px;font-weight:600;line-height:1.3;flex:1}
-.dialog-head button{border-radius:50%;width:34px;height:34px;padding:0;font-size:20px}
 dialog .dialog-body{padding:0 24px 22px;overflow-y:auto}
-
-/* Close button with glass refraction */
-.dialog-close{position:relative;isolation:isolate;overflow:hidden;display:grid;place-items:center;width:44px;height:44px;min-width:44px;flex:0 0 44px;padding:0;border-radius:50%;border:1px solid color-mix(in srgb,var(--text) 7%,transparent);background:color-mix(in srgb,var(--panel) 18%,transparent);color:var(--text);box-shadow:0 3px 10px rgba(0,0,0,0.06),inset 0 1px 1px color-mix(in srgb,var(--text) 12%,transparent);transition:transform .18s;cursor:pointer}
-.dialog-close:active{transform:scale(.94)}.dialog-close>svg{position:relative;z-index:1;pointer-events:none}
-@media(prefers-reduced-motion:reduce){.dialog-close{transition:none}}
 @media(prefers-reduced-transparency:reduce){dialog{background:var(--panel);backdrop-filter:none}}
 
 /* ── Per-core CPU bars ── */
@@ -97,9 +91,9 @@ dialog .hint{margin-top:10px}
 </main>
 
 <!-- ── Peak info dialog ── -->
-<dialog id="peak-dialog"><div class="dialog-head"><h2 id="peak-title">峰值发生在哪里</h2><button id="peak-close" class="dialog-close" aria-label="关闭"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div><div id="peak-content" class="dialog-body"></div></dialog>
+<dialog id="peak-dialog"><div class="dialog-head"><h2 id="peak-title">峰值发生在哪里</h2><button id="peak-close" aria-label="关闭" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:20px;background:transparent;border:1px solid var(--input-border);color:var(--text);cursor:pointer">✕</button></div><div id="peak-content" class="dialog-body"></div></dialog>
 
 <!-- ── Per-core CPU dialog ── -->
-<dialog id="core-dialog"><div class="dialog-head"><h2>CPU 各核心占用</h2><button id="core-close" class="dialog-close" aria-label="关闭"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div><div id="core-body" class="dialog-body"></div></dialog>
+<dialog id="core-dialog"><div class="dialog-head"><h2>CPU 各核心占用</h2><button id="core-close" aria-label="关闭" style="border-radius:50%;width:34px;height:34px;padding:0;font-size:20px;background:transparent;border:1px solid var(--input-border);color:var(--text);cursor:pointer">✕</button></div><div id="core-body" class="dialog-body"></div></dialog>
 
 <script src="performance-dashboard.cjs"></script></body></html>

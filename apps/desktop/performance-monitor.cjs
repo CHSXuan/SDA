@@ -20,10 +20,10 @@ class DebugSequence {
   }
 }
 
-function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable}){
+function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable,initialTheme}){
   let simulating=false;
   let child=null,endpoint=null,directory=null,monitorWindow=null,snapshot={},active=false;
-  let currentTheme='dark';
+  let currentTheme=(initialTheme==='light'?'light':'dark');
   let sent=0,dropped=0,networkIn=0,networkOut=0,chromiumReceived=0,chromiumRequestBody=0;
   const attached=new Set();
   function networkProbe(win){if(win.isDestroyed()||win.sdaPerformance||win.sdaRtcWorker||attached.has(win.webContents.id))return;try{const debug=win.webContents.debugger;if(debug.isAttached())return;debug.attach("1.3");attached.add(win.webContents.id);debug.on("message",(_event,method,params)=>{if(!active)return;if(method==="Network.loadingFinished")chromiumReceived+=Number(params.encodedDataLength)||0;if(method==="Network.requestWillBeSent")chromiumRequestBody+=Buffer.byteLength(params.request?.postData||"");});void debug.sendCommand("Network.enable").catch(()=>{});}catch{emit({stage:"network.chromium_unavailable",id:String(win.webContents.id),ms:0});}}

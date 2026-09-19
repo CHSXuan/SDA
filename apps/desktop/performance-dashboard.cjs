@@ -61,7 +61,7 @@ function setValue(el,value){
  if(value&&typeof value==='object'){
   const text=document.createElement('span');text.textContent=value.text;el.append(text);
   if(value.peak){text.classList.add('peak');text.title='达到本次监测峰值（不代表故障）';text.setAttribute('aria-label',value.text+'，本次峰值');}
-  if(value.records?.length){const button=document.createElement('button');button.className='peak-info'+(value.peak?' peak':'');button.textContent='i';button.title='查看峰值对应的歌曲与时间';button.setAttribute('aria-label','查看峰值对应的歌曲与时间');button.onclick=()=>showPeakInfo(value.records);el.append(button);}
+  if(value.records?.length){const button=document.createElement('button');button.className='peak-info'+(value.peak?' peak':'');button.textContent='i';button.title='查看峰值对应的歌曲与时间';button.setAttribute('aria-label','查看峰值对应的歌曲与时间');button.onclick=e=>{e.stopPropagation();showPeakInfo(value.records);};el.append(button);}
  }else el.textContent=String(value);
 }
 const peakNames={cpu:'CPU（单核基准）',memory:'内存',rx:'网络接收',tx:'网络发送',read:'读取速度',write:'写入速度',decode:'解码产出',hrtf:'对象双耳计算',room:'房间应用',latency:'解码到双耳输出',gaps:'音频缺口','3d':'3D 绘制'};
