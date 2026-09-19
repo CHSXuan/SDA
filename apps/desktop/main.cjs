@@ -1277,7 +1277,7 @@ ipcMain.on("sda:window-theme", (event, theme) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.sdaRtcWorker || !["light", "dark"].includes(theme)) return;
   if (process.platform === "win32") nativeTheme.themeSource = theme;
-  ipcMain.emit("sda:performance-theme-set", event, theme);
+  performanceMonitor.setTheme(theme);
 });
 
 function createWindow() {

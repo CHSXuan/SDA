@@ -85,9 +85,9 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
   const net=require('node:net'),originalEmit=net.Socket.prototype.emit,originalWrite=net.Socket.prototype.write;
   net.Socket.prototype.emit=function(event,...args){if(active&&event==='data'&&this.remoteAddress)networkIn+=args[0]?.byteLength||0;return originalEmit.call(this,event,...args);};
   net.Socket.prototype.write=function(data,...args){if(active&&this.remoteAddress)networkOut+=typeof data==='string'?Buffer.byteLength(data,typeof args[0]==='string'?args[0]:undefined):data?.byteLength||0;return originalWrite.call(this,data,...args);};
-  ipcMain.on('sda:performance-theme-set',(_event,theme)=>{if(['light','dark'].includes(theme)){currentTheme=theme;if(monitorWindow&&!monitorWindow.isDestroyed())monitorWindow.webContents.send('sda:performance-theme',theme);}});
   ipcMain.handle('sda:performance-theme',()=>currentTheme);
-  return {activate,emit,nativeConfig,get active(){return active;},attach(win){
+  function setTheme(theme){if(['light','dark'].includes(theme)){currentTheme=theme;if(monitorWindow&&!monitorWindow.isDestroyed())monitorWindow.webContents.send('sda:performance-theme',theme);}}
+  return {activate,emit,nativeConfig,setTheme,get active(){return active;},attach(win){
     const sequence=new DebugSequence(isDev||!app.isPackaged||process.env.NODE_ENV==="test"?10000:4000);
     win.webContents.on('before-input-event',(event,input)=>{const activated=sequence.input(input);if(activated||(input.type==='keyDown'&&sequence.deadline&&sequence.text))event.preventDefault();if(activated)void activate();});
     win.on('unresponsive',()=>emit({stage:'renderer.unresponsive',id:String(win.webContents.id),ms:0,units:1}));
