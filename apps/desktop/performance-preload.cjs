@@ -1,5 +1,18 @@
 const {contextBridge,ipcRenderer}=require('electron');
-contextBridge.exposeInMainWorld('performanceMonitor',{snapshot:()=>ipcRenderer.invoke('sda:performance-snapshot'),action:a=>ipcRenderer.invoke('sda:performance-action',a)});
+contextBridge.exposeInMainWorld('performanceMonitor',{
+  snapshot:()=>ipcRenderer.invoke('sda:performance-snapshot'),
+  action:a=>ipcRenderer.invoke('sda:performance-action',a),
+  getTheme:()=>ipcRenderer.invoke('sda:performance-theme'),
+  onTheme:callback=>ipcRenderer.on('sda:performance-theme',(_e,theme)=>callback(theme))
+});
+
+// Apply theme to the page
+ipcRenderer.invoke('sda:performance-theme').then(theme=>{
+  if(theme)document.documentElement.dataset.theme=theme;
+});
+ipcRenderer.on('sda:performance-theme',(_e,theme)=>{
+  document.documentElement.dataset.theme=theme;
+});
 
 ipcRenderer.on('sda:performance-notice',(_event,text)=>{
  const el=document.createElement('div');el.textContent=text;

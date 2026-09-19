@@ -90,12 +90,25 @@ function showPeakInfo(records){
 }
 
 function cells(target,rows){target.replaceChildren(...rows.map(row=>{const tr=document.createElement('tr');for(const value of row){const td=document.createElement('td');setValue(td,value);tr.append(td);}return tr;}));if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=8;td.className='empty';td.textContent='该期间尚无对应数据。播放音频或操作对应功能后会显示。';tr.append(td);target.append(tr);}}
-function cards(target,rows){target.replaceChildren(...rows.map(([label,value,hint])=>{const el=document.createElement('div');el.className='card';const title=document.createElement('small'),v=document.createElement('div'),h=document.createElement('div');title.textContent=label;v.className='value';setValue(v,value);h.className='hint';h.textContent=hint;el.append(title,v,h);return el;}));}
+function cards(target,rows){target.replaceChildren(...rows.map(([label,value,hint,onClick])=>{const el=document.createElement('div');el.className='card';if(onClick){el.dataset.clickable='';el.tabIndex=0;el.setAttribute('role','button');el.addEventListener('click',onClick);el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onClick();}});}const title=document.createElement('small'),v=document.createElement('div'),h=document.createElement('div');title.textContent=label;v.className='value';setValue(v,value);h.className='hint';h.textContent=hint;el.append(title,v,h);return el;}));}
+function barColor(pct){return pct>80?'var(--bar-fill-hot)':pct>50?'var(--bar-fill-warn)':'var(--bar-fill)';}
+function showCoreDialog(){
+ const h=snapshot.hardware||{};const cores=h.perCoreCpu||[];const body=$('core-body');body.replaceChildren();
+ if(!cores.length){const p=document.createElement('p');p.textContent='暂无各核心数据，等待系统采样后点击 CPU 卡片查看。';body.append(p);}
+ else{
+  const total=h.totalMachinePercent!=null?`总 CPU ${num(h.totalMachinePercent)}% · `:'';
+  const summary=document.createElement('p');summary.className='hint';summary.textContent=`${total}${cores.length} 个逻辑核心 · 采样来自系统调度器`;body.append(summary);
+  const container=document.createElement('div');container.className='core-bars';
+  for(let i=0;i<cores.length;i++){const pct=cores[i];const row=document.createElement('div');row.className='core-row';row.innerHTML=`<span class="core-label">核心 ${i}</span><div class="core-track"><div class="core-fill" style="width:${Math.min(100,pct).toFixed(1)}%;background:${barColor(pct)}"></div></div><span class="core-pct">${num(pct)}%</span>`;container.append(row);}
+  body.append(container);
+ }
+ if(!$('core-dialog').open)$('core-dialog').showModal();
+}
 let snapshot={};
 function render(){
  const s=snapshot,h=s.hardware||{},n=s.network||{},recent=s.active?[...(s.rows||[]),...(s.nativeRows||[])]:[];
  $('status').textContent=s.active?'后台记录中 · 每秒更新':'记录已暂停';$('toggle').textContent=s.active?'暂停记录':'继续记录';$('path').textContent=`自动保存：${s.directory||'等待目录'}`;
- cards($('cards'),[['CPU',highlighted(finite(h.totalMachinePercent)?num(h.totalMachinePercent)+'%':finite(h.cpuPercent)?num(h.cpuPercent)+'%（单核）':'等待采样','cpu'),'包含音频、界面与采集进程'],['内存',highlighted(size(h.workingSetBytes),'memory'),'所有 SDA 进程工作集之和'],['网络 接收 / 发送',highlighted(`${size(n.rxBytesPerSecond)} / ${size(n.txBytesPerSecond)}`,'rx','tx'),'每秒传输；完整统计范围见下方说明'],['读取 / 写入',highlighted(`${size(h.readBytesPerSecond)} / ${size(h.writeBytesPerSecond)}`,'read','write'),'每秒文件与设备传输量']]);
+ cards($('cards'),[['CPU',highlighted(finite(h.totalMachinePercent)?num(h.totalMachinePercent)+'%':finite(h.cpuPercent)?num(h.cpuPercent)+'%（单核）':'等待采样','cpu'),'包含音频、界面与采集进程 · 点击查看各核心',showCoreDialog],['内存',highlighted(size(h.workingSetBytes),'memory'),'所有 SDA 进程工作集之和'],['网络 接收 / 发送',highlighted(`${size(n.rxBytesPerSecond)} / ${size(n.txBytesPerSecond)}`,'rx','tx'),'每秒传输；完整统计范围见下方说明'],['读取 / 写入',highlighted(`${size(h.readBytesPerSecond)} / ${size(h.writeBytesPerSecond)}`,'read','write'),'每秒文件与设备传输量']]);
  const select=stage=>recent.filter(r=>r.stage===stage),max=stage=>{const rows=select(stage);return rows.length?Math.max(...rows.map(r=>r.maxMs)):null;};
  const decoded=select('decode.output_audio').reduce((a,r)=>a+r.units,0)*1000/(s.intervalMs||1000),gaps=select('output.underrun_frames').reduce((a,r)=>a+r.units,0);
  const hrtf=recent.filter(r=>r.stage.startsWith('hrtf.object.')),slowest=hrtf.length?hrtf.reduce((a,b)=>a.maxMs>b.maxMs?a:b):null;
@@ -109,6 +122,7 @@ function render(){
  cells($('processes'),(h.processes||[]).map(p=>[p.name,p.pid,finite(p.cpuPercent)?num(p.cpuPercent)+'%':'等待采样',size(p.workingSetBytes),size(p.readBytesPerSecond),size(p.writeBytesPerSecond)]));
 }
 $('peak-close').onclick=()=>$('peak-dialog').close();$('peak-dialog').onclick=e=>{if(e.target===$('peak-dialog'))$('peak-dialog').close();};
+$('core-close').onclick=()=>$('core-dialog').close();$('core-dialog').onclick=e=>{if(e.target===$('core-dialog'))$('core-dialog').close();};
 $('export').onclick=()=>window.performanceMonitor.action('export');$('toggle').onclick=()=>window.performanceMonitor.action('toggle');$('filter').oninput=render;$('scope').onchange=render;$('category').onchange=render;
 async function tick(){try{snapshot=await window.performanceMonitor.snapshot();render();}catch{$('status').textContent='窗口暂未收到更新，后台仍可能在记录';}setTimeout(tick,1000);}tick();
 // Same lens geometry and strength as SheetHeading / GlassRefraction.

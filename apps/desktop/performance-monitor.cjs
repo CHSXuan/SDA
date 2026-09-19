@@ -23,6 +23,7 @@ class DebugSequence {
 function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable}){
   let simulating=false;
   let child=null,endpoint=null,directory=null,monitorWindow=null,snapshot={},active=false;
+  let currentTheme='dark';
   let sent=0,dropped=0,networkIn=0,networkOut=0,chromiumReceived=0,chromiumRequestBody=0;
   const attached=new Set();
   function networkProbe(win){if(win.isDestroyed()||win.sdaPerformance||win.sdaRtcWorker||attached.has(win.webContents.id))return;try{const debug=win.webContents.debugger;if(debug.isAttached())return;debug.attach("1.3");attached.add(win.webContents.id);debug.on("message",(_event,method,params)=>{if(!active)return;if(method==="Network.loadingFinished")chromiumReceived+=Number(params.encodedDataLength)||0;if(method==="Network.requestWillBeSent")chromiumRequestBody+=Buffer.byteLength(params.request?.postData||"");});void debug.sendCommand("Network.enable").catch(()=>{});}catch{emit({stage:"network.chromium_unavailable",id:String(win.webContents.id),ms:0});}}
@@ -84,6 +85,8 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
   const net=require('node:net'),originalEmit=net.Socket.prototype.emit,originalWrite=net.Socket.prototype.write;
   net.Socket.prototype.emit=function(event,...args){if(active&&event==='data'&&this.remoteAddress)networkIn+=args[0]?.byteLength||0;return originalEmit.call(this,event,...args);};
   net.Socket.prototype.write=function(data,...args){if(active&&this.remoteAddress)networkOut+=typeof data==='string'?Buffer.byteLength(data,typeof args[0]==='string'?args[0]:undefined):data?.byteLength||0;return originalWrite.call(this,data,...args);};
+  ipcMain.on('sda:performance-theme-set',(_event,theme)=>{if(['light','dark'].includes(theme)){currentTheme=theme;if(monitorWindow&&!monitorWindow.isDestroyed())monitorWindow.webContents.send('sda:performance-theme',theme);}});
+  ipcMain.handle('sda:performance-theme',()=>currentTheme);
   return {activate,emit,nativeConfig,get active(){return active;},attach(win){
     const sequence=new DebugSequence(isDev||!app.isPackaged||process.env.NODE_ENV==="test"?10000:4000);
     win.webContents.on('before-input-event',(event,input)=>{const activated=sequence.input(input);if(activated||(input.type==='keyDown'&&sequence.deadline&&sequence.text))event.preventDefault();if(activated)void activate();});
