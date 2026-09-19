@@ -51,6 +51,7 @@
       "builtin-rooms/**",
       "room-lab.cjs",
       "room-layouts.cjs",
+      "room-layout-follow.cjs",
       "web/**",
       "performance-*.cjs",
       "performance-*.html",

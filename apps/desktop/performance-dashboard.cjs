@@ -61,7 +61,7 @@ function setValue(el,value){
  if(value&&typeof value==='object'){
   const text=document.createElement('span');text.textContent=value.text;el.append(text);
   if(value.peak){text.classList.add('peak');text.title='达到本次监测峰值（不代表故障）';text.setAttribute('aria-label',value.text+'，本次峰值');}
-  if(value.records?.length){const button=document.createElement('button');button.className='peak-info'+(value.peak?' peak':'');button.textContent='i';button.title='查看峰值对应的歌曲与时间';button.setAttribute('aria-label','查看峰值对应的歌曲与时间');button.onclick=()=>showPeakInfo(value.records);el.append(button);}
+  if(value.records?.length){const button=document.createElement('button');button.className='peak-info'+(value.peak?' peak':'');button.textContent='i';button.title='查看峰值对应的歌曲与时间';button.setAttribute('aria-label','查看峰值对应的歌曲与时间');button.onclick=e=>{e.stopPropagation();showPeakInfo(value.records);};el.append(button);}
  }else el.textContent=String(value);
 }
 const peakNames={cpu:'CPU（单核基准）',memory:'内存',rx:'网络接收',tx:'网络发送',read:'读取速度',write:'写入速度',decode:'解码产出',hrtf:'对象双耳计算',room:'房间应用',latency:'解码到双耳输出',gaps:'音频缺口','3d':'3D 绘制'};
@@ -90,25 +90,54 @@ function showPeakInfo(records){
 }
 
 function cells(target,rows){target.replaceChildren(...rows.map(row=>{const tr=document.createElement('tr');for(const value of row){const td=document.createElement('td');setValue(td,value);tr.append(td);}return tr;}));if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=8;td.className='empty';td.textContent='该期间尚无对应数据。播放音频或操作对应功能后会显示。';tr.append(td);target.append(tr);}}
-function cards(target,rows){target.replaceChildren(...rows.map(([label,value,hint])=>{const el=document.createElement('div');el.className='card';const title=document.createElement('small'),v=document.createElement('div'),h=document.createElement('div');title.textContent=label;v.className='value';setValue(v,value);h.className='hint';h.textContent=hint;el.append(title,v,h);return el;}));}
+function cards(target,rows){target.replaceChildren(...rows.map(([label,value,hint,onClick])=>{const el=document.createElement('div');el.className='card';if(onClick){el.dataset.clickable='';el.tabIndex=0;el.setAttribute('role','button');el.addEventListener('click',onClick);el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onClick();}});}const title=document.createElement('small'),v=document.createElement('div'),h=document.createElement('div');title.textContent=label;v.className='value';setValue(v,value);h.className='hint';h.textContent=hint;el.append(title,v,h);return el;}));}
+function barColor(pct){return pct>80?'var(--bar-fill-hot)':pct>50?'var(--bar-fill-warn)':'var(--bar-fill)';}
+let coreDialogOpen=false;
+function renderCoreDialog(){
+ if(!coreDialogOpen)return;
+ const h=snapshot.hardware||{};const cores=h.perCoreCpu||[];const body=$('core-body');
+ if(!cores.length)return;
+ const total=h.totalMachinePercent!=null?`总 CPU ${num(h.totalMachinePercent)}% · `:'';
+ // Update or create bars
+ let summary=body.querySelector('.hint'),container=body.querySelector('.core-bars');
+ if(!summary){body.replaceChildren();summary=document.createElement('p');summary.className='hint';container=document.createElement('div');container.className='core-bars';body.append(summary,container);}
+ summary.textContent=`${total}${cores.length} 个逻辑核心 · 采样来自系统调度器 · 每秒刷新`;
+ while(container.children.length>cores.length)container.lastChild.remove();
+ for(let i=0;i<cores.length;i++){
+  let row=container.children[i];
+  if(!row){row=document.createElement('div');row.className='core-row';container.append(row);}
+  const pct=cores[i];
+  row.innerHTML=`<span class="core-label">核心 ${i}</span><div class="core-track"><div class="core-fill" style="width:${Math.min(100,pct).toFixed(1)}%;background:${barColor(pct)}"></div></div><span class="core-pct">${num(pct)}%</span>`;
+ }
+}
+function showCoreDialog(){
+ if(coreDialogOpen){$('core-dialog').close();return;}
+ coreDialogOpen=true;
+ renderCoreDialog();
+ if(!$('core-dialog').open)$('core-dialog').showModal();
+}
 let snapshot={};
 function render(){
  const s=snapshot,h=s.hardware||{},n=s.network||{},recent=s.active?[...(s.rows||[]),...(s.nativeRows||[])]:[];
  $('status').textContent=s.active?'后台记录中 · 每秒更新':'记录已暂停';$('toggle').textContent=s.active?'暂停记录':'继续记录';$('path').textContent=`自动保存：${s.directory||'等待目录'}`;
- cards($('cards'),[['CPU',highlighted(finite(h.totalMachinePercent)?num(h.totalMachinePercent)+'%':finite(h.cpuPercent)?num(h.cpuPercent)+'%（单核）':'等待采样','cpu'),'包含音频、界面与采集进程'],['内存',highlighted(size(h.workingSetBytes),'memory'),'所有 SDA 进程工作集之和'],['网络 接收 / 发送',highlighted(`${size(n.rxBytesPerSecond)} / ${size(n.txBytesPerSecond)}`,'rx','tx'),'每秒传输；完整统计范围见下方说明'],['读取 / 写入',highlighted(`${size(h.readBytesPerSecond)} / ${size(h.writeBytesPerSecond)}`,'read','write'),'每秒文件与设备传输量']]);
+ cards($('cards'),[['CPU',highlighted(finite(h.totalMachinePercent)?num(h.totalMachinePercent)+'%':finite(h.cpuPercent)?num(h.cpuPercent)+'%（单核）':'等待采样','cpu'),'包含音频、界面与采集进程 · 点击查看各核心',showCoreDialog],['内存',highlighted(size(h.workingSetBytes),'memory'),'所有 SDA 进程工作集之和'],['网络 接收 / 发送',highlighted(`${size(n.rxBytesPerSecond)} / ${size(n.txBytesPerSecond)}`,'rx','tx'),'每秒传输；完整统计范围见下方说明'],['读取 / 写入',highlighted(`${size(h.readBytesPerSecond)} / ${size(h.writeBytesPerSecond)}`,'read','write'),'每秒文件与设备传输量']]);
  const select=stage=>recent.filter(r=>r.stage===stage),max=stage=>{const rows=select(stage);return rows.length?Math.max(...rows.map(r=>r.maxMs)):null;};
  const decoded=select('decode.output_audio').reduce((a,r)=>a+r.units,0)*1000/(s.intervalMs||1000),gaps=select('output.underrun_frames').reduce((a,r)=>a+r.units,0);
  const hrtf=recent.filter(r=>r.stage.startsWith('hrtf.object.')),slowest=hrtf.length?hrtf.reduce((a,b)=>a.maxMs>b.maxMs?a:b):null;
  cards($('flow'),[['解码产出',highlighted(`${num(decoded)} 秒音频 / 秒`,'decode'),decoded?'提前解码时可超过 1 秒':'本秒无产出；可能暂停、等待或已有缓存'],['对象双耳计算',highlighted(slowest?ms(slowest.maxMs):'尚无对象计算','hrtf'),slowest?`本秒单次最慢：${source(slowest)}`:'开启对象渲染并播放后显示'],['3D 绘制',highlighted(ms(max('3d.cpu_submit')),'3d'),recent.some(r=>r.stage==='3d.gpu_batch_elapsed')?`CPU 单帧最高 · GPU 批次：${ms(max('3d.gpu_batch_elapsed'))}（非单帧）`:`CPU 单帧最高 · GPU：${ms(max('3d.gpu_elapsed'))}`],['房间应用',highlighted(ms(max('room.apply_including_queue')),'room'),'本秒完成的任务，包含排队等待'],['解码到双耳输出',highlighted(ms(max('decode.to_binaural_callback_estimate')),'latency'),'本秒最高估算，不含蓝牙及耳机延迟'],['音频缺口',gaps?highlighted(`${num(gaps/48)} ms`,'gaps'):(s.nativeHeartbeatAgeMs==null?'尚无输出数据':s.nativeHeartbeatAgeMs>3000?'输出数据停止更新':'本秒未记录缺口'),'仅表示原生输出队列是否缺少音频']]);
- const alerts=[];if(s.mainHeartbeatAgeMs>3000)alerts.push('主进程已超过 3 秒未更新');if(s.main?.nativePid&&s.nativeHeartbeatAgeMs>3000)alerts.push('原生音频采样已超过 3 秒未更新');if(h.unavailable&&!Array.isArray(h.unavailable))alerts.push('系统资源采样暂不可用');if(s.errors?.length)alerts.push('采集出现异常，详细原因已写入日志');if(s.dropped)alerts.push(`主进程采集丢失 ${s.dropped} 条记录`);if(gaps)alerts.push('本秒出现音频断供，请查看输出与解码耗时');
+ const alerts=[];if(s.mainHeartbeatAgeMs>3000)alerts.push('主进程已超过 3 秒未更新');if(s.main?.nativePid&&s.nativeHeartbeatAgeMs>3000)alerts.push('原生音频采样已超过 3 秒未更新');if(h.unavailable&&!Array.isArray(h.unavailable))alerts.push(`系统资源采样暂不可用：${h.unavailable}`);if(s.errors?.length)alerts.push('采集出现异常，详细原因已写入日志');if(s.dropped)alerts.push(`主进程采集丢失 ${s.dropped} 条记录`);if(gaps)alerts.push('本秒出现音频断供，请查看输出与解码耗时');
  $('health').textContent=alerts.length?alerts.join('；'):(s.active?'正在收集性能数据。复现卡顿后点击“导出日志”即可，无需选择保存位置。':'记录已暂停，已有日志仍保留。');$('health').className='notice'+(alerts.length?' warning':'');
  $('waits').textContent=(s.pending||[]).map(p=>`${definition(p.stage)[0]}：已等待 ${num(p.waitingMs/1000,1)} 秒`).join('；');
  const filter=$('filter').value.toLowerCase(),category=$('category').value;
  const rows=($('scope').value==='session'?(s.cumulative||[]):recent).filter(r=>!r.stage.endsWith('.begin')&&!r.stage.endsWith('.heartbeat')).filter(r=>(category==='all'||definition(r.stage)[1]===category)&&`${definition(r.stage)[0]} ${source(r)} ${r.stage} ${r.id}`.toLowerCase().includes(filter));
  cells($('stages'),rows.map(r=>{const [name,,unit]=definition(r.stage),counter=['byte','triangle','unavailable','gap','audio'].includes(unit)&&r.totalMs===0;return [name,source(r),num(r.count,0),counter?'—':ms(r.minMs),counter?'—':ms(r.totalMs/r.count),counter?'—':highlighted(ms(r.maxMs),'stage:'+r.stage+':'+r.id),counter?'—':ms(r.totalMs),highlighted(work(r,unit),'work:'+r.stage+':'+r.id)];}));
  cells($('processes'),(h.processes||[]).map(p=>[p.name,p.pid,finite(p.cpuPercent)?num(p.cpuPercent)+'%':'等待采样',size(p.workingSetBytes),size(p.readBytesPerSecond),size(p.writeBytesPerSecond)]));
+ renderCoreDialog();
 }
 $('peak-close').onclick=()=>$('peak-dialog').close();$('peak-dialog').onclick=e=>{if(e.target===$('peak-dialog'))$('peak-dialog').close();};
+$('core-close').onclick=()=>{$('core-dialog').close();coreDialogOpen=false;};
+$('core-dialog').onclick=e=>{if(e.target===$('core-dialog')){$('core-dialog').close();coreDialogOpen=false;}};
+$('core-dialog').addEventListener('close',()=>{coreDialogOpen=false;});
 $('export').onclick=()=>window.performanceMonitor.action('export');$('toggle').onclick=()=>window.performanceMonitor.action('toggle');$('filter').oninput=render;$('scope').onchange=render;$('category').onchange=render;
 async function tick(){try{snapshot=await window.performanceMonitor.snapshot();render();}catch{$('status').textContent='窗口暂未收到更新，后台仍可能在记录';}setTimeout(tick,1000);}tick();
 // Same lens geometry and strength as SheetHeading / GlassRefraction.

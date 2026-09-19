@@ -26,3 +26,4 @@ strip = true
 [patch.crates-io]
 # Keep bindgen's target ABI correct and opaque C++ driver bookkeeping on MinGW.
 asio-sys = { path = "vendor/asio-sys" }
+parse_cfg = { path = "vendor/parse_cfg" }

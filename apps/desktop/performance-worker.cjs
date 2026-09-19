@@ -67,7 +67,18 @@ function startProbe(){
   if(process.platform==='win32'){
     probe=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(__dirname.replace('app.asar','app.asar.unpacked'),'performance-windows.ps1'),'-RootPid',process.env.SDA_PERF_PID],{windowsHide:true,stdio:['ignore','pipe','pipe']});
   }else{
-    probe=spawn('python3',[path.join(__dirname.replace('app.asar','app.asar.unpacked'),'performance-posix.py'),process.env.SDA_PERF_PID],{stdio:['ignore','pipe','pipe']});
+    const posixScript=path.join(__dirname.replace('app.asar','app.asar.unpacked'),'performance-posix.py');
+    const posixEnv={...process.env};
+    // macOS GUI apps launched from Finder have a minimal PATH that excludes
+    // /usr/local/bin (Homebrew) and /opt/homebrew/bin (Apple Silicon Homebrew).
+    // Expand PATH so python3 can be found regardless of launch method.
+    if(process.platform==='darwin'){
+      const extra=['/usr/local/bin','/opt/homebrew/bin'];
+      const current=posixEnv.PATH||'';
+      const additions=extra.filter(p=>!current.split(':').includes(p));
+      if(additions.length)posixEnv.PATH=current+':'+additions.join(':');
+    }
+    probe=spawn('python3',[posixScript,process.env.SDA_PERF_PID],{env:posixEnv,stdio:['ignore','pipe','pipe']});
   }
   let pending='';probe.stdout.on('data',b=>{pending+=b;let cut;while((cut=pending.indexOf('\n'))>=0){const line=pending.slice(0,cut);pending=pending.slice(cut+1);try{hardware=JSON.parse(line);}catch{}}if(pending.length>1024*1024)pending='';});
   probe.stderr.on('data',b=>{errors=[b.toString().slice(-2000)];});probe.on('error',e=>{errors=[e.message];});probe.on('exit',()=>{hardware={unavailable:'OS probe exited'};});

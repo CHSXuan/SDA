@@ -36,7 +36,9 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
   }
   async function activate(){
     if(child){openWindow();return;}
-    const root=app.isPackaged?path.dirname(app.getPath('exe')):path.resolve(__dirname,'../..');
+    // On macOS the app bundle is read-only; use ~/Documents/SDA/outlogs instead.
+    // On other platforms the exe directory is typically writable.
+    const root=app.isPackaged?(process.platform==='darwin'?path.join(app.getPath('documents'),'SDA'):path.dirname(app.getPath('exe'))):path.resolve(__dirname,'../..');
     directory=path.join(root,'outlogs',new Date().toISOString().replace(/[:.]/g,'-'));
     try{await fs.promises.mkdir(directory,{recursive:true});await fs.promises.access(directory,fs.constants.W_OK);}catch(error){
       directory=path.join(app.getPath('userData'),'outlogs',path.basename(directory));
