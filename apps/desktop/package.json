@@ -27,9 +27,9 @@
       "remote-rtc.html",
       "remote-rtc-renderer.cjs",
       "remote-sync.cjs",
-        "remote-fanout.cjs",
-        "remote-state.cjs",
-        "room-inspection.cjs",
+      "remote-fanout.cjs",
+      "remote-state.cjs",
+      "room-inspection.cjs",
       "remote-devices.cjs",
       "remote-media.cjs",
       "remote-certificate.cjs",
@@ -52,7 +52,12 @@
       "room-lab.cjs",
       "room-layouts.cjs",
       "room-layout-follow.cjs",
-      "web/**"
+      "web/**",
+      "performance-*.cjs",
+      "performance-*.html",
+      "performance-*.ps1",
+      "performance-*.py",
+      "performance-core/**"
     ],
     "asarUnpack": [
       "node_modules/h5wasm/**",
@@ -60,7 +65,12 @@
       "personal-hrtf.cjs",
       "parametric-hrtf.mjs",
       "generated-hrtf.cjs",
-      "personal-hrtf-library.cjs"
+      "personal-hrtf-library.cjs",
+      "performance-*.ps1",
+      "performance-*.py",
+      "performance-codec-probe.cjs",
+      "performance-framing.cjs",
+      "performance-core/**"
     ],
     "win": {
       "icon": "assets/icon.ico",

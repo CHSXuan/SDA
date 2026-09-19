@@ -86,7 +86,7 @@ impl HostOutput {
         if self.offset < self.pending.len() {
             match self.socket.write(&self.pending[self.offset..]) {
                 Ok(0)=>return Err("remote audio disconnected".into()),
-                Ok(n)=>self.offset+=n,
+                Ok(n)=>{self.offset+=n;crate::performance::sample("network.native_tx_bytes","remote",0.0,n as u64);},
                 Err(e) if e.kind()==io::ErrorKind::WouldBlock=>return Ok(()),
                 Err(e)=>return Err(e.to_string()),
             }
@@ -103,6 +103,7 @@ impl HostOutput {
         match self.socket.read(&mut requests) {
             Ok(0)=>return Err("remote audio disconnected".into()),
             Ok(n)=>{
+                crate::performance::sample("network.native_rx_bytes","remote",0.0,n as u64);
                 if requests[..n].iter().any(|b|*b!=b'P') {return Err("invalid audio credit".into());}
                 self.credits+=n;
                 if self.credits>200 {return Err("audio credit limit".into());}

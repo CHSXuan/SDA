@@ -242,7 +242,7 @@ impl DtsPipeline {
                 match exss_size(&rest[core_len..]) {
                     None => break,
                     Some(Err(e)) => {
-                        errors.push(e.into());
+                        errors.push(crate::diagnostics::failure("dts.failure_01", e.into()));
                         used += core_len + 4;
                         continue;
                     }
@@ -262,7 +262,7 @@ impl DtsPipeline {
                             && XMetadata::parse(&hd.x_payload, hd.x_samples.len()).is_err()
                             && !self.warned_extension
                         {
-                            errors.push("DTS:X metadata unsupported or corrupt: using compatible bed for unknown folds".into());
+                            errors.push(crate::diagnostics::failure("dts.failure_02", "DTS:X metadata unsupported or corrupt: using compatible bed for unknown folds".into()));
                             self.warned_extension = true;
                         }
                         hd_frame(hd, self.total_samples, &mut self.locked)
@@ -302,13 +302,13 @@ impl DtsPipeline {
                     out.push_back(f);
                 }
                 Ok(None) => (),
-                Err(e) => errors.push(e),
+                Err(e) => errors.push(crate::diagnostics::failure("dts.failure_03", e)),
             }
             used += size;
         }
         self.buffer.drain(..used);
         if eof && !self.buffer.is_empty() {
-            errors.push("truncated DTS frame at end of stream".into());
+            errors.push(crate::diagnostics::failure("dts.failure_04", "truncated DTS frame at end of stream".into()));
             self.buffer.clear();
         }
     }

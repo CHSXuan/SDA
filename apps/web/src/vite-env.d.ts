@@ -108,6 +108,8 @@ declare global {
 
   interface Window {
     sdaDesktop?: {
+      performanceEndpoint?:()=>Promise<string|null>;
+      performancePlayback?:(state:{currentId:string;title:string;artist?:string;position:number;duration:number;playing:boolean;paused:boolean;loading?:boolean})=>void;
       getRemotePairingKey?:()=>Promise<string>;
       getRemoteStatus?:()=>Promise<import("./remote-session").RemoteStatus>;
       remoteSession?:(action:"host"|"join"|"stop"|"playbackOrigin"|"maxPeers"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;

@@ -44,6 +44,8 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld("sdaDesktop", {
+  performancePlayback: value => ipcRenderer.send("sda:performance-playback",{...value,observedAt:Date.now()}),
+  performanceEndpoint: () => ipcRenderer.invoke("sda:performance-endpoint"),
   getRemotePairingKey: () => ipcRenderer.invoke("sda:remote-pairing-key"),
   getRemoteStatus: () => ipcRenderer.invoke("sda:remote-status"),
   remoteSession: (action, value) => ipcRenderer.invoke("sda:remote-session", action, value),
@@ -148,4 +150,9 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
       if (openFileCallback === callback) openFileCallback = null;
     };
   },
+});
+
+ipcRenderer.on('sda:performance-notice',(_event,text)=>{
+  const show=()=>{const el=document.createElement('div');el.textContent=String(text);el.setAttribute('role','status');Object.assign(el.style,{position:'fixed',top:'48px',left:'50%',transform:'translateX(-50%)',maxWidth:'80vw',padding:'12px 20px',borderRadius:'18px',background:'rgba(35,40,37,.94)',color:'#fff',backdropFilter:'blur(20px)',boxShadow:'0 8px 30px #0004',zIndex:'2147483647',pointerEvents:'none',font:'14px system-ui'});document.body.append(el);setTimeout(()=>el.remove(),8000);};
+  if(document.body)show();else document.addEventListener('DOMContentLoaded',show,{once:true});
 });

@@ -3,6 +3,8 @@ use crate::{hrtf::StereoIr, spatial};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Direction {
+    pub diffuse: f32,
+    pub horizontal_only: bool,
     pub position: [f32; 3],
     pub head: Option<[f32; 4]>,
     pub width: f32,
@@ -32,6 +34,8 @@ impl Default for Frame {
     }
 }
 pub struct ContinuousSource {
+    pub perf_id: String,
+    hardware: crate::hardware::Chain,
     convolver: crate::convolution::StereoPartitionedConvolver,
     route: Option<Route>,
     pending: Option<Route>,
@@ -47,6 +51,8 @@ impl ContinuousSource {
     pub fn new(set: &crate::hrtf::NativeHrtfSet) -> Result<Self, String> {
         let zero = vec![0.0; set.directional_filter_len()];
         Ok(Self {
+            perf_id: String::new(),
+            hardware: crate::hardware::Chain::new(&set.cinema.monitor.hardware),
             convolver: crate::convolution::StereoPartitionedConvolver::new(
                 &zero,
                 &zero,
@@ -72,11 +78,13 @@ impl ContinuousSource {
         self.pending = (self.route != Some(route)).then_some(route);
     }
     fn finish(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
+        let _perf=crate::performance::span("hrtf.object.convolution",&self.perf_id,crate::convolution::DEFAULT_PARTITION as u64);
         for (input, frame) in self.input.iter_mut().zip(&self.frames) {
-            *input = frame.input;
+            *input = self.hardware.process(frame.input);
         }
         if self.input.iter().any(|x| *x != 0.0) || !self.convolver.tail_is_silent() {
             if let Some((direction, layout, gains, amounts)) = self.pending.take() {
+                let _filter_perf=crate::performance::span("hrtf.object.filter_update",&self.perf_id,(set.directional_filter_len()*2) as u64);
                 let (left, right) =
                     set.directional_dry_compact(direction, layout, gains, amounts)?;
                 let filter = self.convolver.prepare_pair(&left, &right);
@@ -229,10 +237,62 @@ impl Grid {
                 add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
             }
         }
+        // Delay alignment prevents duplicated onsets, but interpolation of
+        // different waveforms (including fractional shifts) loses energy. Use
+        // the weighted measurement energy as a layout-independent reference.
+        // Both ears receive the same scalar: preserve ITD and interaural level.
+        let target: f64 = weights.iter().map(|(i,w)|
+            irs[*i].dry.iter().map(|v|(*v as f64).powi(2)).sum::<f64>() * w).sum();
+        let actual: f64 = output.iter().flatten().map(|v|(*v as f64).powi(2)).sum();
+        if actual > 1e-20 && target > 1e-20 {
+            let scale=(target/actual).sqrt() as f32;
+            for ear in &mut output {for v in ear {*v *= scale;}}
+        }
         let [left, right] = output;
         (left, right)
     }
+    /// Object-local quadrature, independent of the virtual speaker layout.
+    /// Staggered arrivals reduce coherent buildup between directions. Normalize
+    /// the response energy, not the PCM, so musical dynamics remain untouched.
     pub fn footprint(&self, irs: &[StereoIr], direction: Direction) -> (Vec<f32>, Vec<f32>) {
+        let mut direct = self.direct_footprint(irs, direction);
+        let diffuse = direction.diffuse.clamp(0.0, 1.0);
+        if diffuse == 0.0 { return direct; }
+        let energy = |p: &(Vec<f32>,Vec<f32>)| -> f64 {
+            p.0.iter().chain(&p.1).map(|v| (*v as f64).powi(2)).sum()
+        };
+        let n = direct.0.len() + 127;
+        let mut field = (vec![0.0; n], vec![0.0; n]);
+        let mut reference_energy = 0.0;
+        for i in 0..12 {
+            let az = i as f64 * 137.507764;
+            let el = if direction.horizontal_only {0.0} else {
+                (1.0 - 2.0 * (i as f64 + 0.5) / 12.0).asin().to_degrees()
+            };
+            let p = unit(az, el).map(|v|v as f32);
+            let relative = spatial::adm_to_spherical(spatial::head_relative_adm(p, direction.head));
+            let pair = self.interpolate(irs, relative.azimuth as f64, relative.elevation as f64);
+            reference_energy += energy(&pair) / 12.0;
+            let delay = (i * 37 % 128) as isize;
+            add_shifted(&mut field.0, &pair.0, delay, 1.0 / 12.0_f32.sqrt());
+            add_shifted(&mut field.1, &pair.1, delay, 1.0 / 12.0_f32.sqrt());
+        }
+        let field_energy = energy(&field);
+        let scale = if field_energy > 1e-20 {(reference_energy / field_energy).sqrt() as f32}else{0.0};
+        let target_energy = energy(&direct) * (1.0-diffuse) as f64 + reference_energy * diffuse as f64;
+        direct.0.resize(n,0.0); direct.1.resize(n,0.0);
+        for (out, spread) in [(&mut direct.0, &field.0), (&mut direct.1, &field.1)] {
+            for (a,b) in out.iter_mut().zip(spread) {*a = *a * (1.0-diffuse).sqrt() + *b * scale * diffuse.sqrt();}
+        }
+        let mixed_energy = energy(&direct);
+        if mixed_energy > 1e-20 {
+            let scale = (target_energy / mixed_energy).sqrt() as f32;
+            for v in direct.0.iter_mut().chain(&mut direct.1) {*v *= scale;}
+        }
+        direct
+    }
+
+    fn direct_footprint(&self, irs: &[StereoIr], direction: Direction) -> (Vec<f32>, Vec<f32>) {
         let s = spatial::adm_to_spherical(direction.position);
         let at = |az: f64, el: f64| {
             let p = unit(az, el).map(|x| x as f32);
@@ -282,6 +342,92 @@ impl Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interpolation_preserves_measured_energy_between_directions() {
+        let mut a=vec![0.0;64];let mut b=a.clone();
+        a[4]=1.0;a[5]=0.5;a[36]=0.7;a[37]=0.35;
+        b[5]=1.0;b[6]=-0.5;b[37]=0.7;b[38]=-0.35;
+        let irs=vec![StereoIr{azimuth:-30.0,elevation:0.0,dry:a,wet:vec![]},StereoIr{azimuth:30.0,elevation:0.0,dry:b,wet:vec![]}];
+        let grid=Grid::new(&irs);
+        let expected: f64=irs[0].dry.iter().map(|v|(*v as f64).powi(2)).sum();
+        for az in [-30.0,-15.0,0.0,15.0,30.0] {
+            let (l,r)=grid.interpolate(&irs,az,0.0);
+            let energy:f64=l.iter().chain(&r).map(|v|(*v as f64).powi(2)).sum();
+            assert!((energy/expected-1.0).abs()<1e-6,"energy dip at {az}");
+            assert!(l.iter().zip(&r).all(|(l,r)|(r-l*0.7).abs()<1e-6),"interaural balance changed");
+        }
+    }
+    #[test]
+    fn hardware_objects_keep_direction_and_match_parallel_mixing() {
+        let render = |hardware: bool, fast: bool, position: [f32;3]| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf/hrtf-set.json");
+            let mut e = crate::Engine::new(48000,2);
+            e.cinema.monitor.hardware.enabled = hardware;
+            e.cinema.monitor.hardware.rail_v = 1.0;
+            e.directional_hrtf = true;
+            e.disable_fast_objects = !fast;
+            e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+            e.direct_mix = 1.0;
+            e.paused = false; e.output_active = true;
+            for id in 0..8 {
+                let mut source = crate::Source { kind: crate::SourceKind::Object,
+                    position, diffuse: if id==0 {0.25}else{0.0},
+                    gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default() };
+                let pcm:Vec<_>=(0..16384).map(|i|0.08*(i as f32*0.13+id as f32).sin()).collect();
+                source.samples.write(0,0,&pcm);
+                let key=format!("obj:{id}");e.sources.insert(key.clone(),source);e.route_source_now(&key,0).unwrap();
+            }
+            let mut out=vec![0.0;32768];e.render_into(&mut out,2);
+            assert!(e.sources.values().all(|s|s.continuous_active && s.continuous.is_some() && s.direct.is_none()));
+            if fast {assert!(e.fast_object_blocks>0);}
+            assert!(out.iter().all(|v|v.is_finite()));
+            if hardware && fast {
+                for source in e.sources.values_mut() {
+                    source.zone_exclusion = vec![crate::adm_zone::Zone::Polar {
+                        min:[-180.0,80.0],max:[180.0,90.0]
+                    }].into();
+                    let pcm:Vec<_>=(0..32768).map(|i|0.01*(i as f32*0.13).sin()).collect();
+                    source.samples.write(16384,16384,&pcm);
+                }
+                let mut tail=vec![0.0;65536]; e.render_into(&mut tail,2);
+                assert!(tail[49152..].iter().any(|v|v.abs()>1e-5),"hardware exclusion fallback lost audio");
+                assert!(e.sources.values().all(|s|!s.continuous_active && s.direct.is_none()));
+            }
+            out
+        };
+        let left=render(true,true,[-0.8,0.5,0.0]);
+        let slow=render(true,false,[-0.8,0.5,0.0]);
+        assert!(left.iter().zip(&slow).all(|(a,b)|(a-b).abs()<2e-6));
+        let right=render(true,true,[0.8,0.5,0.0]);
+        let dry=render(false,true,[-0.8,0.5,0.0]);
+        let energy=|v:&[f32]|v[8192..].iter().map(|v|v*v).sum::<f32>();
+        assert!(energy(&left)>1e-8);
+        assert!(energy(&left)<energy(&dry)*0.5,"hardware must affect object PCM");
+        let delta:f32=left.iter().zip(&right).map(|(a,b)|(a-b).abs()).sum();
+        assert!(delta>0.01,"hardware must not disable spatial direction");
+    }
+    #[test]
+    fn diffuse_response_preserves_energy_and_partial_sources_keep_direction() {
+        let irs: Vec<_> = (0..12).map(|i| {
+            let mut dry = vec![0.0; 64];
+            dry[4 + i % 4] = 1.0;
+            dry[32 + 7 - i % 4] = 1.0;
+            StereoIr { azimuth: i as f64 * 30.0, elevation: 0.0,
+                dry, wet: vec![] }
+        }).collect();
+        let grid = Grid::new(&irs);
+        let base = Direction { position: [0.0,1.0,0.0], head: None,
+            width: 0.0, height: 0.0, depth: 0.0, diffuse: 0.0, horizontal_only: true };
+        let energy = |p: &(Vec<f32>,Vec<f32>)| p.0.iter().chain(&p.1).map(|v|v*v).sum::<f32>();
+        for diffuse in [0.25,0.5,1.0] {
+            let a = grid.footprint(&irs,Direction { diffuse, ..base });
+            let b = grid.footprint(&irs,Direction { diffuse, position:[1.0,0.0,0.0], ..base });
+            assert!(energy(&a) > 0.5 && energy(&a) < 2.01);
+            if diffuse < 1.0 { assert_ne!(a,b); }
+            else { assert_eq!(a,b, "fully diffuse field has no authored point direction"); }
+        }
+    }
     #[test]
     #[ignore = "offline full engine realtime budget measurement"]
     fn benchmark_shared_engine_108() {
@@ -602,6 +748,48 @@ mod tests {
         }
     }
     #[test]
+    fn authored_diffuse_objects_use_independent_convolution_when_directional_is_toggled() {
+        for diffuse in [0.25, 1.0] {
+            let build = |enabled| {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../web/public/hrtf/hrtf-set.json");
+                let mut e = crate::Engine::new(48000, 2);
+                e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.04).unwrap();
+                e.directional_hrtf = enabled;
+                e.direct_objects = true;
+                e.direct_mix = 1.0;
+                e.paused = false;
+                e.output_active = true;
+                let mut source = crate::Source {
+                    kind: crate::SourceKind::Object, position: [-0.22, 1.0, 0.19], diffuse,
+                    gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                    ..Default::default()
+                };
+                let pcm: Vec<_> = (0..65536).map(|i| (i as f32 * 0.031).sin() * 0.01).collect();
+                source.samples.write(0, 0, &pcm);
+                e.sources.insert("obj:11".into(), source);
+                e.route_source_now("obj:11", 0).unwrap();
+                e
+            };
+            let mut actual = build(true);
+            let mut reference = build(false);
+            let mut difference = 0.0_f32;
+            for block in 0..64 {
+                if block == 16 { actual.directional_hrtf = false; }
+                if block == 32 { actual.directional_hrtf = true; }
+                let mut a = [0.0; 2048]; let mut b = a;
+                actual.render_into(&mut a, 2); reference.render_into(&mut b, 2);
+                if block > 48 { difference += a.iter().zip(b).map(|(a,b)|(a-b).abs()).sum::<f32>(); }
+                assert!(a.iter().all(|x|x.is_finite()));
+                if block > 4 { assert!(a.iter().any(|x| x.abs()>1e-5)); }
+            }
+            assert!(difference > 0.01, "directional must not fall back to layout");
+            assert!(actual.sources["obj:11"].continuous_active);
+            assert!(actual.sources["obj:11"].direct.is_none());
+            assert_eq!(actual.sources["obj:11"].diffusion_mix, 0.0);
+        }
+    }
+    #[test]
     fn shared_reflections_match_independent_objects_with_near_field_and_focus() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../web/public/hrtf/hrtf-set.json");
@@ -629,6 +817,7 @@ mod tests {
                 let direction = Direction {
                     position: [(block as f32 * 0.04 + id as f32).sin() * 0.6, 0.5, 0.3],
                     head: None,
+                    diffuse: 0.0, horizontal_only: false,
                     width: 30.0,
                     height: 20.0,
                     depth: 0.3,
@@ -703,6 +892,7 @@ mod tests {
                         Direction {
                             position,
                             head: None,
+                    diffuse: 0.0, horizontal_only: false,
                             width,
                             height: 0.0,
                             depth: 0.0,
@@ -756,6 +946,7 @@ mod tests {
                     source.direction = Some(Direction {
                         position,
                         head: None,
+                    diffuse: 0.0, horizontal_only: false,
                         width,
                         height: 0.0,
                         depth: 0.0,

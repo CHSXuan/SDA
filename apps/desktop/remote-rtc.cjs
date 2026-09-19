@@ -2,7 +2,7 @@
 const {Duplex}=require('node:stream');
 const {randomUUID}=require('node:crypto');
 // WebRTC stays in an isolated Electron renderer; the application UI is not involved.
-module.exports=function createRtcBroker({BrowserWindow,ipcMain}){
+module.exports=function createRtcBroker({BrowserWindow,ipcMain,performanceEvent=()=>{}}){
  let window=null,loading=null;const peers=new Map();
  async function ready(){
   if(loading)return loading;
@@ -22,7 +22,13 @@ module.exports=function createRtcBroker({BrowserWindow,ipcMain}){
   else if(m.type==='open')p.open();
   else if(m.type==='data'){if(!p.push(Buffer.from(m.value)))p.destroy(Error('RTC receive overflow'));}
   else if(m.type==='sent'){p.rtcBufferedBytes=Number(m.value)||0;const cb=p.pending;p.pending=null;cb?.();}
-  else if(m.type==='stats')p.rtcStats=m.value;
+  else if(m.type==='stats'){
+   const old=p.rtcStats;
+   p.rtcStats=m.value;
+   for(const [field,stage] of [['bytesSent','network.rtc_tx_bytes'],['bytesReceived','network.rtc_rx_bytes']]){
+    if(Number.isFinite(old?.[field])&&Number.isFinite(m.value?.[field]))performanceEvent({stage,id:m.id,ms:0,units:Math.max(0,m.value[field]-old[field])});
+   }
+  }
   else if(m.type==='closed'||m.type==='error')p.destroy(Error('RTC connection closed'));
  });
  return async function connect(offer,signal){

@@ -20,6 +20,11 @@ pub mod dts_pipeline;
 pub mod eac3_pipeline;
 pub mod truehd_pipeline;
 pub mod vbap;
+pub mod diagnostics;
+#[wasm_bindgen(js_name = setDiagnostics)]
+pub fn set_diagnostics(enabled:bool){diagnostics::enable(enabled);}
+#[wasm_bindgen(js_name = drainDiagnostics)]
+pub fn drain_diagnostics()->String{diagnostics::drain()}
 
 /// One dynamic-object spatial event (port of `bridge_api::REvent`).
 #[derive(Serialize, Clone, Debug)]
@@ -224,6 +229,7 @@ impl SdaDecoder {
 
     /// Feed raw bitstream bytes (any chunking — the extractors re-frame).
     pub fn push(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        diagnostics::input(data.len());
         if let Some(sniff) = &mut self.sniff {
             sniff.extend_from_slice(data);
             match detect_codec(sniff) {
@@ -235,6 +241,7 @@ impl SdaDecoder {
                         .push(&buffered, &mut self.queue, &mut self.errors);
                 }
                 None if sniff.len() >= 64 * 1024 => {
+                    diagnostics::checkpoint("auto.sync_not_found");
                     return Err(JsValue::from_str(
                         "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/AC-4/DTS syncword)",
                     ));

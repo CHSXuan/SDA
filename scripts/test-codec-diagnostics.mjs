@@ -1,0 +1,25 @@
+import {build} from 'esbuild';
+import {readFileSync,mkdirSync,existsSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {pathToFileURL,fileURLToPath} from 'node:url';
+import assert from 'node:assert/strict';
+mkdirSync('tmp/codec-diagnostics-test',{recursive:true});
+await build({entryPoints:['packages/player/src/decoder.worker.ts'],bundle:true,platform:'node',format:'esm',outfile:'tmp/codec-diagnostics-test/worker.mjs',plugins:[{name:'wasm-path',setup(b){b.onResolve({filter:/\.wasm\?url$/},a=>({path:resolve(a.resolveDir,a.path.replace('?url','')),namespace:'wasm-path'}));b.onLoad({filter:/.*/,namespace:'wasm-path'},a=>({contents:`export default ${JSON.stringify(a.path)}`}));}}]});
+const telemetry=[];const nativeFetch=globalThis.fetch;
+globalThis.fetch=async (url,...args)=>{if(String(url)==='http://diagnostic-fixture'){telemetry.push(...JSON.parse(args[0].body));return new Response(null,{status:204});}const path=String(url).startsWith('file:')?fileURLToPath(url):String(url);return existsSync(path)?new Response(readFileSync(path),{headers:{'Content-Type':'application/wasm'}}):nativeFetch(url,...args);};
+let output=[],pending;
+globalThis.self={postMessage(message){output.push(message);if(pending&&(message.type===pending.type||message.type==='error')){const p=pending;pending=null;clearTimeout(p.timer);message.type==='error'?p.reject(Error(message.message)):p.resolve(message);}}};
+await import(pathToFileURL(resolve('tmp/codec-diagnostics-test/worker.mjs')));
+const send=(data,type)=>new Promise((resolve,reject)=>{pending={type,resolve,reject,timer:setTimeout(()=>reject(Error(`worker timed out: ${type}`)),15000)};self.onmessage({data});});
+await send({type:'init'},'ready');
+self.onmessage({data:{type:'performance',endpoint:'http://diagnostic-fixture'}});
+self.onmessage({data:{type:'open',codec:'auto'}});
+try{await send({type:'push',kind:'raw',sequence:1,chunk:new Uint8Array(65536).buffer},'push-ack');}catch{}
+await new Promise(resolve=>setTimeout(resolve,1300));
+const diagnostic=telemetry.find(e=>e.type==='decoderDiagnostic');
+assert(diagnostic,'worker must send a failure bundle');
+assert(diagnostic.events.some(e=>e.checkpoint==='auto.sync_not_found'));
+assert(diagnostic.events.some(e=>/^[a-f0-9]{64}$/.test(e.coreHash||'')));
+assert(!JSON.stringify(diagnostic).includes('chunk'));
+console.log('worker → internal checkpoint → audio-free diagnostic telemetry: passed');
+process.exit(0);

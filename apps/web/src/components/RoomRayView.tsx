@@ -1,9 +1,28 @@
 import {Canvas,useThree,useFrame} from "@react-three/fiber";
-import {useEffect,useRef} from "react";
-import type {Mesh} from "three";
+import {useEffect,useRef,useMemo} from "react";
+import {BoxGeometry,EdgesGeometry,type Mesh} from "three";
+import {Line2} from 'three/addons/lines/webgpu/Line2.js';
+import {LineGeometry} from 'three/addons/lines/LineGeometry.js';
+import {spatialRenderer} from '../spatial-renderer';
+import Performance3D from './Performance3D';
 import {pathPosition} from "../room-path-animation";
-import {Edges,Line,OrbitControls} from "@react-three/drei";
+import {Line,OrbitControls} from "@react-three/drei";
 import type {RoomVisual} from "./RoomLab";
+
+function RoomOutline({size}:{size:[number,number,number]}){
+ const geometry=useMemo(()=>{const box=new BoxGeometry(...size);const edges=new EdgesGeometry(box);box.dispose();return edges;},[...size]);
+ useEffect(()=>()=>geometry.dispose(),[geometry]);
+ return <lineSegments geometry={geometry}><lineBasicMaterial color="#667e99"/></lineSegments>;
+}
+function NodeRay({points,color,width,opacity}:{points:[number,number,number][];color:string;width:number;opacity:number}){
+ const line=useMemo(()=>{const line=new Line2(new LineGeometry().setPositions(points.flat()));line.material.color.set(color);line.material.linewidth=width;line.material.transparent=true;line.material.opacity=opacity;return line;},[points,color,width,opacity]);
+ useEffect(()=>()=>{line.geometry.dispose();line.material.dispose();},[line]);
+ return <primitive object={line}/>;
+}
+function Ray(props:{points:[number,number,number][];color:string;width:number;opacity:number}){
+ const nodes=useThree(s=>(s.gl as unknown as {isWebGPURenderer?:boolean}).isWebGPURenderer);
+ return nodes?<NodeRay {...props}/>:<Line points={props.points} color={props.color} lineWidth={props.width} transparent opacity={props.opacity}/>;
+}
 
 function Framing({radius}:{radius:number}){
   const {camera,size,invalidate}=useThree();
@@ -41,11 +60,13 @@ function Propagation({visual,point}:{visual:RoomVisual;point:(p:[number,number,n
 export default function RoomRayView({visual,onSelect}:{visual:RoomVisual;onSelect:(name:string)=>void}){
   const {simulation,speaker}=visual;
   const [length,width,height]=simulation.size;
+  const createRenderer=useMemo(()=>spatialRenderer(window.sdaDesktop?.rendererMode==='swiftshader'),[]);
   const point=([x,y,z]:[number,number,number]):[number,number,number]=>[-(y-width/2),z-simulation.listener[2],-(x-length/2)];
-  return <Canvas frameloop={visual.animation?.playing===false?"demand":"always"} camera={{position:[width*.9,height,length*.95],fov:55}} style={{background:"#0c101c"}}>
+  return <Canvas gl={createRenderer} frameloop={visual.animation?.playing===false?"demand":"always"} camera={{position:[width*.9,height,length*.95],fov:55}} style={{background:"#0c101c"}}>
+    <Performance3D/>
     <Framing radius={Math.hypot(length,width,height)/2}/>
     <ambientLight intensity={1}/><directionalLight position={[3,5,2]} intensity={2}/>
-    <mesh position={[0,height/2-simulation.listener[2],0]}><boxGeometry args={[width,height,length]}/><meshBasicMaterial visible={false}/><Edges color="#667e99"/></mesh>
+    <group position={[0,height/2-simulation.listener[2],0]}><RoomOutline size={[width,height,length]}/></group>
     <gridHelper args={[Math.max(width,length),12,"#607085","#303d50"]} position={[0,-simulation.listener[2],0]}/>
     <mesh position={point(simulation.listener)}><sphereGeometry args={[.13,24,16]}/><meshStandardMaterial color="#a3b2c3"/></mesh>
     <mesh position={[0,0,-.14]} rotation={[Math.PI/2,0,0]}><coneGeometry args={[.045,.1,12]}/><meshStandardMaterial color="#a3b2c3"/></mesh>
@@ -53,7 +74,7 @@ export default function RoomRayView({visual,onSelect}:{visual:RoomVisual;onSelec
       <mesh><boxGeometry args={[.19,.28,.18]}/><meshStandardMaterial color={name===speaker?"#e7be5b":"#72839a"}/></mesh>
       <mesh position={[0,0,.10]} rotation={[Math.PI/2,0,0]}><cylinderGeometry args={[.055,.055,.02,20]}/><meshStandardMaterial color="#19212b"/></mesh>
     </group>)}
-    {simulation.paths[speaker]?.map(p=><Line key={p.wall} points={p.points.map(point)} color={p.order===0?"#64e1b4":"#e8af61"} lineWidth={p.order===0?3:1.4} transparent opacity={p.order===0?1:.65}/>)}
+    {simulation.paths[speaker]?.map(p=><Ray key={p.wall} points={p.points.map(point)} color={p.order===0?"#64e1b4":"#e8af61"} width={p.order===0?3:1.4} opacity={p.order===0?1:.65}/>)}
     <Propagation visual={visual} point={point}/>
     <OrbitControls makeDefault enableDamping minDistance={1} maxDistance={80}/>
   </Canvas>;

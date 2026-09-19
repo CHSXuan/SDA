@@ -39,7 +39,12 @@ fn handle_command(
     fifo: &stereo_fifo::StereoFifo,
     telemetry: &RuntimeTelemetry,
 ) -> bool {
+    let _perf=crate::performance::span("native.command",command_name(&command),1);
     match command {
+        Command::SetPerformance {enabled,path} => {
+            let result=crate::performance::configure(enabled,path);
+            write_event(&Event::Ack {command:"setPerformance",accepted:result.is_ok(),detail:result.as_ref().err().map(String::as_str)});
+        },
         Command::SetRemoteSync {enabled,start_at_ms,stop_at_ms,buffer_ms} => {
             let accepted=remote_sync::configure(enabled,start_at_ms,stop_at_ms);
                     if accepted {remote_sync::set_buffer_ms(buffer_ms);}
@@ -358,6 +363,7 @@ fn handle_command(
         Command::StartAt { origin } => {
             let accepted = state.active_hrtf_set.is_some() && !state.sources.is_empty();
             if accepted {
+                crate::performance::reset();
                 state.sample_pos = origin;
                 state.block_offset = 0;
                 state.output_active = true;
@@ -803,6 +809,9 @@ fn ingest_pcm_batch(state: &mut Engine, start: u64, entries: Vec<(String, Vec<f3
     }
     state.pcm_coverage.insert(start.max(state.sample_pos),start.saturating_add(samples as u64));
     for (id, pcm) in entries {
+        crate::performance::ingress(&id,start.max(state.sample_pos));
+        crate::performance::sample("pcm.scheduled_lead_ms",&id,start.saturating_sub(state.sample_pos) as f64/48.0,pcm.len() as u64);
+        let _perf=crate::performance::span("pcm.source_ingest",&id,pcm.len() as u64);
         let source = state
             .sources
             .get_mut(&id)
@@ -818,6 +827,8 @@ fn ingest_pcm_batch(state: &mut Engine, start: u64, entries: Vec<(String, Vec<f3
 }
 
 fn ingest_pcm(state: &mut Engine, id: &str, start: u64, samples: Vec<f32>) {
+    let _perf=crate::performance::span("pcm.source_ingest",id,samples.len() as u64);
+    crate::performance::ingress(id,start.max(state.sample_pos));
     let Some(source) = state.sources.get_mut(id) else {
         write_event(&Event::Ack {
             command: "feed",
@@ -1151,6 +1162,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetRemoteOutput {..} => "setRemoteOutput",
         Command::ListOutputDevices => "listOutputDevices",
         Command::OpenAsioControlPanel => "openAsioControlPanel",
+        Command::SetPerformance { .. } => "setPerformance",
         Command::SetOutputDevice { .. } => "setOutputDevice",
     }
 }
@@ -1205,7 +1217,7 @@ mod tests {
     #[test]
     #[ignore = "requires SDA_ADM_BENCHMARK metadata from a local 24-bit ADM WAV"]
     fn benchmark_adm_file() {
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::{Read, Seek, SeekFrom, Write};
         let metadata_path = std::env::var("SDA_ADM_BENCHMARK").expect("set SDA_ADM_BENCHMARK to the BwfMetadata JSON path");
         let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata_path).unwrap()).unwrap();
         assert_eq!(metadata["format"]["bits"], 24);
@@ -1244,6 +1256,8 @@ mod tests {
         let mut bytes = vec![0_u8; convolution::DEFAULT_PARTITION * labels.len() * 3];
         let mut times = Vec::new();
         let mut checksum = 0.0_f64;
+        let mut dump = std::env::var("SDA_ADM_DUMP").ok().map(|path| std::io::BufWriter::new(std::fs::File::create(path).unwrap()));
+        let solo = std::env::var("SDA_ADM_SOLO").ok();
         for block in 0..frames / convolution::DEFAULT_PARTITION {
             file.read_exact(&mut bytes).unwrap();
             for (channel, id) in ids.iter().enumerate() {
@@ -1252,6 +1266,7 @@ mod tests {
                     let value = i32::from_le_bytes([0, bytes[offset], bytes[offset + 1], bytes[offset + 2]]) >> 8;
                     value as f32 / 8388608.0
                 });
+                let pcm = if solo.as_ref().is_some_and(|solo| solo != id) { [0.0; convolution::DEFAULT_PARTITION] } else { pcm };
                 engine.sources.get_mut(id).unwrap().samples.write(engine.sample_pos, engine.sample_pos, &pcm);
             }
             let mut output = [0.0; convolution::DEFAULT_PARTITION * 2];
@@ -1260,6 +1275,7 @@ mod tests {
             if block >= 20 { times.push(start.elapsed().as_secs_f64() * 1e6); }
             assert!(output.iter().all(|v| v.is_finite()));
             checksum += output.iter().map(|v| *v as f64).sum::<f64>();
+            if let Some(dump) = &mut dump { for value in output { dump.write_all(&value.to_le_bytes()).unwrap(); } }
         }
         eprintln!("render stages ms: {:?}", engine.profile_ms);
         times.sort_by(f64::total_cmp);

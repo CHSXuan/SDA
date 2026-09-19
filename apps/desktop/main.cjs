@@ -7,7 +7,7 @@
  *  - native WASAPI endpoint management and shared/exclusive binaural output
  */
 
-const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor, nativeTheme, utilityProcess } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -267,6 +267,10 @@ let nativeRendererWritable = true;
 // on drain so the codec timeline never loses a frame to congestion.
 const nativeRendererBatchQueue = [];
 let nativeRendererBuffer = "";
+const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
+  app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeExecutable:()=>bundledNativeRendererPath(),
+  nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
+});
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
 let nativeRendererObjectActivity = [];
 let nativeRendererHealthTimer = null;
@@ -475,7 +479,7 @@ function nativeRendererBatch(start, entries, events) {
         nativeRendererPendingBatches.delete(start);
         resolve({ accepted: false, samples: 0, reason: "native batch ACK timeout" });
       }, NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS);
-      Object.assign(pending, { resolve, timeout });
+      Object.assign(pending, { resolve, timeout, perfAt: performanceMonitor.active?performance.now():null, perfIds:performanceMonitor.active?entries.map(e=>e.id):[] });
       nativeRendererPendingBatches.set(start, pending);
       const queued = nativeRenderer.stdin.write(Buffer.concat([...(metadata ? [metadata, header.subarray(1)] : [header]), ...prepared.flat()]));
       if (!queued) writeStartupLog(`sidecar PCM pipe backpressure: start=${start}`);
@@ -540,6 +544,7 @@ function consumeNativeRendererOutput(chunk) {
         if (pending) {
           nativeRendererPendingBatches.delete(start);
           clearTimeout(pending.timeout);
+          if(pending.perfAt!==null)for(const id of pending.perfIds||[])performanceMonitor.emit({stage:"pcm.ipc_to_native_ack",id,ms:performance.now()-pending.perfAt,units:Number(message.samples)||0});
           const result = { accepted: message.accepted === true, samples: Number(message.samples) || 0, reason: message.detail ?? undefined };
           if (!result.accepted) {
             writeStartupLog(`[SDA native renderer] batch ${start} rejected: ${result.reason ?? "unknown"}`);
@@ -549,6 +554,11 @@ function consumeNativeRendererOutput(chunk) {
       } else if (message?.type === "objectActivity") {
         if (Array.isArray(message.ids)) publishNativeRendererObjectActivity(message.ids);
       } else if (message?.type === "health") {
+        if(performanceMonitor.active){
+          for(const [key,scale] of Object.entries({fifoFramesAvailable:1/48,callbackMaxMicros:0.001,renderWaitLockMicros:0.001,controlLockMaxMicros:0.001})){
+            if(Number.isFinite(message[key]))performanceMonitor.emit({stage:'native.health.'+key,id:'output',ms:message[key]*scale,units:1});
+          }
+        }
         writeStartupLog(
           `health sample=${message.samplePos} sources=${message.activeSources} layout=${message.layout ?? "unknown"} ` +
           `spatialBuses=${message.spatialBusCount ?? 0} ` +
@@ -627,6 +637,7 @@ function startNativeRenderer() {
     }
   }
   const renderer = nativeRenderer;
+  if(performanceMonitor.active)nativeRendererCommand(performanceMonitor.nativeConfig(),true);
   nativeRendererWritable = true;
   nativeRenderer.stdout.setEncoding("utf8");
   nativeRenderer.stdout.on("data", chunk => { if (nativeRenderer === renderer) consumeNativeRendererOutput(chunk); });
@@ -727,7 +738,7 @@ async function setRemoteLocalMute(muted) {
   remoteSession.publish();return remoteSession.status();
 }
 const remoteSession = new RemoteSession({
-  rtc:require("./remote-rtc.cjs")({BrowserWindow,ipcMain}),
+  rtc:require("./remote-rtc.cjs")({BrowserWindow,ipcMain,performanceEvent:value=>performanceMonitor.emit(value)}),
   gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;await ensureNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
   position:()=>Number(nativeRendererStatus.samplePos??0)/48000,
   diagnostic:health=>writeStartupLog(`remote-receiver ${JSON.stringify(health)}`),
@@ -1308,7 +1319,8 @@ function createWindow() {
   win.webContents.on("did-finish-load", updateBackdrop);
   win.on("closed", () => nativeTheme.removeListener("updated", updateBackdrop));
 
-  win.on("closed",()=>{if(!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker))for(const worker of BrowserWindow.getAllWindows())worker.destroy();});
+  win.on("closed",()=>{if(!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker&&!w.sdaPerformance))for(const worker of BrowserWindow.getAllWindows())worker.destroy();});
+  performanceMonitor.attach(win);
   win.setMenu(null);
   const publishWindowState = () => {
     win.webContents.send("sda:window-state", { maximized: win.isMaximized(), fullscreen: win.isFullScreen() });
@@ -1686,12 +1698,13 @@ const roomInspection = () => roomInspectionService ??= require("./room-inspectio
 app.on("before-quit",()=>roomInspectionService?.close());
 let roomLabService;
 const roomLab = () => roomLabService ??= createRoomLab({
+  performanceEvent:value=>performanceMonitor.emit(value),
   runtimeFile: process.env.SDA_ROOM_RUNTIME ?? path.join(__dirname,"room-simulator","runtime.json"),
   storeRoot:app.getPath("userData"),
   assetsRoot:app.isPackaged ? path.join(__dirname,"web") : path.resolve(__dirname,"../web/public"),
 });
 ipcMain.handle("sda:room-lab-status",()=>roomLab().status());
-ipcMain.handle("sda:room-lab-generate",(_event,config)=>roomLab().generate(config));
+ipcMain.handle("sda:room-lab-generate",(_event,config)=>performanceMonitor.measure("room.generate_including_wait",config?.layout??"room",()=>roomLab().generate(config)));
 ipcMain.handle("sda:room-lab-cancel",()=>roomLab().cancel());
 app.on("before-quit",()=>roomLabService?.cancel());
 ipcMain.handle("sda:comparison-gain", async (_event,gainDb)=>{
@@ -1751,7 +1764,7 @@ ipcMain.handle("sda:cinema-export-report", async (event, id) => {
   fs.writeFileSync(result.filePath, JSON.stringify(summary, null, 2));
   return true;
 });
-ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => exclusiveAudioUpdate(async () => {
+ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => performanceMonitor.measure("room.apply_including_queue",profileId??"built-in",()=>exclusiveAudioUpdate(async () => {
   const normalized = cinemaProfiles.validateSettings(settings);
   if (exclusiveHeadphoneId && (normalized.enabled || normalized.monitor.enabled || normalized.monitor.hardware?.enabled)) {
     throw new Error("请先关闭耳机模拟，再启用房间或监听处理");
@@ -1765,7 +1778,7 @@ ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId)
   }
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
-}));
+})));
 ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;
   const accepted = await nativeRendererCommandAck({ type: "setObjectHrtf", enabled }, "setObjectHrtf");
@@ -2008,7 +2021,7 @@ app.whenReady().then(() => {
     try { startHeadTracking(); } catch (error) { console.warn("[SDA] 头部追踪自动启动失败:", error); }
   }
   app.on("activate", () => {
-    if (!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker)) createWindow();
+    if (!BrowserWindow.getAllWindows().some(w=>!w.sdaRtcWorker&&!w.sdaPerformance)) createWindow();
   });
 });
 

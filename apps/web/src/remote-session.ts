@@ -65,6 +65,16 @@ export function useRemoteSession(state:RemotePlayback,control:(command:RemoteCom
     const pause=api.onRemoteSuspend?.(value=>{void Promise.resolve(current.current.suspend(!!value?.replaceOutput)).catch(console.warn);});
     return()=>{alive=false;status?.();commands?.();pause?.();};
   },[]);
+  // Diagnostic song attribution also works with wireless remote turned off.
+  useEffect(()=>{
+    const api=window.sdaDesktop;if(!api?.performancePlayback)return;
+    let enabled=false,alive=true,busy=false;
+    const publish=()=>{if(!enabled||!alive)return;const state=current.current.state;const playback=current.current.readPlayback?.();
+      api.performancePlayback?.({currentId:state.currentId,title:state.title,artist:state.artist,position:playback?.position??state.position,duration:state.duration,playing:state.playing,paused:state.paused,loading:playback?.loading??state.loading});};
+    const poll=async()=>{if(busy)return;busy=true;try{enabled=!!await api.performanceEndpoint?.();publish();}catch{enabled=false;}finally{busy=false;}};
+    void poll();const check=setInterval(()=>void poll(),1000),timer=setInterval(publish,250);
+    return()=>{alive=false;clearInterval(check);clearInterval(timer);};
+  },[]);
   useEffect(()=>{
     if(remote.role!=="host")return;
     const publish=()=>{const {coverUrl,scene,...state}=current.current.state;window.sdaDesktop?.publishRemoteState?.({...state,...current.current.readPlayback?.(),artwork:cover.current.source===(coverUrl??"")?cover.current.data:""} as RemotePlayback);};

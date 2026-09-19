@@ -61,6 +61,24 @@ pub struct StereoIr {
 }
 
 impl NativeHrtfSet {
+    pub fn simulation_shape(&self)->(usize,usize,usize) {
+        (self.positions.len(),self.cache.iter().map(|ir|ir.dry.len()/2).max().unwrap_or(0),self.cache.iter().map(|ir|ir.wet.len()/2).max().unwrap_or(0))
+    }
+    /// Deterministic, non-musical coefficients used only in offline load tests.
+    /// No source recording or user HRIR data is stored or required.
+    pub fn synthetic(directions:usize,dry_len:usize,wet_len:usize)->Result<Self,String>{
+        if directions==0 || directions>4096 || dry_len==0 || dry_len>131072 || wet_len>262144 || directions.saturating_mul(dry_len+wet_len)>16_000_000 {return Err("synthetic HRTF workload exceeds safe limits".into());}
+        let mut cache=Vec::new();let mut positions=Vec::new();
+        for i in 0..directions {
+            let azimuth=i as f64*137.507764%360.0-180.0;
+            let elevation=if directions==1{0.0}else{((1.0-2.0*(i as f64+0.5)/directions as f64).asin()).to_degrees()};
+            let make=|len:usize| (0..len*2).map(|j|{let n=j%len;let sign=if (j.wrapping_mul(1664525).wrapping_add(i.wrapping_mul(1013904223)))&8==0 {1.0}else{-1.0};sign*0.015*(-5.0*n as f32/len as f32).exp()}).collect();
+            positions.push(Position{azimuth,elevation,dry:String::new(),wet:String::new()});
+            cache.push(StereoIr{azimuth,elevation,dry:make(dry_len),wet:if wet_len==0{vec![0.0;2]}else{make(wet_len)}});
+        }
+        Ok(Self{cinema:crate::cinema::Settings::default(),room_profile:None,speaker_prepared:Default::default(),sample_rate:48000,subject_id:Some("performance-synthetic".into()),complete_subject:true,positions,directional_grid:crate::directional::Grid::new(&cache),cache,speaker_set:None,prepared:Default::default()})
+    }
+
     fn direction_key(azimuth: f64, elevation: f64) -> (i32, i32) {
         (
             (azimuth * 1000.0).round() as i32,
@@ -165,7 +183,7 @@ impl NativeHrtfSet {
         // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
         // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
         // when a 512-tap HRIR also needs four fractional-delay padding samples.
-        base+calibration+self.cinema.monitor.max_delay()+480
+        base+127+calibration+self.cinema.monitor.max_delay()+480
     }
     pub fn directional_dry_compact(&self,direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
         gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT])->Result<(Vec<f32>,Vec<f32>),String>{
@@ -173,10 +191,27 @@ impl NativeHrtfSet {
     }
     fn directional_dry_length(&self, direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
         gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT],length:usize)->Result<(Vec<f32>,Vec<f32>),String>{
-        let pair=self.directional_grid.footprint(&self.cache,direction);
+        let mut pair=self.directional_grid.footprint(&self.cache,direction);
         let mut output=(vec![0.0;length],vec![0.0;length]);
         let norm=gains.iter().map(|g|g*g).sum::<f32>().sqrt();
         if norm<1e-8{return Ok(output);}
+        if direction.diffuse > 0.0 {
+            // Preserve the existing authored diffuse level, using the old dry
+            // response only as a scalar calibration reference. No source PCM
+            // is sent to these speakers: it retains its own spatial filter.
+            let mut reference = vec![0.0_f32; self.cache.iter().map(|ir|ir.dry.len()).max().unwrap_or(0)];
+            for (bus,speaker) in crate::vbap::speakers(layout).iter().enumerate() {
+                if let Ok(ir) = self.nearest(speaker.azimuth as f64,speaker.elevation as f64) {
+                    for (out,input) in reference.iter_mut().zip(&ir.dry) {*out += input*gains[bus]/norm;}
+                }
+            }
+            let old_energy: f64 = reference.iter().map(|v|(*v as f64).powi(2)).sum();
+            let new_energy: f64 = pair.0.iter().chain(&pair.1).map(|v|(*v as f64).powi(2)).sum();
+            if old_energy > 1e-20 && new_energy > 1e-20 {
+                let scale = 1.0 + ((old_energy/new_energy).sqrt() as f32 - 1.0) * direction.diffuse.clamp(0.0,1.0);
+                for v in pair.0.iter_mut().chain(&mut pair.1) {*v *= scale;}
+            }
+        }
         // With no per-speaker processing all routes use the same dry pair.
         // Sum their scalar weights once instead of allocating/filtering a copy
         // for each speaker. Muting still reaches this path through `gains`.
@@ -195,8 +230,8 @@ impl NativeHrtfSet {
             let scaled=(pair.0.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect(),
                 pair.1.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect());
             let calibrated=self.cinema.monitor.filter(speaker.name,self.cinema.calibrate(speaker.name,scaled)?);
-            // Preserve speaker mute/trim/focus controls, but not coherent VBAP
-            // amplitude buildup. No normalization of the measured HRIR itself.
+            // Preserve speaker mute/trim/focus controls after common object-level
+            // calibration, without mixing their directional HRIRs into the PCM.
             let weight=gains[bus]*gains[bus]/norm;
             for (out,input) in [(&mut output.0,calibrated.0),(&mut output.1,calibrated.1)] {
                 if amounts[bus]==0.0 {

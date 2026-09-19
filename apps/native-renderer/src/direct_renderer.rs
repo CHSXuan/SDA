@@ -18,6 +18,7 @@ pub(super) fn workers() -> Option<&'static rayon::ThreadPool> {
 }
 
 fn prepare_bank(set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32) -> Result<FilterBank, String> {
+    let _perf=crate::performance::span("hrtf.bank_prepare",solver.layout().as_str(),vbap::speakers(solver.layout()).len() as u64);
     vbap::speakers(solver.layout()).iter().map(|speaker| {
         Ok([
             set.prepared_focus_speaker(speaker.name, solver.layout().as_str(), speaker.azimuth as f64, speaker.elevation as f64, wet, false)?,
@@ -58,6 +59,7 @@ pub(super) fn finish_sources<'a>(sources: impl Iterator<Item = &'a mut DirectSou
     for source in &mut sources {
         let route = source.pending_route.or(source.idle_route).or(source.route);
         if let Some(reference) = &mut source.near_reference {
+            if crate::performance::enabled() && reference.perf_id.is_empty(){reference.perf_id=format!("{}:near-reference",source.perf_id);}
             reference.input = source.input;
             if reference.route.is_none() { reference.override_filter=source.direction_filter.clone(); }
             if let Some((layout, gains, amounts, _)) = route {
@@ -82,6 +84,7 @@ pub(super) fn finish_sources<'a>(sources: impl Iterator<Item = &'a mut DirectSou
         ])).collect::<Result<FilterBank,String>>()?)
     }else{None};
     let finish = |source: &mut &mut DirectSource| {
+        let _perf=crate::performance::span("hrtf.object.legacy",&source.perf_id,DEFAULT_PARTITION as u64);
         if !source.needs_processing() {
             if let Some(route) = source.pending_route.take() { source.idle_route = Some(route); }
         } else if let Ok(Some(bank)) = &bank {
@@ -106,6 +109,7 @@ pub(super) fn finish_sources<'a>(sources: impl Iterator<Item = &'a mut DirectSou
 }
 
 pub(super) struct DirectSource {
+    pub perf_id: String,
     convolver: StereoPartitionedConvolver,
     route: Option<Route>,
     pending_route: Option<Route>,
@@ -148,7 +152,7 @@ mod tests {
         let mut original=DirectSource::new(&set,0.04).unwrap();
         let mut near=DirectSource::new(&set,0.04).unwrap();
         near.near_reference=Some(Box::new(DirectSource::new(&set,0.0).unwrap()));
-        if directional { near.direction=Some(crate::directional::Direction {position:[0.7,-0.4,0.3],head:None,width:0.0,height:0.0,depth:0.0}); }
+        if directional { near.direction=Some(crate::directional::Direction {diffuse:0.0,horizontal_only:false,position:[0.7,-0.4,0.3],head:None,width:0.0,height:0.0,depth:0.0}); }
         let mut gains=[0.0;vbap::MAX_BUS_COUNT];gains[0]=1.0;
         let mut direct_changed=false;let mut reflection_found=false;
         for block in 0..80 {
@@ -369,6 +373,7 @@ impl DirectSource {
         left.resize(set.speaker_filter_len() + DEFAULT_PARTITION, 0.0);
         right.resize(set.speaker_filter_len() + DEFAULT_PARTITION, 0.0);
         Ok(Self {
+            perf_id: String::new(),
             convolver: StereoPartitionedConvolver::new(&left, &right, DEFAULT_PARTITION)?,
             route: None,
             pending_route: None,

@@ -22,7 +22,7 @@ function validateConfig(input) {
   return result;
 }
 
-function createRoomLab({runtimeFile,storeRoot,assetsRoot}) {
+function createRoomLab({runtimeFile,storeRoot,assetsRoot,performanceEvent=()=>{}}) {
   let child=null,progress={running:false,current:0,total:0,error:null};
   const runtime=()=>{
     if(!fs.existsSync(runtimeFile))throw new Error('尚未配置房间仿真运行环境');
@@ -42,7 +42,8 @@ function createRoomLab({runtimeFile,storeRoot,assetsRoot}) {
       fs.writeFileSync(configPath,JSON.stringify(config));
       progress={running:true,current:0,total:config.speakers.length,error:null};
       try{
-        await new Promise((resolve,reject)=>{
+        const workerStarted=performance.now();
+        try { await new Promise((resolve,reject)=>{
           child=spawn(run.python,[run.script,'--config',configPath,'--source',run.source,'--hrtf',run.hrtf,'--assets',assetsRoot,'--output',output],{
             windowsHide:true,env:{...process.env,PYTHONPATH:run.pythonPath??'',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['ignore','pipe','pipe']});
           let stderr='',pending='';
@@ -52,6 +53,7 @@ function createRoomLab({runtimeFile,storeRoot,assetsRoot}) {
           child.once('error',e=>{clearTimeout(timeout);reject(e);});
           child.once('close',code=>{clearTimeout(timeout);code===0?resolve():reject(new Error(progress.error||stderr||`仿真退出 ${code}`));});
         });
+        } finally {performanceEvent({stage:"room.worker_runtime",id:config.layout,ms:performance.now()-workerStarted,units:config.speakers.length});}
         if(fs.statSync(output).size>64*1024*1024)throw new Error('仿真响应超过 64 MB');
         const profile=profiles.validateRoom(JSON.parse(fs.readFileSync(output,'utf8')));
         const bytes=Buffer.from(JSON.stringify(profile)),id=profiles.roomId(bytes);

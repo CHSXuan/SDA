@@ -24,7 +24,7 @@ ipcRenderer.on('sda-rtc',async(_event,{id,type,value})=>{
      if(peers.get(id)!==p)return;
      const transport=[...stats.values()].find(s=>s.type==='transport'&&s.selectedCandidatePairId);
      const pair=transport&&stats.get(transport.selectedCandidatePairId);
-     send(id,'stats',{bufferedBytes:p.dc.bufferedAmount,rttMs:pair?.currentRoundTripTime*1000,bytesSent:pair?.bytesSent,availableOutgoingBitrate:pair?.availableOutgoingBitrate});
+     send(id,'stats',{bufferedBytes:p.dc.bufferedAmount,rttMs:pair?.currentRoundTripTime*1000,bytesSent:pair?.bytesSent,bytesReceived:pair?.bytesReceived,availableOutgoingBitrate:pair?.availableOutgoingBitrate});
     }).catch(()=>{});
    }
   }else if(type==='close'){const p=peers.get(id);peers.delete(id);p?.pc.close();}
