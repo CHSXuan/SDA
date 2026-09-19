@@ -92,16 +92,28 @@ function showPeakInfo(records){
 function cells(target,rows){target.replaceChildren(...rows.map(row=>{const tr=document.createElement('tr');for(const value of row){const td=document.createElement('td');setValue(td,value);tr.append(td);}return tr;}));if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=8;td.className='empty';td.textContent='该期间尚无对应数据。播放音频或操作对应功能后会显示。';tr.append(td);target.append(tr);}}
 function cards(target,rows){target.replaceChildren(...rows.map(([label,value,hint,onClick])=>{const el=document.createElement('div');el.className='card';if(onClick){el.dataset.clickable='';el.tabIndex=0;el.setAttribute('role','button');el.addEventListener('click',onClick);el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onClick();}});}const title=document.createElement('small'),v=document.createElement('div'),h=document.createElement('div');title.textContent=label;v.className='value';setValue(v,value);h.className='hint';h.textContent=hint;el.append(title,v,h);return el;}));}
 function barColor(pct){return pct>80?'var(--bar-fill-hot)':pct>50?'var(--bar-fill-warn)':'var(--bar-fill)';}
-function showCoreDialog(){
- const h=snapshot.hardware||{};const cores=h.perCoreCpu||[];const body=$('core-body');body.replaceChildren();
- if(!cores.length){const p=document.createElement('p');p.textContent='暂无各核心数据，等待系统采样后点击 CPU 卡片查看。';body.append(p);}
- else{
-  const total=h.totalMachinePercent!=null?`总 CPU ${num(h.totalMachinePercent)}% · `:'';
-  const summary=document.createElement('p');summary.className='hint';summary.textContent=`${total}${cores.length} 个逻辑核心 · 采样来自系统调度器`;body.append(summary);
-  const container=document.createElement('div');container.className='core-bars';
-  for(let i=0;i<cores.length;i++){const pct=cores[i];const row=document.createElement('div');row.className='core-row';row.innerHTML=`<span class="core-label">核心 ${i}</span><div class="core-track"><div class="core-fill" style="width:${Math.min(100,pct).toFixed(1)}%;background:${barColor(pct)}"></div></div><span class="core-pct">${num(pct)}%</span>`;container.append(row);}
-  body.append(container);
+let coreDialogOpen=false;
+function renderCoreDialog(){
+ if(!coreDialogOpen)return;
+ const h=snapshot.hardware||{};const cores=h.perCoreCpu||[];const body=$('core-body');
+ if(!cores.length)return;
+ const total=h.totalMachinePercent!=null?`总 CPU ${num(h.totalMachinePercent)}% · `:'';
+ // Update or create bars
+ let summary=body.querySelector('.hint'),container=body.querySelector('.core-bars');
+ if(!summary){body.replaceChildren();summary=document.createElement('p');summary.className='hint';container=document.createElement('div');container.className='core-bars';body.append(summary,container);}
+ summary.textContent=`${total}${cores.length} 个逻辑核心 · 采样来自系统调度器 · 每秒刷新`;
+ while(container.children.length>cores.length)container.lastChild.remove();
+ for(let i=0;i<cores.length;i++){
+  let row=container.children[i];
+  if(!row){row=document.createElement('div');row.className='core-row';container.append(row);}
+  const pct=cores[i];
+  row.innerHTML=`<span class="core-label">核心 ${i}</span><div class="core-track"><div class="core-fill" style="width:${Math.min(100,pct).toFixed(1)}%;background:${barColor(pct)}"></div></div><span class="core-pct">${num(pct)}%</span>`;
  }
+}
+function showCoreDialog(){
+ if(coreDialogOpen){$('core-dialog').close();return;}
+ coreDialogOpen=true;
+ renderCoreDialog();
  if(!$('core-dialog').open)$('core-dialog').showModal();
 }
 let snapshot={};
@@ -120,9 +132,12 @@ function render(){
  const rows=($('scope').value==='session'?(s.cumulative||[]):recent).filter(r=>!r.stage.endsWith('.begin')&&!r.stage.endsWith('.heartbeat')).filter(r=>(category==='all'||definition(r.stage)[1]===category)&&`${definition(r.stage)[0]} ${source(r)} ${r.stage} ${r.id}`.toLowerCase().includes(filter));
  cells($('stages'),rows.map(r=>{const [name,,unit]=definition(r.stage),counter=['byte','triangle','unavailable','gap','audio'].includes(unit)&&r.totalMs===0;return [name,source(r),num(r.count,0),counter?'—':ms(r.minMs),counter?'—':ms(r.totalMs/r.count),counter?'—':highlighted(ms(r.maxMs),'stage:'+r.stage+':'+r.id),counter?'—':ms(r.totalMs),highlighted(work(r,unit),'work:'+r.stage+':'+r.id)];}));
  cells($('processes'),(h.processes||[]).map(p=>[p.name,p.pid,finite(p.cpuPercent)?num(p.cpuPercent)+'%':'等待采样',size(p.workingSetBytes),size(p.readBytesPerSecond),size(p.writeBytesPerSecond)]));
+ renderCoreDialog();
 }
 $('peak-close').onclick=()=>$('peak-dialog').close();$('peak-dialog').onclick=e=>{if(e.target===$('peak-dialog'))$('peak-dialog').close();};
-$('core-close').onclick=()=>$('core-dialog').close();$('core-dialog').onclick=e=>{if(e.target===$('core-dialog'))$('core-dialog').close();};
+$('core-close').onclick=()=>{$('core-dialog').close();coreDialogOpen=false;};
+$('core-dialog').onclick=e=>{if(e.target===$('core-dialog')){$('core-dialog').close();coreDialogOpen=false;}};
+$('core-dialog').addEventListener('close',()=>{coreDialogOpen=false;});
 $('export').onclick=()=>window.performanceMonitor.action('export');$('toggle').onclick=()=>window.performanceMonitor.action('toggle');$('filter').oninput=render;$('scope').onchange=render;$('category').onchange=render;
 async function tick(){try{snapshot=await window.performanceMonitor.snapshot();render();}catch{$('status').textContent='窗口暂未收到更新，后台仍可能在记录';}setTimeout(tick,1000);}tick();
 // Same lens geometry and strength as SheetHeading / GlassRefraction.

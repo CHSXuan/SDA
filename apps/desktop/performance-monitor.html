@@ -66,7 +66,7 @@ dialog::backdrop{background:#0008;backdrop-filter:blur(5px)}
 dialog .dialog-body{padding:0 24px 22px;overflow-y:auto}
 
 /* Close button with glass refraction */
-.dialog-close{position:relative;isolation:isolate;overflow:hidden;display:grid;place-items:center;width:44px;height:44px;min-width:44px;flex:0 0 44px;padding:0;border-radius:50%;border:1px solid color-mix(in srgb,var(--text) 7%,transparent);background:color-mix(in srgb,var(--panel) 18%,transparent);color:var(--text);box-shadow:0 3px 10px #0001,inset 0 1px 1px #ffffff30;transition:transform .18s;cursor:pointer}
+.dialog-close{position:relative;isolation:isolate;overflow:hidden;display:grid;place-items:center;width:44px;height:44px;min-width:44px;flex:0 0 44px;padding:0;border-radius:50%;border:1px solid color-mix(in srgb,var(--text) 7%,transparent);background:color-mix(in srgb,var(--panel) 18%,transparent);color:var(--text);box-shadow:0 3px 10px rgba(0,0,0,0.06),inset 0 1px 1px color-mix(in srgb,var(--text) 12%,transparent);transition:transform .18s;cursor:pointer}
 .dialog-close:active{transform:scale(.94)}.dialog-close>svg{position:relative;z-index:1;pointer-events:none}
 @media(prefers-reduced-motion:reduce){.dialog-close{transition:none}}
 @media(prefers-reduced-transparency:reduce){dialog{background:var(--panel);backdrop-filter:none}}
