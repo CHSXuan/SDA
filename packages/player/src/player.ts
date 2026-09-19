@@ -1506,14 +1506,8 @@ export class SdaPlayer {
     this.renderer?.resetBuffers();
     await this.nativeFrames.submit(async()=>{
       if (epoch!==this.decodeEpoch || this.disposed) return;
-      // Pause the native renderer before resetting to avoid audio discontinuity
-      // (stutter / silence) when seeking backward while playback is active.
-      try { await this.nativeRendererSink?.pause(true); } catch {}
       await this.nativeRendererSink?.reset(sample);
       if (epoch!==this.decodeEpoch || this.disposed) return;
-      // Resume if not intentionally paused — reset() may or may not clear
-      // the pause state, so explicitly unpause for active playback seeks.
-      if (!this.pausedState) try { await this.nativeRendererSink?.pause(false); } catch {}
       // Native reset clears programme gain along with queued audio. Seeking
       // within the same song must not temporarily bypass its loudness balance.
       await this.nativeRendererSink?.setProgramGainDb(this.programLoudnessGainDb, sample);
