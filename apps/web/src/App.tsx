@@ -911,7 +911,7 @@ export function App() {
             setSeeking(false);
           }
         },
-        onSeekBuffered: () => { if (isCurrent()) setSeeking(false); },
+        onSeekBuffered: () => { if (isCurrent()) { seekTargetRef.current = null; setSeeking(false); } },
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         denseBinauralObjects: readBinauralHead() === "ku100" && readDenseBinauralObjects(),
