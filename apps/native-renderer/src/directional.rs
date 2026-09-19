@@ -34,6 +34,7 @@ impl Default for Frame {
     }
 }
 pub struct ContinuousSource {
+    pub perf_id: String,
     hardware: crate::hardware::Chain,
     convolver: crate::convolution::StereoPartitionedConvolver,
     route: Option<Route>,
@@ -50,6 +51,7 @@ impl ContinuousSource {
     pub fn new(set: &crate::hrtf::NativeHrtfSet) -> Result<Self, String> {
         let zero = vec![0.0; set.directional_filter_len()];
         Ok(Self {
+            perf_id: String::new(),
             hardware: crate::hardware::Chain::new(&set.cinema.monitor.hardware),
             convolver: crate::convolution::StereoPartitionedConvolver::new(
                 &zero,
@@ -76,11 +78,13 @@ impl ContinuousSource {
         self.pending = (self.route != Some(route)).then_some(route);
     }
     fn finish(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
+        let _perf=crate::performance::span("hrtf.object.convolution",&self.perf_id,crate::convolution::DEFAULT_PARTITION as u64);
         for (input, frame) in self.input.iter_mut().zip(&self.frames) {
             *input = self.hardware.process(frame.input);
         }
         if self.input.iter().any(|x| *x != 0.0) || !self.convolver.tail_is_silent() {
             if let Some((direction, layout, gains, amounts)) = self.pending.take() {
+                let _filter_perf=crate::performance::span("hrtf.object.filter_update",&self.perf_id,(set.directional_filter_len()*2) as u64);
                 let (left, right) =
                     set.directional_dry_compact(direction, layout, gains, amounts)?;
                 let filter = self.convolver.prepare_pair(&left, &right);

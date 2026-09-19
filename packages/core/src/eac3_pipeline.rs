@@ -82,7 +82,7 @@ impl Eac3Pipeline {
         let info = match inspect_access_unit(frame) {
             Ok(info) => info,
             Err(error) => {
-                errors.push(format!("E-AC-3 frame rejected: {error}"));
+                errors.push(crate::diagnostics::failure("eac3.failure_01", format!("E-AC-3 frame rejected: {error}")));
                 return;
             }
         };
@@ -98,9 +98,9 @@ impl Eac3Pipeline {
 
         if is_dependent {
             let Some((core, loudness)) = self.pending_independent_core.take() else {
-                errors.push(
+                errors.push(crate::diagnostics::failure("eac3.failure_02",
                     "E-AC-3 dependent substream arrived without an independent core".to_string(),
-                );
+                ));
                 return;
             };
             if info.joc_payload_count() > 0 {
@@ -112,13 +112,13 @@ impl Eac3Pipeline {
                         out.push_back(self.build_object_frame(result, Some(loudness)))
                     }
                     Ok(None) => {
-                        errors.push("E-AC-3 JOC dependent substream yielded no object PCM; using independent core".to_string());
+                        errors.push(crate::diagnostics::failure("eac3.failure_03", "E-AC-3 JOC dependent substream yielded no object PCM; using independent core".to_string()));
                         self.emit_bed_frame(core, loudness, out);
                     }
                     Err(error) => {
-                        errors.push(format!(
+                        errors.push(crate::diagnostics::failure("eac3.failure_04", format!(
                             "E-AC-3 dependent JOC frame rejected, using independent core: {error}"
-                        ));
+                        )));
                         self.emit_bed_frame(core, loudness, out);
                     }
                 }
@@ -140,19 +140,19 @@ impl Eac3Pipeline {
                     let loudness = Self::loudness(&result.info);
                     self.pending_independent_core = Some((result.pcm, loudness));
                 }
-                Err(error) => errors.push(format!("E-AC-3 frame rejected: {error}")),
+                Err(error) => errors.push(crate::diagnostics::failure("eac3.failure_05", format!("E-AC-3 frame rejected: {error}"))),
             },
             Err(error) => {
-                errors.push(format!(
+                errors.push(crate::diagnostics::failure("eac3.failure_06", format!(
                     "E-AC-3 object frame rejected, using core PCM: {error}"
-                ));
+                )));
                 match self.pcm_decoder.push_access_unit(frame) {
                     Ok(result) => {
                         let loudness = Self::loudness(&result.info);
                         self.pending_independent_core = Some((result.pcm, loudness));
                     }
                     Err(core_error) => {
-                        errors.push(format!("E-AC-3 core fallback rejected: {core_error}"));
+                        errors.push(crate::diagnostics::failure("eac3.failure_07", format!("E-AC-3 core fallback rejected: {core_error}")));
                         self.total_samples += u64::from(info.num_blocks) * 256;
                     }
                 }
@@ -312,7 +312,7 @@ impl Pipeline for Eac3Pipeline {
                 Ok(Some(frame)) => self.process_frame(frame.as_bytes(), out, errors),
                 Ok(None) => break,
                 Err(e) => {
-                    errors.push(format!("E-AC-3 extract error: {e:?}"));
+                    errors.push(crate::diagnostics::failure("eac3.failure_08", format!("E-AC-3 extract error: {e:?}")));
                     break;
                 }
             }

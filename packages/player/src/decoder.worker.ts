@@ -1,3 +1,7 @@
+import {PerformanceSink} from "./performance-sink";
+const perf=new PerformanceSink("decoder");
+import {DecoderDiagnostics} from './decoder-diagnostics';
+const diagnostic=new DecoderDiagnostics(()=>!!perf.endpoint,value=>perf.diagnostic(value));
 import {SeekFrameGate, SeekPacketGate} from "./seek-frame";
 import {MpeghSeekPackets} from "./mpegh-seek";
 import { isStereoMasterFrame } from "./stereo-master.js";
@@ -12,7 +16,7 @@ import { isStereoMasterFrame } from "./stereo-master.js";
  *        { type: "error", message }
  */
 
-import { initCore, SdaDecoder, type CodecName, type DecodedFrameData, type ObjectEvent } from "@sda/core";
+import { decoderDiagnosticBuild, configureDecoderDiagnostics, drainDecoderCheckpoints, initCore, SdaDecoder, type CodecName, type DecodedFrameData, type ObjectEvent } from "@sda/core";
 import { createDemuxer, sniffContainer, type BwfMetadata, type BinauralRenderMetadata, type ContainerKind, type Demuxer, type DemuxedAudioPacket } from "@sda/demux";
 import { canCoalesceObjectEvent } from "./control.js";
 import { LoudnessMeter } from "./bs1770.js";
@@ -46,7 +50,8 @@ let seekGate = new SeekFrameGate();
 let seekPackets = new SeekPacketGate();
 let mpeghSeek = new MpeghSeekPackets(0);
 let epoch=0;
-function post(message:Record<string,unknown>, transfer:Transferable[] = []):void { self.postMessage({...message,epoch},transfer); }
+let perfDecodeStartMs=0;
+function post(message:Record<string,unknown>, transfer:Transferable[] = []):void { if(message.type==='error'){const trace=drainDecoderCheckpoints();for(const item of trace.events)diagnostic.record('checkpoint',item);diagnostic.record('failure',{epoch,checkpointDropped:trace.dropped,...decoderDiagnosticBuild});}self.postMessage({...message,epoch},transfer); }
 
 function compactObjectEvents(frame: DecodedFrameData): void {
   const objectIds = new Set<number>();
@@ -66,7 +71,9 @@ function compactObjectEvents(frame: DecodedFrameData): void {
 
 function measureMpeghReference(channels:Float32Array[],sampleRate:number):void {
   loudnessMeter ??= new LoudnessMeter(sampleRate,2);
+  const at=perf.endpoint?performance.now():null;
   loudnessMeter.push(channels);
+  if(at!==null)perf.record("decode.loudness", "mpegh", performance.now()-at,channels[0]?.length??0);
 }
 
 function postFrame(frame: DecodedFrameData): void {
@@ -77,12 +84,16 @@ function postFrame(frame: DecodedFrameData): void {
   // channel-layout weights to 118 objects is both incorrect and very costly.
   if (frame.codec !== "mpegh" && isStereoMasterFrame(frame) && frame.channels[0]?.length) {
     loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
+    const at=perf.endpoint?performance.now():null;
     loudnessMeter.push(frame.channels);
+    if(at!==null)perf.record("decode.loudness",frame.codec,performance.now()-at,frame.samplesPerChannel);
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
   }
   const accepted = seekGate.accept(frame);
   if (!accepted) return;
   frame = accepted;
+  perf.record("decode.output_audio",frame.codec,0,frame.samplesPerChannel/frame.sampleRate);
+  if(perf.endpoint)perf.trace({type:"decodeTrace",sample:frame.samplePos,startedMs:perfDecodeStartMs,epoch,ids:frame.labels.map((label,i)=>label.startsWith("Obj_")?`obj:${label.slice(4)}`:`bed:${i}`)});
   post(
     { type: "frame", frame },
     frame.channels.map((c) => c.buffer),
@@ -92,8 +103,11 @@ function postFrame(frame: DecodedFrameData): void {
 function drainFrames(): void {
   if (!decoder) return;
   while (true) {
+    const perfStart=perf.endpoint?performance.now():null;
     const frame = decoder.nextFrame();
+    if(perfStart!==null)perf.record("decode.next_frame",frame?.codec??"drain",performance.now()-perfStart,frame?frame.samplesPerChannel/frame.sampleRate:0);
     if (!frame) break;
+    diagnostic.record('frame',{codec:frame.codec,sample:frame.samplePos,samples:frame.samplesPerChannel,rate:frame.sampleRate,channels:frame.labels.length,objects:frame.objectChannels.length,epoch});
     seekPackets.restoreClock(frame);
     acceptDecodedFrame(frame);
   }
@@ -103,6 +117,7 @@ function drainFrames(): void {
 }
 
 function decodePacket(packet: DemuxedAudioPacket): void {
+  diagnostic.record('packet',{bytes:packet.frames.reduce((n,frame)=>n+frame.byteLength,0),units:packet.frames.length,epoch});
   if (!seekPackets.accept(packet.timestampMs)) return;
   if (!decoder) {
     if (!decoderConfigurationError) post({type:'error',message:'audio packets arrived before the decoder was configured'});
@@ -110,15 +125,19 @@ function decodePacket(packet: DemuxedAudioPacket): void {
   }
   if (mpeghSeek.originMs > 0) seekPackets.setOrigin(mpeghSeek.originMs);
   decoder.discardBeforeSeconds = seekPackets.localDiscardBeforeSeconds;
-  for (const au of packet.frames) decoder.push(au);
+  const packetStarted=perf.endpoint?performance.now():null;
+  try { for (const au of packet.frames) decoder.push(au); }
+  finally { if(packetStarted!==null)perf.record("decode.packet_push", "codec", performance.now()-packetStarted, packet.frames.length); }
   drainFrames();
 }
 
 async function processDecodedFrames(): Promise<void> {
   for (const frame of decodedFrames.splice(0)) {
+    const resampleStarted=perf.endpoint?performance.now():null;
     const output = outputSampleRate && frame.sampleRate !== outputSampleRate
       ? await (resampler ??= new AlacResampler(outputSampleRate)).push(frame)
       : frame;
+    if(resampleStarted!==null)perf.record("decode.resample",frame.codec,performance.now()-resampleStarted,frame.samplesPerChannel);
     if (output) {
       compactObjectEvents(output);
       frameBatcher.push(output);
@@ -149,11 +168,15 @@ function acceptDecodedFrame(frame: DecodedFrameData): void {
 // WASM resampler initialization is async: keep open/push/flush in port order.
 let messages = Promise.resolve();
 self.onmessage = (e: MessageEvent) => {
-  messages = messages.then(() => handleMessage(e));
+  const received=performance.now();
+  messages = messages.then(() => handleMessage(e,received));
 };
 
-async function handleMessage(e: MessageEvent): Promise<void> {
+async function handleMessage(e: MessageEvent,received:number): Promise<void> {
   const msg = e.data;
+  if(msg.type==="performance"){perf.endpoint=typeof msg.endpoint==="string"?msg.endpoint:null;configureDecoderDiagnostics(!!perf.endpoint);return;}
+  const perfStarted=perf.endpoint?performance.now():null;
+  if(perfStarted!==null){perfDecodeStartMs=performance.timeOrigin+perfStarted;perf.record("decode.queue_wait",msg.type,perfStarted-received);}
   try {
     if (msg.type === "open") epoch=msg.epoch ?? 0;
     else if (msg.type !== "init" && (msg.epoch ?? 0) !== epoch) return;
@@ -164,6 +187,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       break;
     }
     case "open": {
+      drainDecoderCheckpoints();diagnostic.reset();diagnostic.record('open',{codec:msg.codec,epoch,seekSeconds:msg.seekSeconds??0});
       seekGate = new SeekFrameGate(msg.seekSeconds ?? 0);
       seekPackets = new SeekPacketGate(msg.seekSeconds ?? 0);
       mpeghSeek = new MpeghSeekPackets(msg.seekSeconds ?? 0);
@@ -188,6 +212,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       break;
     }
     case "flush": {
+      diagnostic.record('flush',{epoch});
       if (sniffPrefix.length) throw new Error("Truncated media header");
       demuxer?.flush();
       for (const packet of mpeghSeek.flush()) decodePacket(packet);
@@ -281,7 +306,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     post({ type: "error", message });
     if (msg.type === "push") post({ type: "push-ack", sequence: msg.sequence, error: message });
-  }
+  } finally { if(perfStarted!==null)perf.record("decode.message_including_wait",msg.type,performance.now()-perfStarted); }
 }
 
 export {};

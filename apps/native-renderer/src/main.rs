@@ -65,6 +65,8 @@ mod output_monitor;
 mod remote_audio;
 mod monitor;
 mod hardware;
+mod performance;
+mod performance_simulation;
 mod pcm_ring;
 mod pcm_coverage;
 mod protocol;
@@ -83,6 +85,7 @@ enum SpeakerFocus {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Command {
+    SetPerformance { enabled: bool, path: Option<String> },
     Hello {
         protocol: u32,
     },
@@ -396,6 +399,8 @@ impl LfePath {
 enum StereoMode { Original, Dry, Room }
 
 struct Source {
+    perf_mix_ns: u64,
+    perf_mix_samples: u64,
     bass_split: Option<cinema::BassSplit>,
     direct: Option<Box<direct_renderer::DirectSource>>,
     continuous: Option<Box<directional::ContinuousSource>>,
@@ -448,6 +453,7 @@ struct Source {
 impl Default for Source {
     fn default() -> Self {
         Self {
+            perf_mix_ns:0,perf_mix_samples:0,
             samples: pcm_ring::AbsolutePcmRing::new(MAX_PENDING_SAMPLES),
             bass_split: None,
             direct: None,
@@ -1051,6 +1057,7 @@ impl Engine {
     }
 
     fn reset_session(&mut self, origin: u64) {
+        performance::reset();
         self.fast_activity.clear();
         self.cinema_bass_delay.fill(0.0);
         self.cinema_sub_delay.fill(0.0);
@@ -1247,6 +1254,8 @@ impl Engine {
     }
 
     fn render_chunk(&mut self, output: &mut [f32], channels: usize) {
+        if performance::workload_due(){performance::workload(performance_simulation::describe(self));}
+        let _perf=performance::span("render.block","all",(output.len()/channels.max(1)) as u64);
         output.fill(0.0);
         if self.paused || !self.output_active || self.bus_renderer.is_none() {
             return;
@@ -1271,9 +1280,13 @@ impl Engine {
         let lfe_target = self.speaker_target("LFE");
             let near_active = self.near_field.enabled && (!self.cinema.monitor.hardware.enabled || self.directional_hrtf);
             let effective_direct = self.directional_hrtf || ((self.direct_objects || near_active) && !self.cinema.monitor.hardware.enabled);
-        for source in self.sources.values_mut() {
+        for (id,source) in self.sources.iter_mut() {
             Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
                 self.directional_hrtf,effective_direct,near_active);
+            if performance::enabled() {
+                if let Some(c)=&mut source.continuous {if c.perf_id.is_empty(){c.perf_id=id.clone();}}
+                if let Some(c)=&mut source.direct {if c.perf_id.is_empty(){c.perf_id=id.clone();}}
+            }
         }
         if self.block_offset==0 {self.bus_renderer.as_mut().unwrap().begin_block();}
         self.mix_continuous_objects(output.len()/channels,speaker_targets,effective_direct,near_active);
@@ -1327,7 +1340,7 @@ impl Engine {
             // Fade the excitation, retaining both paths' convolution tails.
             let target_mix = if effective_direct { 1.0 } else { 0.0 };
             self.direct_mix += (target_mix - self.direct_mix).clamp(-1.0 / 9600.0, 1.0 / 9600.0);
-            for source in self.sources.values_mut().filter(|source| !source.fast_mixed) {
+            for (perf_id,source) in self.sources.iter_mut().filter(|(_,source)| !source.fast_mixed) {
                 if let Some(continuous) = &source.continuous {
                     direct_sum[0] += continuous.frames[block_index].output[0];
                     direct_sum[1] += continuous.frames[block_index].output[1];
@@ -1402,6 +1415,7 @@ impl Engine {
                 // current vector/scalar first, then advances its envelopes for
                 // the following sample. Advancing here would make every moving
                 // object start one step ahead of its scheduled codec sample.
+                let perf_mix_start=performance::start();
                 let raw = source.samples.take(at);
                 let target = if raw.is_some() { 1.0 } else { 0.0 };
                 if target != source.availability_target {
@@ -1539,6 +1553,13 @@ impl Engine {
                     lfe_sum += sample * source.lfe_gain * self.speaker_lfe_level;
                 }
                 Self::advance_source_envelopes(source, 1);
+                if let Some(start)=perf_mix_start {
+                    source.perf_mix_ns+=start.elapsed().as_nanos() as u64;source.perf_mix_samples+=1;
+                    if block_index+1==convolution::DEFAULT_PARTITION {
+                        performance::sample("source.routing_and_mix",perf_id,source.perf_mix_ns as f64/1_000_000.0,source.perf_mix_samples);
+                        source.perf_mix_ns=0;source.perf_mix_samples=0;
+                    }
+                }
             }
             for ear in 0..2 {
                 let input = self.stereo_delay[block_index][ear] * self.speaker_levels[ear];
@@ -1866,13 +1887,17 @@ fn record_callback(
     popped: usize,
     output_enabled: bool,
 ) {
+    let _perf=performance::span("output.callback","stereo",popped as u64);
+    performance::finish(Some(started),"output.callback_work","stereo",popped as u64);
     telemetry.callback_count.fetch_add(1, Ordering::Relaxed);
     if output_enabled && popped > 0 {
         telemetry
             .callback_consumed_sample_pos
             .fetch_add(popped as u64, Ordering::Release);
     }
+    performance::callback(telemetry.callback_consumed_sample_pos.load(Ordering::Acquire));
     if output_enabled {
+        if requested>popped {performance::sample("output.underrun_frames","stereo",0.0,(requested-popped) as u64);}
         telemetry
             .callback_fifo_underrun_frames
             .fetch_add((requested - popped) as u64, Ordering::Relaxed);
@@ -1887,6 +1912,7 @@ mod device_output;
 
 mod output_manager;
 fn main() {
+    if performance_simulation::entry(){return;}
     let commands = Arc::new(render_command::RenderCommandQueue::new(256));
     let fifo = Arc::new(stereo_fifo::StereoFifo::new(STEREO_FIFO_CAPACITY_FRAMES));
     let telemetry = Arc::new(RuntimeTelemetry {

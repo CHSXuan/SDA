@@ -106,7 +106,7 @@ impl Pipeline for Ac4Pipeline {
     }
     fn flush(&mut self, _out: &mut VecDeque<FrameData>, errors: &mut Vec<String>) {
         if !self.failed && !self.pending.is_empty() {
-            errors.push("AC-4: truncated sync frame at end of input".into());
+            errors.push(crate::diagnostics::failure("ac4.truncated_sync_frame", "AC-4: truncated sync frame at end of input".into()));
             self.failed = true;
         }
     }
@@ -125,27 +125,27 @@ impl Pipeline for Ac4Pipeline {
                 Ok(frame) => frame,
                 Err(SyncFrameError::Truncated { .. }) => break,
                 Err(error) => {
-                    errors.push(format!("AC-4 framing failed: {error}"));
+                    errors.push(crate::diagnostics::failure("ac4.failure_02", format!("AC-4 framing failed: {error}")));
                     self.failed = true;
                     break;
                 }
             };
             if frame.verify_crc(source) == Some(false) {
-                errors.push("AC-4 sync frame CRC mismatch".into());
+                errors.push(crate::diagnostics::failure("ac4.failure_03", "AC-4 sync frame CRC mismatch".into()));
                 self.failed = true;
                 break;
             }
             consumed += frame.total_size;
             let raw = frame.raw_frame.to_vec();
             if let Err(error) = self.decode(&raw, out) {
-                errors.push(error);
+                errors.push(crate::diagnostics::failure("ac4.failure_04", error));
                 self.failed = true;
                 break;
             }
         }
         self.pending.drain(..consumed);
         if self.pending.len() > 0x1000008 {
-            errors.push("AC-4 sync frame exceeds its 24-bit size limit".into());
+            errors.push(crate::diagnostics::failure("ac4.failure_05", "AC-4 sync frame exceeds its 24-bit size limit".into()));
             self.failed = true;
         }
         if self.failed {

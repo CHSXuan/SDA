@@ -1,3 +1,4 @@
+import Performance3D from "./Performance3D";
 import AvatarSkinControl from "./AvatarSkinControl";
 import { type HrtfTestVisual, testVisualPosition } from "../phrtf";
 /**
@@ -548,6 +549,7 @@ export function ObjectView({
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <ObjectListRefresh objects={objects} />
         {testVisual&&<HrtfTestMarker visual={testVisual} layout={layout.filter(s=>!hiddenSpeakerNames?.has(s.name))}/>}
+        <Performance3D />
         {immersive ? <ImmersiveCamera view={view} onFlightChange={setFlying}/> : <ViewportFraming mobile={mobile} />}
         {!immersive && (spherical ? <SphericalRoom p={p} /> : <Room p={p} />)}
         <SpeakerRing interactive={!mobile} layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />

@@ -45,3 +45,8 @@ apps/desktop/native-renderer/SdaNativeRenderer.exe
 
 # Web build staged inside Electron appDir before ASAR packaging.
 /apps/desktop/web/
+
+# Local diagnostic captures
+/outlogs/
+
+/apps/desktop/performance-core/

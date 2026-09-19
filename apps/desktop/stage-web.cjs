@@ -9,6 +9,7 @@ async function stageWeb() {
   await access(join(source, 'index.html'));
   await rm(destination, { recursive: true, force: true });
   await cp(source, destination, { recursive: true });
+  await cp(join(__dirname,'../../packages/core/pkg-node'),join(__dirname,'performance-core'),{recursive:true});
 }
 
 // Multi-architecture packaging can invoke beforePack concurrently.

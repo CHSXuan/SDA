@@ -61,6 +61,24 @@ pub struct StereoIr {
 }
 
 impl NativeHrtfSet {
+    pub fn simulation_shape(&self)->(usize,usize,usize) {
+        (self.positions.len(),self.cache.iter().map(|ir|ir.dry.len()/2).max().unwrap_or(0),self.cache.iter().map(|ir|ir.wet.len()/2).max().unwrap_or(0))
+    }
+    /// Deterministic, non-musical coefficients used only in offline load tests.
+    /// No source recording or user HRIR data is stored or required.
+    pub fn synthetic(directions:usize,dry_len:usize,wet_len:usize)->Result<Self,String>{
+        if directions==0 || directions>4096 || dry_len==0 || dry_len>131072 || wet_len>262144 || directions.saturating_mul(dry_len+wet_len)>16_000_000 {return Err("synthetic HRTF workload exceeds safe limits".into());}
+        let mut cache=Vec::new();let mut positions=Vec::new();
+        for i in 0..directions {
+            let azimuth=i as f64*137.507764%360.0-180.0;
+            let elevation=if directions==1{0.0}else{((1.0-2.0*(i as f64+0.5)/directions as f64).asin()).to_degrees()};
+            let make=|len:usize| (0..len*2).map(|j|{let n=j%len;let sign=if (j.wrapping_mul(1664525).wrapping_add(i.wrapping_mul(1013904223)))&8==0 {1.0}else{-1.0};sign*0.015*(-5.0*n as f32/len as f32).exp()}).collect();
+            positions.push(Position{azimuth,elevation,dry:String::new(),wet:String::new()});
+            cache.push(StereoIr{azimuth,elevation,dry:make(dry_len),wet:if wet_len==0{vec![0.0;2]}else{make(wet_len)}});
+        }
+        Ok(Self{cinema:crate::cinema::Settings::default(),room_profile:None,speaker_prepared:Default::default(),sample_rate:48000,subject_id:Some("performance-synthetic".into()),complete_subject:true,positions,directional_grid:crate::directional::Grid::new(&cache),cache,speaker_set:None,prepared:Default::default()})
+    }
+
     fn direction_key(azimuth: f64, elevation: f64) -> (i32, i32) {
         (
             (azimuth * 1000.0).round() as i32,

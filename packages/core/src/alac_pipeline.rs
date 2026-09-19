@@ -17,18 +17,18 @@ pub struct AlacPipeline {
 
 impl AlacPipeline {
     pub fn from_cookie(cookie: &[u8]) -> Result<Self, String> {
-        let info = StreamInfo::from_cookie(cookie).map_err(|error| error.to_string())?;
+        let info = StreamInfo::from_cookie(cookie).map_err(|error| crate::diagnostics::failure("alac.invalid_cookie",error.to_string()))?;
         let channels = usize::from(info.channels());
         let bit_depth = info.bit_depth();
         if !(1..=2).contains(&channels) {
-            return Err(format!("ALAC channel count {channels} is not supported yet (mono and stereo only)"));
+            return Err(crate::diagnostics::failure("alac.unsupported_channels",format!("ALAC channel count {channels} is not supported yet (mono and stereo only)")));
         }
         if !(1..=32).contains(&bit_depth) {
-            return Err(format!("invalid ALAC bit depth {bit_depth}"));
+            return Err(crate::diagnostics::failure("alac.invalid_bit_depth",format!("invalid ALAC bit depth {bit_depth}")));
         }
         let max_samples = info.max_samples_per_packet() as usize;
         if max_samples == 0 {
-            return Err("ALAC packet size is zero".to_string());
+            return Err(crate::diagnostics::failure("alac.zero_packet_size","ALAC packet size is zero".to_string()));
         }
         Ok(Self {
             decoder: Decoder::new(info.clone()),
@@ -58,12 +58,12 @@ impl Pipeline for AlacPipeline {
         let samples = match self.decoder.decode_packet(data, &mut interleaved) {
             Ok(samples) => samples,
             Err(error) => {
-                errors.push(format!("ALAC packet rejected: {error}"));
+                errors.push(crate::diagnostics::failure("alac.failure_01", format!("ALAC packet rejected: {error}")));
                 return;
             }
         };
         if samples.len() % self.channels != 0 {
-            errors.push("ALAC packet yielded an incomplete interleaved frame".to_string());
+            errors.push(crate::diagnostics::failure("alac.failure_02", "ALAC packet yielded an incomplete interleaved frame".to_string()));
             return;
         }
         let frames = samples.len() / self.channels;

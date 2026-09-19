@@ -15,6 +15,8 @@ pub(super) struct BusRenderer {
 }
 
 struct Bus {
+    perf_id: String,
+    perf_stage: &'static str,
     hardware: crate::hardware::Chain,
     background_filter: crate::focus::BackgroundFilter,
     convolver: convolution::StereoPartitionedConvolver,
@@ -40,11 +42,13 @@ impl BusRenderer {
             let residual_left:Vec<_>=left.iter().zip(dry_left).map(|(a,b)|a-b).collect();
             let residual_right:Vec<_>=right.iter().zip(dry_right).map(|(a,b)|a-b).collect();
             reflections.push(Bus {
+                perf_id:vbap::speakers(solver.layout())[index].name.into(),perf_stage:"hrtf.reflection_bus",
                 hardware:crate::hardware::Chain::new(&set.cinema.monitor.hardware),background_filter:Default::default(),
                 convolver:convolution::StereoPartitionedConvolver::new(&residual_left,&residual_right,convolution::DEFAULT_PARTITION)?,
                 input:vec![0.0;convolution::DEFAULT_PARTITION],left:vec![0.0;convolution::DEFAULT_PARTITION],right:vec![0.0;convolution::DEFAULT_PARTITION]
             });
             buses.push(Bus {
+                perf_id:vbap::speakers(solver.layout())[index].name.into(),perf_stage:"hrtf.bed_bus",
                 hardware: crate::hardware::Chain::new(&set.cinema.monitor.hardware),
                 background_filter: crate::focus::BackgroundFilter::default(),
                 convolver: convolution::StereoPartitionedConvolver::new(
@@ -112,6 +116,7 @@ impl BusRenderer {
     pub(super) fn finish_block(&mut self) -> Result<(), String> {
         let active=self.reflections_active;
         for bus in self.buses.iter_mut().chain(self.reflections.iter_mut().filter(|_|active)) {
+            let _perf=crate::performance::span(bus.perf_stage,&bus.perf_id,convolution::DEFAULT_PARTITION as u64);
             bus.left.fill(0.0);
             bus.right.fill(0.0);
             for sample in &mut bus.input { *sample = bus.hardware.process(*sample); }
@@ -131,6 +136,7 @@ impl BusRenderer {
             bus.hardware.reset();
             bus.background_filter = crate::focus::BackgroundFilter::default();
             bus.input.fill(0.0);
+            let _perf=crate::performance::span(bus.perf_stage,&bus.perf_id,convolution::DEFAULT_PARTITION as u64);
             bus.left.fill(0.0);
             bus.right.fill(0.0);
         }

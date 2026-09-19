@@ -104,6 +104,8 @@ fn mix_source(
     ctx: Context,
     vbap: &vbap::VbapSolver,
 ) {
+    let perf_id=if crate::performance::enabled(){source.object_id.map_or_else(||"object".into(),|id|format!("obj:{id}"))}else{String::new()};
+    let _perf=crate::performance::span("object.routing_and_mix",&perf_id,controls.len() as u64);
     let head_pose = ctx.head;
     for (offset, &(levels, background, mix)) in controls.iter().enumerate() {
         let at = ctx.start + offset as u64;

@@ -125,7 +125,7 @@ impl Pipeline for TruehdPipeline {
                     // InsufficientData just means "need more bytes"; anything
                     // else is a resync, which the extractor handles internally.
                     if !matches!(e, truehd::utils::errors::ExtractError::InsufficientData) {
-                        errors.push(format!("TrueHD extract error: {e}"));
+                        errors.push(crate::diagnostics::failure("truehd.failure_01", format!("TrueHD extract error: {e}")));
                     }
                     break;
                 }
@@ -135,7 +135,7 @@ impl Pipeline for TruehdPipeline {
             let access_unit = match self.parser.parse(&frame) {
                 Ok(au) => au,
                 Err(e) => {
-                    errors.push(format!("TrueHD parse error: {e}"));
+                    errors.push(crate::diagnostics::failure("truehd.failure_02", format!("TrueHD parse error: {e}")));
                     continue;
                 }
             };
@@ -156,7 +156,7 @@ impl Pipeline for TruehdPipeline {
             let decoded = match self.decoder.decode_presentation(&access_unit, PRESENTATION) {
                 Ok(d) => d,
                 Err(e) => {
-                    errors.push(format!("TrueHD decode error: {e}"));
+                    errors.push(crate::diagnostics::failure("truehd.failure_03", format!("TrueHD decode error: {e}")));
                     continue;
                 }
             };

@@ -1,3 +1,4 @@
+import {connectPerformanceWorker} from "./performance-sink";
 import { isStereoMasterFrame } from "./stereo-master.js";
 import { masterBalanceGainDb } from "./bs1770.js";
 /**
@@ -257,6 +258,7 @@ function layoutIdFor(layout: readonly VirtualSpeaker[]): LayoutId {
 export class SdaPlayer {
   /** 当前活跃实例。防止 HMR / 异常路径泄漏的旧 AudioContext 继续发声：
    *  新实例 init 时强制 dispose 上一个。 */
+  private performanceDisconnect?:()=>void;
   private static active: SdaPlayer | null = null;
   private static nextId = 1;
   /** 实例序号，用于诊断"界面控制的实例"和"实际发声的实例"是否一致。 */
@@ -416,6 +418,7 @@ export class SdaPlayer {
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health = this.createHealthSnapshot();
     this.worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), { type: "module" });
+    this.performanceDisconnect=connectPerformanceWorker(this.worker);
     this.ready = new Promise<void>((res) => (this.readyResolve = res));
     this.worker.onmessage = (e) => this.onWorkerMessage(e.data);
     this.worker.onerror = (e) => this.handleWorkerFailure(`解码 worker 异常：${e.message || "未知错误"}`);
@@ -1244,6 +1247,7 @@ export class SdaPlayer {
     this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
     this.rejectPendingWorkerPushes("player disposed");
     this.stop();
+    this.performanceDisconnect?.();
     this.worker.terminate();
     this.nativeConsumedUnsubscribe?.();
     this.nativeConsumedUnsubscribe = undefined;
