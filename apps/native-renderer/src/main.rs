@@ -1526,8 +1526,14 @@ impl Engine {
                             directional::Direction { position, head:head_pose,
                                 diffuse: source.diffuse.max(if self.source_extent.enabled {self.source_extent.diffusion}else{0.0}),
                                 horizontal_only: source.horizontal_only,
-                                width: if self.source_extent.enabled {source.extent[0].max(self.source_extent.width)*120.0}else{source.spread*120.0},
-                                height: if source.horizontal_only {0.0}else if self.source_extent.enabled {source.extent[2]*120.0}else{source.spread*120.0},
+                                // spread/size were authored against the VBAP snap path,
+                                // where spread only tilts gains across a few grid
+                                // directions. The continuous footprint renders the full
+                                // angular width, which broadens vocals far beyond the
+                                // authored impression; square the spread so small
+                                // spreads stay point-like and large ones keep width.
+                                width: if self.source_extent.enabled {(source.extent[0].max(self.source_extent.width)*source.extent[0].max(self.source_extent.width))*(120.0)}else{source.spread*source.spread*120.0},
+                                height: if source.horizontal_only {0.0}else if self.source_extent.enabled {(source.extent[2]*source.extent[2])*120.0}else{source.spread*source.spread*120.0},
                                 depth: if self.source_extent.enabled {source.extent[1]}else{0.0} }
                             };
                             continuous.schedule(direction,self.layout,std::array::from_fn(|bus|source.bus_gains[bus]*self.speaker_levels[bus]),self.speaker_background);

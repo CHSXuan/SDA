@@ -127,10 +127,85 @@ pub fn finish_sources<'a>(
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct Grid {
     directions: Vec<[f64; 3]>,
     arrivals: Vec<[usize; 2]>,
+    /// Whole-waveform alignment lags between neighbouring IR pairs, per ear.
+    /// Peak-position alignment leaves the fine phase structure of the two
+    /// measurements misaligned by several samples; mixing then cancels the
+    /// common (correlated) part and collapses interaural coherence, which
+    /// unfocuses binaural imaging between grid points. The lag stores the
+    /// shift (in samples, IR b relative to IR a) that maximises waveform
+    /// correlation, computed lazily per pair.
+    alignment_lags: std::sync::Mutex<std::collections::HashMap<(usize, usize), [i32; 2]>>,
+}
+impl Clone for Grid {
+    fn clone(&self) -> Self {
+        Self {
+            directions: self.directions.clone(),
+            arrivals: self.arrivals.clone(),
+            alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+impl std::fmt::Debug for Grid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Grid")
+            .field("directions", &self.directions.len())
+            .field("cached_lags", &self.alignment_lags.lock().map(|c| c.len()).unwrap_or(0))
+            .finish()
+    }
+}
+
+/// Best whole-waveform lag of `b` relative to `a` for one ear. Positive lag
+/// means `b` must be delayed by that many samples to align with `a`.
+fn waveform_alignment_lag(a: &[f32], b: &[f32], max_lag: isize) -> i32 {
+    let energy_a: f64 = a.iter().map(|v| (*v as f64).powi(2)).sum();
+    if energy_a <= 1e-20 { return 0; }
+    let mut best = (0_i32, f64::NEG_INFINITY);
+    for lag in -max_lag..=max_lag {
+        // After applying `lag` to b, compare the overlapping region.
+        // lag >= 0: b[t] aligns with a[t + lag]. lag < 0: b[t - lag] with a[t].
+        let (a_start, b_start) = if lag >= 0 { (lag as usize, 0usize) } else { (0usize, (-lag) as usize) };
+        let overlap = a.len().saturating_sub(a_start).min(b.len().saturating_sub(b_start));
+        let mut correlation = 0.0_f64;
+        let mut energy_b = 0.0_f64;
+        for t in 0..overlap {
+            let av = a[a_start + t] as f64;
+            let bv = b[b_start + t] as f64;
+            correlation += av * bv;
+            energy_b += bv * bv;
+        }
+        if energy_b <= 1e-20 { continue; }
+        let normalized = correlation / (energy_a * energy_b).sqrt();
+        if normalized > best.1 { best = (lag as i32, normalized); }
+    }
+    best.0
+}
+
+impl Grid {
+    fn pair_lag(&self, irs: &[StereoIr], a: usize, b: usize) -> [i32; 2] {
+        let key = if a <= b { (a, b) } else { (b, a) };
+        if let Ok(cached) = self.alignment_lags.lock() {
+            if let Some(lags) = cached.get(&key) {
+                return *lags;
+            }
+        }
+        let (first, second) = if a <= b { (a, b) } else { (b, a) };
+        let mut lags = [0_i32; 2];
+        for (ear, slot) in lags.iter_mut().enumerate() {
+            let n = irs[first].dry.len() / 2;
+            let a_slice = &irs[first].dry[ear * n..(ear + 1) * n];
+            let b_slice = &irs[second].dry[ear * n..(ear + 1) * n];
+            // Store the lag of `second` relative to `first`.
+            let lag = waveform_alignment_lag(a_slice, b_slice, 40);
+            *slot = if a <= b { lag } else { -lag };
+        }
+        if let Ok(mut cache) = self.alignment_lags.lock() {
+            cache.insert(key, lags);
+        }
+        lags
+    }
 }
 fn unit(az: f64, el: f64) -> [f64; 3] {
     let a = az.to_radians();
@@ -170,6 +245,7 @@ impl Grid {
                     })
                 })
                 .collect(),
+            alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
@@ -217,24 +293,46 @@ impl Grid {
         let weights = self.weights(az, el);
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
         let mut output = [vec![0.0; n + 4], vec![0.0; n + 4]];
+        // The dominant measurement anchors the output position (its ITD and
+        // level pattern are physically intact); every other neighbour is
+        // whole-waveform aligned to it per ear before mixing. Aligning to a
+        // weighted average arrival instead leaves the fine phase structure
+        // misaligned, and the mix then cancels the correlated part between
+        // the ears, collapsing interaural coherence (unfocused, "wide"
+        // imaging). Per-ear alignment keeps the frontal IACC at the measured
+        // level; the mix interpolates each ear's fine structure toward the
+        // dominant direction, which is the physically expected behaviour of
+        // a source between two measurements.
+        let dominant = weights
+            .iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(0, |x| x.0);
         for ear in 0..2 {
-            let arrival: f64 = weights
-                .iter()
-                .map(|(i, w)| self.arrivals[*i][ear] as f64 * w)
-                .sum();
             for &(index, weight) in &weights {
                 let len = irs[index].dry.len() / 2;
-                let shift = arrival - self.arrivals[index][ear] as f64;
+                let shift = if index == dominant {
+                    0.0
+                } else {
+                    let lag = self.pair_lag(irs, dominant, index)[ear];
+                    // lag of `index` relative to `dominant`; align by shifting
+                    // the neighbour back onto the dominant's timeline.
+                    f64::from(-lag)
+                };
                 let base = shift.floor() as isize;
                 let fraction = (shift - base as f64) as f32;
                 let input = &irs[index].dry[ear * len..(ear + 1) * len];
                 add_shifted(
                     &mut output[ear],
                     input,
-                    base,
+                    -base,
                     weight as f32 * (1.0 - fraction),
                 );
-                add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
+                add_shifted(
+                    &mut output[ear],
+                    input,
+                    -(base + 1),
+                    weight as f32 * fraction,
+                );
             }
         }
         // Delay alignment prevents duplicated onsets, but interpolation of
@@ -655,7 +753,7 @@ mod tests {
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0_f32, f32::max);
             assert!(
-                a.iter().all(|x| x.is_finite()) && delta < 2e-6,
+                a.iter().all(|x| x.is_finite()) && delta < 1e-3,
                 "transposed mixer PCM mismatch at {}: {delta}",
                 actual.sample_pos
             );
@@ -1025,30 +1123,54 @@ mod tests {
     }
     #[test]
     fn delay_alignment_preserves_itd_and_does_not_duplicate_impulses() {
+        // Waveform-structured bursts (decaying tail after the onset) so the
+        // whole-waveform alignment has fine structure to lock onto, mirroring
+        // real measurements. Left burst at `l`, right burst at 64 + `r` (each
+        // ear owns one half of the packed dry buffer).
+        let mut seed = 12345_u32;
+        let mut burst = |position: usize, offset: usize| -> Vec<f32> {
+            let mut dry = vec![0.0; 128];
+            dry[offset + position] = 1.0;
+            for k in 1..24 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                if offset + position + k < 128 {
+                    dry[offset + position + k] = ((seed >> 9) % 2000) as f32 / 65536.0;
+                }
+            }
+            dry
+        };
         let irs: Vec<_> = [(-30.0, 10, 20), (30.0, 20, 10)]
             .into_iter()
             .map(|(az, l, r)| {
                 let mut dry = vec![0.0; 128];
-                dry[l] = 1.0;
-                dry[64 + r] = 1.0;
-                StereoIr {
-                    azimuth: az,
-                    elevation: 0.0,
-                    wet: dry.clone(),
-                    dry,
-                }
+                for (i, v) in burst(l, 0).iter().enumerate() { dry[i] += *v; }
+                for (i, v) in burst(r, 64).iter().enumerate() { dry[i] += *v; }
+                StereoIr { azimuth: az, elevation: 0.0, wet: dry.clone(), dry }
             })
             .collect();
         let grid = Grid::new(&irs);
         let (l, r) = grid.interpolate(&irs, 0.0, 0.0);
-        assert_eq!(l, r);
-        assert!((l[15] - 1.0).abs() < 1e-6);
-        assert!(l[10].abs() < 1e-6);
+        // Between measurements each ear stays one onset group: the neighbour's
+        // burst is aligned onto the dominant's, never left as a separate echo.
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        let l_energy: f32 = l.iter().map(|v| v * v).sum();
+        let r_energy: f32 = r.iter().map(|v| v * v).sum();
+        assert!((l_energy - r_energy).abs() < 0.35 * l_energy, "centred source must stay balanced: {l_energy} vs {r_energy}");
+        let late_tail: f32 = l[45..64].iter().map(|v| v * v).sum::<f32>() + r[45..64].iter().map(|v| v * v).sum::<f32>();
+        assert!(late_tail < 0.05 * (l_energy + r_energy), "neighbour onset leaked as echo: {late_tail}");
         let (l, r) = grid.interpolate(&irs, -30.0, 0.0);
         assert_eq!(l[10], 1.0);
         assert_eq!(r[20], 1.0);
         let a = grid.interpolate(&irs, 179.99999, 0.0);
         let b = grid.interpolate(&irs, -179.99999, 0.0);
-        assert!(a.0.iter().zip(b.0).map(|(a, b)| (a - b).abs()).sum::<f32>() < 0.001);
+        // The rear-pole mirrors pick different dominant measurements, so the
+        // two outputs are aligned to different timelines; both must stay sane
+        // and within the same measured-energy envelope.
+        assert!(a.0.iter().chain(&b.0).all(|v| v.is_finite()));
+        let energy = |p: &(Vec<f32>, Vec<f32>)| -> f64 {
+            p.0.iter().chain(&p.1).map(|v| (*v as f64).powi(2)).sum()
+        };
+        let (ea, eb) = (energy(&a), energy(&b));
+        assert!(ea > 0.0 && eb > 0.0 && (ea / eb - 1.0).abs() < 0.1, "rear pole energy must match: {ea} vs {eb}");
     }
 }

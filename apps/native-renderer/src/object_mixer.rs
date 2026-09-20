@@ -314,17 +314,23 @@ fn mix_source(
                 head: head_pose,
                 diffuse: source.diffuse.max(if ctx.extent.enabled {ctx.extent.diffusion}else{0.0}),
                 horizontal_only: source.horizontal_only,
+                // Square the spread/extent the same way as the general path
+                // (Engine::route): the continuous footprint renders the authored
+                // width literally, which unstabilises vocals authored against the
+                // VBAP snap path where spread only tilts bus gains.
                 width: if ctx.extent.enabled {
-                    source.extent[0].max(ctx.extent.width) * 120.0
+                    let w = source.extent[0].max(ctx.extent.width);
+                    w * w * 120.0
                 } else {
-                    source.spread * 120.0
+                    source.spread * source.spread * 120.0
                 },
                 height: if source.horizontal_only {
                     0.0
                 } else if ctx.extent.enabled {
-                    source.extent[2] * 120.0
+                    let h = source.extent[2];
+                    h * h * 120.0
                 } else {
-                    source.spread * 120.0
+                    source.spread * source.spread * 120.0
                 },
                 depth: if ctx.extent.enabled {
                     source.extent[1]
