@@ -268,7 +268,7 @@ let nativeRendererWritable = true;
 const nativeRendererBatchQueue = [];
 let nativeRendererBuffer = "";
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
-  app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeExecutable:()=>bundledNativeRendererPath(),
+  app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,nativeExecutable:()=>bundledNativeRendererPath(),
   nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
 });
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
