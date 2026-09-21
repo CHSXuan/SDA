@@ -253,6 +253,7 @@ fn mix_source(
         let mut sample = raw.unwrap_or(0.0)
             * source.availability
             * source.gain
+            * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
         if source.object_id.is_some() && sample.abs() >= OBJECT_ACTIVITY_THRESHOLD {
             source.activity_until =
@@ -346,22 +347,27 @@ fn mix_source(
             );
         }
         if block_index % 128 == 0 {
-            source.near_target = crate::near_field::gains(
-                source.position,
-                head_pose,
-                crate::near_field::Settings {
-                    enabled: ctx.near_active,
-                    ..ctx.near_field
-                },
-            );
+            // Auto-enable for objects carrying real ADM depth (transparent at
+            // r >= 1, so far placements are untouched).
+            let near_settings = crate::near_field::Settings {
+                enabled: ctx.near_active
+                    || source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() < 1.0,
+                ..ctx.near_field
+            };
+            source.near_target = crate::near_field::gains(source.position, head_pose, near_settings);
         }
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
+        if block_index == 0 { continuous.occlusion_targets = source.occlusion_targets; }
         continuous.frames[block_index].input = input;
         continuous.frames[block_index].near = source.near_target;
         if input != 0.0 {
+            // Near sources sit outside the reverberant field: fade their room
+            // contribution as they close in (mirror of the general path).
+            let norm = source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+            let proximity_dry = if norm < 1.0 { (0.25 + 0.75 * norm).max(0.25) } else { 1.0 };
             buffer.add_reflections(
-                input,
+                input * proximity_dry,
                 &std::array::from_fn(|bus| source.bus_gains[bus] * levels[bus]),
                 block_index,
             );

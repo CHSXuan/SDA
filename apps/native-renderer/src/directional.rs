@@ -40,6 +40,10 @@ pub struct ContinuousSource {
     route: Option<Route>,
     pending: Option<Route>,
     near: crate::near_field::Filter,
+    /// Per-ear occlusion amounts for the current block (1 = open), applied to
+    /// the binaural output next to near-field.
+    pub occlusion_targets: [f32; 2],
+    occlusion: crate::occlusion::Shadow,
     // Sample-major hot storage: the mixer reads the previous output and writes
     // excitation/near targets together, avoiding five distant cache lines per object.
     pub frames: [Frame; crate::convolution::DEFAULT_PARTITION],
@@ -61,6 +65,8 @@ impl ContinuousSource {
             route: None,
             pending: None,
             near: Default::default(),
+            occlusion_targets: [1.0; 2],
+            occlusion: Default::default(),
             input: [0.0; crate::convolution::DEFAULT_PARTITION],
             frames: [Frame::default(); crate::convolution::DEFAULT_PARTITION],
             left: [0.0; crate::convolution::DEFAULT_PARTITION],
@@ -101,11 +107,15 @@ impl ContinuousSource {
         self.right.fill(0.0);
         self.convolver
             .process_block(&self.input, &mut self.left, &mut self.right)?;
+        let occlusion_targets = self.occlusion_targets;
         for (i, frame) in self.frames.iter_mut().enumerate() {
-            frame.output = self.near.process([self.left[i], self.right[i]], frame.near);
+            let output = self.near.process([self.left[i], self.right[i]], frame.near);
+            let shaded = self.occlusion.process(output, occlusion_targets);
+            frame.output = shaded;
             frame.input = 0.0;
             frame.near = [1.0; 2];
         }
+        self.occlusion_targets = [1.0; 2];
         Ok(())
     }
 }

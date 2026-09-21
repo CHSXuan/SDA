@@ -49,6 +49,7 @@ mod bus_renderer;
 mod remote_sync;
 mod source_extent;
 mod near_field;
+mod occlusion;
 mod directional;
 mod object_mixer;
 mod adm_zone;
@@ -258,6 +259,10 @@ struct Health {
     spatial_bus_count: usize,
     direct_object_hrtf: bool,
     object_convolver_count: usize,
+    /// Per-object [distance_gain, occlusion] averages for depth-rendering
+    /// diagnostics; zeroed when no objects are active.
+    distance_gain_mean: f32,
+    occlusion_shaded_sources: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -448,6 +453,14 @@ struct Source {
     /// Suspended sources skip PCM and mixing work while metadata and envelopes
     /// retain their codec timing. PCM, gain events, or an unmute wake the source.
     suspended: bool,
+    /// Smoothed inverse-distance loudness for objects. ADM Cartesian positions
+    /// carry depth: |pos| < 1 sits closer to the listener than the unit-sphere
+    /// reference, |pos| > 1 sits farther. Without this the whole depth axis of
+    /// an object master collapses and approaching objects stay equally loud.
+    distance_gain: f32,
+    /// Per-ear openness targets for the current block, computed once per block
+    /// from the pairwise occlusion pass (1 = unoccluded).
+    occlusion_targets: [f32; 2],
 }
 
 impl Default for Source {
@@ -493,6 +506,8 @@ impl Default for Source {
             muted: false,
             mute_events: BTreeMap::new(),
             suspended: false,
+            distance_gain: 1.0,
+            occlusion_targets: [1.0; 2],
         }
     }
 }
@@ -850,6 +865,7 @@ impl Engine {
                 None
             } else { Some(motion) };
         }
+        Self::advance_distance_gain(source, samples);
         let scalar = samples.min(source.ramp_remaining);
         if scalar > 0 {
             source.gain += source.ramp_step * scalar as f32;
@@ -868,6 +884,80 @@ impl Engine {
             if source.bus_ramp_remaining == 0 {
                 source.bus_gains = source.bus_targets;
                 source.lfe_gain = source.lfe_target;
+            }
+        }
+    }
+
+    /// Object depth loudness: relative spherical spreading referenced to the
+    /// ADM unit sphere. Objects carry unnormalised Cartesian positions, so an
+    /// approaching block (|pos| shrinking) must get louder the way a real
+    /// source does. Clamped to ±12 dB and smoothed (~30 ms per step) so jumps
+    /// in the metadata never click; beds and the LFE keep unity gain.
+    fn advance_distance_gain(source: &mut Source, samples: u32) {
+        if source.kind != SourceKind::Object || source.lfe_gain != 0.0 || source.lfe_target != 0.0 {
+            return;
+        }
+        let distance = source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        if !distance.is_finite() || distance < 1e-4 {
+            return;
+        }
+        // Both halves of the mix must be treated: objects nearer than the ADM
+        // reference sphere gain up to +9 dB (enough to read as "approaching",
+        // not enough to let one close object mask the whole mix), and far
+        // placements stay at unity so the programme's object-vs-bed balance —
+        // which the loudness reference already accounts for — is preserved.
+        // Beds sit on the layout sphere (r = 1) and are never scaled.
+        let target = if distance < 1.0 { (1.0 / distance).clamp(1.0, 2.8) } else { 1.0 };
+        // Exponential approach per sample; at 48 kHz the 0.9985 coefficient
+        // settles a full ±12 dB swing in roughly 100 ms without zipper noise.
+        let coefficient = (1.0 - (-(samples as f32) / 1600.0).exp()).min(1.0);
+        source.distance_gain += (target - source.distance_gain) * coefficient.min(1.0);
+    }
+
+    /// Current smoothed distance gain of an object source.
+    fn distance_gain(source: &Source) -> f32 {
+        if source.kind != SourceKind::Object { 1.0 } else { source.distance_gain }
+    }
+
+    /// Pairwise source-to-source occlusion for the current render block. A
+    /// nearer object on the same bearing shadows the farther one's far ear.
+    /// Runs once per block over the active objects; n<=64 keeps the pairwise
+    /// loop negligible next to the per-sample convolution work.
+    /// Pairwise source-to-source occlusion for the current render block. A
+    /// nearer object on the same bearing shadows the farther one's far ear.
+    /// Runs at block boundaries only (the caller guards on block_offset == 0);
+    /// allocation-free so it never disturbs the render thread's timing.
+    fn update_occlusion(&mut self, head_pose: Option<[f32; 4]>) {
+        const MAX_OCCLUDERS: usize = 64;
+        let mut positions: [[f32; 3]; MAX_OCCLUDERS] = [[0.0; 3]; MAX_OCCLUDERS];
+        let mut count = 0usize;
+        for source in self.sources.values() {
+            if count >= MAX_OCCLUDERS { break; }
+            if source.kind != SourceKind::Object || source.muted || source.lfe_target != 0.0
+                || source.position.iter().any(|axis| !axis.is_finite()) {
+                continue;
+            }
+            positions[count] = source.position;
+            count += 1;
+        }
+        if count == 0 { return; }
+        // One head-relative rotation per source, reused by every pairwise test.
+        let mut rotated: [[f32; 3]; MAX_OCCLUDERS] = [[0.0; 3]; MAX_OCCLUDERS];
+        for index in 0..count {
+            rotated[index] = crate::spatial::head_relative_adm(positions[index], head_pose);
+        }
+        for index in 0..count {
+            let openness = crate::occlusion::ear_openness_prepared(
+                &positions[index], &rotated[index], &positions[..count], &rotated[..count], index,
+            );
+            let mut seen = 0usize;
+            for source in self.sources.values_mut() {
+                if source.kind != SourceKind::Object || source.muted || source.lfe_target != 0.0
+                    || source.position.iter().any(|axis| !axis.is_finite()) {
+                    continue;
+                }
+                if seen == index { source.occlusion_targets = openness; break; }
+                seen += 1;
             }
         }
     }
@@ -1141,6 +1231,16 @@ impl Engine {
             spatial_bus_count: self.vbap.bus_count(),
             direct_object_hrtf: self.direct_objects,
             object_convolver_count: self.sources.values().filter(|source| source.direct.is_some() || source.continuous.is_some()).count(),
+            distance_gain_mean: {
+                let objects: Vec<f32> = self.sources.values()
+                    .filter(|source| source.kind == SourceKind::Object)
+                    .map(|source| source.distance_gain)
+                    .collect();
+                if objects.is_empty() { 0.0 } else { objects.iter().sum::<f32>() / objects.len() as f32 }
+            },
+            occlusion_shaded_sources: self.sources.values()
+                .filter(|source| source.kind == SourceKind::Object && source.occlusion_targets.iter().any(|open| *open < 0.99))
+                .count(),
         }
     }
 
@@ -1288,7 +1388,10 @@ impl Engine {
                 if let Some(c)=&mut source.direct {if c.perf_id.is_empty(){c.perf_id=id.clone();}}
             }
         }
-        if self.block_offset==0 {self.bus_renderer.as_mut().unwrap().begin_block();}
+        if self.block_offset==0 {
+            self.bus_renderer.as_mut().unwrap().begin_block();
+            self.update_occlusion(head_pose);
+        }
         self.mix_continuous_objects(output.len()/channels,speaker_targets,effective_direct,near_active);
         // Reduce completed object outputs source-major. Reading 108 widely
         // separated convolver allocations once per sample thrashes the cache;
@@ -1458,6 +1561,7 @@ impl Engine {
                 let mut sample = raw.unwrap_or(0.0)
                     * source.availability
                     * source.gain
+                    * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
@@ -1540,19 +1644,33 @@ impl Engine {
                         }
                     }
                     if block_index % 128 == 0 {
-                        source.near_target = near_field::gains(source.position, head_pose,
-                            near_field::Settings { enabled: near_active, ..self.near_field });
+                        // Objects carrying real ADM depth get near-field timbre
+                        // cues automatically: gains() is transparent at r >= 1,
+                        // so enabling it here never affects far placements.
+                        let near_settings = near_field::Settings {
+                            enabled: near_active || source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() < 1.0,
+                            ..self.near_field
+                        };
+                        source.near_target = near_field::gains(source.position, head_pose, near_settings);
                     }
                     let object_sample=sample*ROOM_SPEAKER_REFERENCE_GAIN*self.direct_mix;
                     if let Some(direct) = &mut source.direct {
+                        if block_index == 0 { direct.occlusion_targets = source.occlusion_targets; }
                         direct.near_targets[block_index] = source.near_target;
                         direct.input[block_index]=object_sample*(1.0-source.continuous_mix);
                     }
                     if let Some(continuous)=&mut source.continuous {
+                        if block_index == 0 { continuous.occlusion_targets = source.occlusion_targets; }
                         let input=object_sample*source.continuous_mix;
                         continuous.frames[block_index].input=input;
                         continuous.frames[block_index].near=source.near_target;
-                        if input!=0.0 {self.bus_renderer.as_mut().unwrap().add_reflections(input,&std::array::from_fn(|bus|source.bus_gains[bus]*self.speaker_levels[bus]),block_index);}
+                        if input!=0.0 {
+                            // Near sources sit outside the reverberant field:
+                            // fade their room contribution as they close in.
+                            let norm=source.position.iter().map(|axis|axis*axis).sum::<f32>().sqrt();
+                            let proximity_dry=if norm<1.0 {(0.25+0.75*norm).max(0.25)}else{1.0};
+                            self.bus_renderer.as_mut().unwrap().add_reflections(input*proximity_dry,&std::array::from_fn(|bus|source.bus_gains[bus]*self.speaker_levels[bus]),block_index);
+                        }
                     }
                 }
                 if !self.lfe_muted {
@@ -2046,6 +2164,47 @@ mod tests {
                 times.iter().sum::<f64>() / times.len() as f64, times[times.len() * 95 / 100], times[times.len() - 1],
                 convolution::DEFAULT_PARTITION as f64 / 48000.0 * 1e6);
         }
+    }
+
+    #[test]
+    fn object_depth_loudness_follows_adm_distance() {
+        // An approaching object (|pos| shrinking) must get louder and a
+        // receding one quieter; beds keep unity regardless of position.
+        let render = |position: [f32; 3], bed: bool| {
+            let mut engine = crate::Engine::new(48000, 2);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf/hrtf-set.json");
+            engine.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+            engine.paused = false; engine.output_active = true;
+            let mut source = crate::Source {
+                kind: if bed { crate::SourceKind::Bed } else { crate::SourceKind::Object },
+                bed_label: bed.then(|| "FrontLeft".into()),
+                position,
+                gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                ..Default::default()
+            };
+            if bed { crate::Engine::set_source_route(&mut source, crate::bed_route("FrontLeft", &engine.vbap), 0); }
+            let pcm: Vec<f32> = (0..24000).map(|i| (i as f32 * 0.043).sin() * 0.05).collect();
+            source.samples.write(0, 0, &pcm);
+            engine.sources.insert("obj:1".into(), source);
+            engine.route_source_now("obj:1", 0).unwrap();
+            engine.set_direct_objects(true).unwrap();
+            engine.direct_mix = 1.0;
+            let mut out = vec![0.0; 24000];
+            engine.render_into(&mut out, 2);
+            out[4000..].iter().map(|x| x * x).sum::<f32>()
+        };
+        let near = render([0.0, 0.25, 0.0], false);
+        let unit = render([0.0, 1.0, 0.0], false);
+        let far = render([0.0, 2.0, 0.0], false);
+        // Near objects gain (capped at +9 dB so they cannot mask the mix) and
+        // far placements stay at the programme reference — the object-vs-bed
+        // balance measured on real masters must not shift.
+        assert!(near > unit * 2.2, "approaching object must get louder: near={near} unit={unit}");
+        assert!((far - unit).abs() < unit * 0.05, "far object stays at reference loudness: far={far} unit={unit}");
+        let bed_near = render([0.0, 0.25, 0.0], true);
+        let bed_unit = render([0.0, 1.0, 0.0], true);
+        assert!((bed_near - bed_unit).abs() < bed_unit * 0.05, "beds must not be distance-scaled: {bed_near} vs {bed_unit}");
     }
 
     #[test]

@@ -321,6 +321,11 @@ export class SdaPlayer {
   private binauralMetadata: BinauralRenderMetadata | null = null;
   /** Visual metadata waits for the same codec sample clock as audio gains. */
   private pendingVisualEvents: ObjectEvent[] = [];
+  /** Most recent spatial event per object id. Native `reset` wipes source
+   * positions, and sparse object streams may not publish a new position for
+   * seconds, so a seek must replay these or every silent object collapses
+   * onto the default [0, 1, 0] placement until its next movement. */
+  private lastObjectEvents = new Map<number, ObjectEvent>();
   private pendingVisualCursor = 0;
   private pendingVisualTargets = new Map<number, ObjectEvent>();
   private visualObjectsSnapshot: VisualObject[] = [];
@@ -1517,6 +1522,19 @@ export class SdaPlayer {
       // Native reset clears programme gain along with queued audio. Seeking
       // within the same song must not temporarily bypass its loudness balance.
       await this.nativeRendererSink?.setProgramGainDb(this.programLoudnessGainDb, sample);
+      // Native reset also wipes every source position. Sparse object streams
+      // may not publish a fresh position for seconds, so replay each object's
+      // last known event at the seek target (ramp 0 = immediate) — otherwise
+      // silent objects sit at the default [0,1,0] placement with wrong
+      // distance/panning until their next movement.
+      if (this.lastObjectEvents.size) {
+        const replay: ObjectEvent[] = [];
+        for (const event of this.lastObjectEvents.values()) {
+          replay.push({ ...event, samplePos: sample, rampDuration: 0 });
+        }
+        replay.sort((a, b) => a.id - b.id);
+        await this.nativeRendererSink?.events(replay);
+      }
     });
     if (epoch===this.decodeEpoch) {
       this.installNativeConsumedClock();this.installNativeObjectActivity();
@@ -2153,6 +2171,7 @@ export class SdaPlayer {
       const events = frame.events as ObjectEvent[];
       renderer?.applyEvents(events);
       this.queueVisualEvents(events);
+      for (const event of events) this.lastObjectEvents.set(event.id, event);
 
       // Enqueue every channel of the decoded frame atomically on the codec's
       // absolute sample clock. Per-source feed messages allowed the worklet to

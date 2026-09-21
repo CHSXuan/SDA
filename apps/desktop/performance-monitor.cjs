@@ -20,7 +20,7 @@ class DebugSequence {
   }
 }
 
-function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable,nativeTheme}){
+function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable,nativeTheme,webAssetRoot}){
   let simulating=false;
   let child=null,endpoint=null,directory=null,monitorWindow=null,snapshot={},active=false,nativeThemeEventsAttached=false,starting=false;
   let sent=0,dropped=0,networkIn=0,networkOut=0,chromiumReceived=0,chromiumRequestBody=0;
@@ -31,8 +31,17 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
   function nativeConfig(){return {type:'setPerformance',enabled:active,path:directory?path.join(directory,`native-${nativePid()||'next'}.jsonl`):null};}
   function openWindow(){
     if(monitorWindow&&!monitorWindow.isDestroyed()){monitorWindow.show();monitorWindow.focus();syncTheme();return;}
-    monitorWindow=new BrowserWindow({width:1160,height:800,title:'SDA 性能监视器',frame:false,webPreferences:{preload:path.join(__dirname,'performance-preload.cjs'),contextIsolation:true,nodeIntegration:false}});
-    monitorWindow.sdaPerformance=true;monitorWindow.setMenu(null);monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html'));
+    monitorWindow=new BrowserWindow({width:1160,height:800,title:'SDA 性能监视器',frame:false,backgroundColor:'#0c101c',webPreferences:{preload:path.join(__dirname,'performance-preload.cjs'),contextIsolation:true,nodeIntegration:false}});
+    monitorWindow.sdaPerformance=true;monitorWindow.setMenu(null);
+    // The monitor UI is a second entry of the web app (React + TS), sharing
+    // the app's design system; dev serves it from Vite, prod from the bundle.
+    if(isDev){void monitorWindow.loadURL("http://localhost:5173/performance.html").catch(()=>monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html')));}
+    else{
+      const root=webAssetRoot?.();
+      const entry=root?path.join(root,'performance.html'):null;
+      if(entry)monitorWindow.loadFile(entry).catch(()=>monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html')));
+      else monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html'));
+    }
     monitorWindow.webContents.on('did-finish-load',syncTheme);
   }
   // Mirror the main window's theme (kept in nativeTheme.themeSource by

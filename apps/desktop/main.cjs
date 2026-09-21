@@ -268,7 +268,7 @@ let nativeRendererWritable = true;
 const nativeRendererBatchQueue = [];
 let nativeRendererBuffer = "";
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
-  app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,nativeExecutable:()=>bundledNativeRendererPath(),
+  app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,webAssetRoot:()=>webAssetRoot(),nativeExecutable:()=>bundledNativeRendererPath(),
   nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
 });
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
@@ -570,7 +570,8 @@ function consumeNativeRendererOutput(chunk) {
           `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} routes=${message.routeUpdateCount ?? 0} ` +
           `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
           `controlLockMaxUs=${message.controlLockMaxMicros ?? 0} renderLockWaitUs=${message.renderWaitLockMicros ?? 0} ` +
-          `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}`,
+          `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}` +
+          ` distGainMean=${Number(message.distanceGainMean ?? 0).toFixed(3)} occluded=${message.occlusionShadedSources ?? 0}`,
         );
         const hrtf = message.hrtfReady ? "HRTF ready" : "等待 HRTF";
         const ownership = message.outputActive ? "native output" : "静音预热";

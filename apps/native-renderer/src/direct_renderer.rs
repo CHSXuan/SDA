@@ -116,6 +116,10 @@ pub(super) struct DirectSource {
     idle_route: Option<Route>,
     pub input: [f32; DEFAULT_PARTITION],
     pub near_targets: [[f32; 2]; DEFAULT_PARTITION],
+    /// Per-ear occlusion amounts for the current block (1 = open), fed by the
+    /// engine's pairwise pass; applied to the binaural output next to near-field.
+    pub occlusion_targets: [f32; 2],
+    occlusion: crate::occlusion::Shadow,
     near_filter: crate::near_field::Filter,
     pub near_reference: Option<Box<DirectSource>>,
     pub direction: Option<crate::directional::Direction>,
@@ -379,6 +383,7 @@ impl DirectSource {
             pending_route: None,
             idle_route: None,
             near_targets: [[1.0; 2]; DEFAULT_PARTITION], near_filter: Default::default(),
+            occlusion_targets: [1.0; 2], occlusion: Default::default(),
             near_reference: None,
             direction: None, applied_direction: None, direction_filter: None, override_filter: None, override_dirty:false,
             input: [0.0; DEFAULT_PARTITION], left: [0.0; DEFAULT_PARTITION], right: [0.0; DEFAULT_PARTITION],
@@ -460,12 +465,15 @@ impl DirectSource {
         self.left.fill(0.0);
         self.right.fill(0.0);
         self.convolver.process_block(&self.input, &mut self.left, &mut self.right).expect("fixed block dimensions");
+        let occlusion_targets = self.occlusion_targets;
         for i in 0..DEFAULT_PARTITION {
             let dry = self.near_reference.as_ref().map_or([self.left[i],self.right[i]], |r| [r.left[i],r.right[i]]);
             let output = self.near_filter.process(dry, self.near_targets[i]);
-            self.left[i] += output[0] - dry[0]; self.right[i] += output[1] - dry[1];
+            let shaded = self.occlusion.process(output, occlusion_targets);
+            self.left[i] += shaded[0] - dry[0]; self.right[i] += shaded[1] - dry[1];
         }
         self.near_targets.fill([1.0; 2]);
+        self.occlusion_targets = [1.0; 2];
         self.input.fill(0.0);
     }
 }
