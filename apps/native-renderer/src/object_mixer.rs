@@ -28,6 +28,9 @@ pub struct Buffer {
     pub activity: Vec<ObjectActivitySnapshot>,
     pub underruns: u64,
     pub route_updates: u64,
+    /// Accumulated (sum of squares, count) keyed by is_bed, folded into the
+    /// engine's level probe for the bed-vs-object balance diagnostic.
+    pub level_probe: std::collections::HashMap<bool, (f64, u64)>,
 }
 impl Buffer {
     pub fn new() -> Self {
@@ -36,6 +39,7 @@ impl Buffer {
             activity: Vec::new(),
             underruns: 0,
             route_updates: 0,
+            level_probe: std::collections::HashMap::new(),
         }
     }
     fn reset(&mut self, activity: &[ObjectActivitySnapshot]) {
@@ -212,6 +216,9 @@ fn mix_source(
         // the following sample. Advancing here would make every moving
         // object start one step ahead of its scheduled codec sample.
         let raw = source.samples.take(at);
+        if let Some(value) = raw {
+            buffer.level_probe.entry(source.kind == crate::SourceKind::Bed).and_modify(|p| { p.0 += (value as f64) * (value as f64); p.1 += 1; }).or_insert(((value as f64) * (value as f64), 1u64));
+        }
         let target = if raw.is_some() { 1.0 } else { 0.0 };
         if target != source.availability_target {
             // Streams legitimately encode whole silent passages per object.

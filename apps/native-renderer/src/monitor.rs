@@ -46,6 +46,19 @@ impl Settings {
         if !self.enabled { 0 } else { self.outputs.get(name).map_or(0, |o| (o.delay_ms * 48.0).round() as usize) }
     }
     pub fn max_delay(&self) -> usize { self.outputs.keys().map(|n| self.delay(n)).max().unwrap_or(0) }
+    /// Room output alignment is part of the selected virtual room. It retains
+    /// speaker trim and arrival alignment, but intentionally excludes monitor
+    /// controls such as mute and phase inversion.
+    pub fn alignment_filter(&self, name: &str, pair: (Vec<f32>, Vec<f32>)) -> (Vec<f32>, Vec<f32>) {
+        let output = self.outputs.get(name);
+        let delay = output.map_or(0, |o| (o.delay_ms * 48.0).round() as usize);
+        let gain = output.map_or(1.0, |o| crate::cinema::db(o.trim_db));
+        let process = |v: Vec<f32>| std::iter::repeat_n(0.0, delay).chain(v.into_iter().map(|x| x * gain)).collect();
+        (process(pair.0), process(pair.1))
+    }
+    pub fn max_alignment_delay(&self) -> usize {
+        self.outputs.values().map(|o| (o.delay_ms * 48.0).round() as usize).max().unwrap_or(0)
+    }
     pub fn filter(&self, name: &str, pair: (Vec<f32>, Vec<f32>)) -> (Vec<f32>, Vec<f32>) {
         let delay = self.delay(name);
         let gain = self.gain(name);
@@ -74,5 +87,24 @@ mod tests {
         assert_eq!(s.master_gain(), 0.0);
         s.outputs.get_mut("FrontLeft").unwrap().delay_ms = f32::NAN;
         assert!(s.validate().is_err());
+    }
+    #[test]
+    fn room_alignment_survives_monitor_bypass_without_monitor_controls() {
+        let mut s = Settings::default();
+        s.outputs.insert("RearLeft".into(), Output { trim_db: -6.0, delay_ms: 1.0, invert: true, muted: true });
+        let pair = (vec![1.0, 0.5], vec![-0.25, 0.75]);
+
+        let (left, right) = s.alignment_filter("RearLeft", pair.clone());
+        assert_eq!(left.len(), 50);
+        assert!(left[..48].iter().all(|x| *x == 0.0));
+        assert!((left[48] - 0.5011872).abs() < 1e-6);
+        assert!((right[48] + 0.1252968).abs() < 1e-6);
+        assert_eq!(s.filter("RearLeft", pair.clone()), pair, "monitor controls remain bypassed");
+
+        s.enabled = true;
+        let (left, right) = s.filter("RearLeft", pair);
+        assert!(left.iter().all(|x| *x == 0.0));
+        assert!(right.iter().all(|x| *x == 0.0));
+        assert_eq!(s.max_alignment_delay(), 48);
     }
 }

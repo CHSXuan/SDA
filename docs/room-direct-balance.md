@@ -1,0 +1,9 @@
+# Simulated-room direct-sound reference
+
+Ideal-omnidirectional simulated room profiles contain a separate HRIR and propagation-distance reference. Previously `mixed_speaker` replaced the selected HRTF's direct path with this profile direct response. Enabling a room could therefore change front/rear balance even before reflections were considered.
+
+For profiles explicitly tagged `measurement=simulated` and `simulation.sourceModel=ideal-omnidirectional`, playback now preserves the selected speaker HRTF's dry response. It aligns the profile residual (`room - direct`) using one shared arrival offset and scales that residual by the square root of the selected/profile bilateral direct energies. A shared scalar preserves reflection interaural differences. Speaker EQ, delays and gain controls still apply afterward. Measured profiles and measured loudspeaker-directivity simulations retain their original paths; personal HRTF behavior remains unchanged outside this simulated-profile scope.
+
+Regression tests verify exact direct samples across front/rear directions with deliberately different profile gains, matched reflection reference, personal HRTFs, raw KU100, cinema controls, and continuous object rendering: 17 passed; 3 pre-existing ignored tests were not run.
+
+Local reproduction: 雨蝶.m4a, decoded first 25 seconds, 7.1.4, saved SDA Near-field Control Room. Separate object 16/21 contribution vs remaining programme, same gain, no independent normalization. After correction, rear-to-rest balance improved by a mean 1.93 dB over seconds 16–23. `all - rest - rear` remains below -75 dB relative to rear. This is an offline PCM result, not a claim that musical masking is eliminated or a physical headphone listening test. Diagnostic inputs/scripts and equal-gain WAV comparisons are in `tmp/yudie-diag` and not committed.

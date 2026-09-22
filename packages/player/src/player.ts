@@ -158,6 +158,8 @@ export interface NativeRendererSink {
   pause(paused: boolean): void | Promise<boolean>;
   /** Selects the master-defined virtual physical speaker layout. */
   setLayout(layout: LayoutId): void | Promise<void>;
+  /** Announces the codec before its PCM batches reach the native sidecar. */
+  setProgramCodec?(codec: string): void | Promise<void>;
   /** Optional native DAC consumption cursor on the codec sample clock. */
   getConsumedSamples?(): number;
   getPrebufferSeconds?(): number;
@@ -1886,6 +1888,9 @@ export class SdaPlayer {
         }
         this.trackCodec = track.codec;
         this.ensureStreamRate(track.sampleRate);
+        void Promise.resolve(this.nativeRendererSink?.setProgramCodec?.(track.codec)).catch(error => {
+          console.warn(`[SDA] player#${this.id} native codec mode update failed:`, error);
+        });
         console.log(
           `[SDA] player#${this.id} 轨道 ${track.container}/${track.codec} ${track.sampleRate}Hz ${track.channels}ch` +
           (track.durationSec ? ` ${track.durationSec.toFixed(3)}s` : ""),
@@ -1966,6 +1971,9 @@ export class SdaPlayer {
       this.trackReported = true;
       this.trackCodec = frame.codec;
       this.ensureStreamRate(frame.sampleRate);
+      void Promise.resolve(this.nativeRendererSink?.setProgramCodec?.(frame.codec)).catch(error => {
+        console.warn(`[SDA] player#${this.id} native codec mode update failed:`, error);
+      });
       this.cb.onTrack?.({
         codec: frame.codec,
         sampleRate: frame.sampleRate,

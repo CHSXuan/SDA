@@ -272,6 +272,9 @@ const performanceMonitor = require('./performance-monitor.cjs').createPerformanc
   nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
 });
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
+// Older bundled sidecars do not advertise the codec gate. Keep this tri-state
+// until ready/first use so an old binary cannot hold the PCM queue on timeout.
+let nativeRendererProgramCodecSupported = null;
 let nativeRendererObjectActivity = [];
 let nativeRendererHealthTimer = null;
 const nativeRendererPendingBatches = new Map();
@@ -304,6 +307,9 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     samplePos: Number.isSafeInteger(telemetry.samplePos) ? telemetry.samplePos : nativeRendererStatus.samplePos ?? 0,
     outputActive: telemetry.outputActive === true,
     hrtfReady: telemetry.hrtfReady === true,
+    programCodecSupported: typeof telemetry.programCodecSupported === "boolean"
+      ? telemetry.programCodecSupported
+      : nativeRendererProgramCodecSupported,
     remoteSynchronized:telemetry.remoteSynchronized===true,
     remoteSyncWaiting:telemetry.remoteSyncWaiting===true,
   };
@@ -524,7 +530,10 @@ function consumeNativeRendererOutput(chunk) {
     try {
       const message = JSON.parse(line);
       if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
-        setNativeRendererStatus(true, `渲染 ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true);
+        nativeRendererProgramCodecSupported = Array.isArray(message.features) && message.features.includes("programCodec");
+        setNativeRendererStatus(true, `渲染 ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true, {
+          programCodecSupported: nativeRendererProgramCodecSupported,
+        });
       } else if (message?.type === "outputDevices") {
         publishOutputDevices({status:message.status,devices:message.devices});
         writeStartupLog(`audio output: ${JSON.stringify(message.status)}`);
@@ -571,7 +580,7 @@ function consumeNativeRendererOutput(chunk) {
           `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
           `controlLockMaxUs=${message.controlLockMaxMicros ?? 0} renderLockWaitUs=${message.renderWaitLockMicros ?? 0} ` +
           `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}` +
-          ` distGainMean=${Number(message.distanceGainMean ?? 0).toFixed(3)} occluded=${message.occlusionShadedSources ?? 0}`,
+          ` distGainMean=${Number(message.distanceGainMean ?? 0).toFixed(3)} occluded=${message.occlusionShadedSources ?? 0}` + ` bedRms=${Number(message.bedRmsDb ?? -200).toFixed(1)}dB objRms=${Number(message.objectRmsDb ?? -200).toFixed(1)}dB`,
         );
         const hrtf = message.hrtfReady ? "HRTF ready" : "等待 HRTF";
         const ownership = message.outputActive ? "native output" : "静音预热";
@@ -587,6 +596,7 @@ function consumeNativeRendererOutput(chunk) {
 }
 
 function clearNativeRendererSession(reason) {
+  nativeRendererProgramCodecSupported = null;
   publishOutputDevices({status:{requested:savedOutputSettings(),state:"unavailable",detail:reason},devices:[]});
   publishNativeRendererObjectActivity([]);
   if (nativeRendererHealthTimer) clearInterval(nativeRendererHealthTimer);
@@ -638,6 +648,7 @@ function startNativeRenderer() {
     }
   }
   const renderer = nativeRenderer;
+  nativeRendererProgramCodecSupported = null;
   if(performanceMonitor.active)nativeRendererCommand(performanceMonitor.nativeConfig(),true);
   nativeRendererWritable = true;
   nativeRenderer.stdout.setEncoding("utf8");
@@ -1646,7 +1657,7 @@ ipcMain.handle("sda:native-renderer-clear-pose", async () => {
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
-  if ((!/^hrtf(?:-dense(?:-raw)?|-raw|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
+  if ((!/^hrtf(?:-dense(?:-raw)?|-raw|-d2(?:-dense)?|-h(?:[3-9]|1[0-9]|20)(?:-dense)?)?$/.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   return accepted;
@@ -1790,6 +1801,24 @@ ipcMain.handle("sda:native-renderer-directional-hrtf", async (_event, enabled) =
   if(typeof enabled!=="boolean")return false;
   const accepted=await nativeRendererCommandAck({type:"setDirectionalHrtf",enabled},"setDirectionalHrtf");
   writeStartupLog(`setDirectionalHrtf enabled=${enabled} -> ${accepted}`);return accepted;
+});
+ipcMain.handle("sda:native-renderer-program-codec", async (_event, codec) => {
+  if (typeof codec !== "string" || codec.length === 0 || codec.length > 32 || !/^[a-z0-9._-]+$/i.test(codec)) return false;
+  const normalized = codec.toLowerCase();
+  if (nativeRendererProgramCodecSupported === false) {
+    writeStartupLog(`setProgramCodec codec=${normalized} skipped: sidecar feature unavailable`);
+    return true;
+  }
+  // A pre-feature sidecar never emits an ACK for this command. Probe briefly
+  // once, then disable the optional command for the rest of this sidecar run.
+  const accepted = await nativeRendererCommandAck(
+    { type: "setProgramCodec", codec: normalized },
+    "setProgramCodec",
+    nativeRendererProgramCodecSupported === null ? 500 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS,
+  );
+  if (nativeRendererProgramCodecSupported === null) nativeRendererProgramCodecSupported = accepted;
+  writeStartupLog(`setProgramCodec codec=${normalized} -> ${accepted}`);
+  return accepted || nativeRendererProgramCodecSupported === false;
 });
 ipcMain.handle("sda:native-renderer-near-field", async (_event, settings) => {
   if(typeof settings?.enabled!=="boolean"||!Number.isFinite(settings.metresPerUnit)||settings.metresPerUnit<0.25||settings.metresPerUnit>4)return false;

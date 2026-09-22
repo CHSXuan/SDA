@@ -29,8 +29,8 @@
     "peakNormalized": false,
     "calibrated": true,
     "runtimeEnergyNormalization": false,
-    "directPathModel": "target HRIR plus calibrated BRIR room tail",
-    "note": "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ."
+    "directPathModel": "KU100 calibrated direct path plus bounded H13-guided clarity experiment",
+    "note": "EXPERIMENTAL and reversible. KU100-only, direction-dependent common-left-right 500-2000Hz direct-path correction, capped at ±3dB, broadband energy matched per direction; room tail and high-frequency pinna structure are unchanged."
   },
   "positions": [
     {
@@ -341,16 +341,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.32852888537199654
+        },
+        "clarityExperiment": {
+          "key": "-180/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.3233995509922636
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.2336411603624695
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.1612490226427008
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.984053434020767
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 1.4192677638719091
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.6367392910898015
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.8103165977127125
+            }
+          ],
+          "energyTrimDb": -0.2995295257653773,
+          "itBefore": -2,
+          "itAfter": -2,
+          "correctionDbAt1100": 2.315694421632756,
+          "correctionDbAt1400": 1.5191047341824597
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "a7de06afdf159d8defd0ebbd625368afb4a2a9336a7290edcc863340dba9b50e"
+          "sha256": "f03cd713c9934d3fdcc358b993db4048d433ce001197ec4feb54a996b44ee453"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "65d961bb8b4ee656fd4187368b5b455b40662a9242649b8a928bc2798faab8d6"
+          "sha256": "a388cd4cb0c61f1ab5b14653b883c402abd78b9e9ee3e138831c3252160c03ec"
         }
       }
     },
@@ -684,16 +723,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3287212275779421
+        },
+        "clarityExperiment": {
+          "key": "-170/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.17743787029830216
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.19891918242954798
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.6819246286758567
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.0166282355919063
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.14473865548169443
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0.8056494134557842
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.03623411428030732
+            }
+          ],
+          "energyTrimDb": -0.1444875681185737,
+          "itBefore": 5,
+          "itAfter": 4,
+          "correctionDbAt1100": 1.217097478805992,
+          "correctionDbAt1400": 0.4481499965703676
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "4df43644ab543c37e5b320d2e8e897385abf8891b171ea1ec74650a06c3a812e"
+          "sha256": "4ab462641cab07074954d2124a238d2cdd6e08bb42a69222c01ba734fb3c8c6b"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "6e5b0d62f28f70b1e6120e00b38a979bde29e5092b9fe418032d86a77c2174a0"
+          "sha256": "2058e8b2c96274f4eb2a69f8a3159a24f08bada3954b15dc1dbe6a6f444ad9bd"
         }
       },
       "symmetry": {
@@ -1014,16 +1092,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.2277658975063659
+        },
+        "clarityExperiment": {
+          "key": "-160/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.22547987126975944
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.4125034601843032
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.4676043927191014
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.5575736373298685
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.505851250352508
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.533284909877728
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.7975006607957438
+            }
+          ],
+          "energyTrimDb": -0.24922279736576675,
+          "itBefore": 7,
+          "itAfter": 7,
+          "correctionDbAt1100": 1.681231800607839,
+          "correctionDbAt1400": 0.9775261637277438
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "94ea5c66c9c7e242da59c30855761b0d955dfb564d6dfdcdf6f47b2f6ed60bb9"
+          "sha256": "356b2a487512e0e420bab1a7458734a4486ec6a65395f991137fbb43b5bf4197"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "68f741dd4fb548da1efbf793963425a7d539cfedc7127c8d40c189c2ca95f75c"
+          "sha256": "5e40787ed86d9bc357cee3db70869bab5e618b09147af04fe3766154637d20c8"
         }
       },
       "symmetry": {
@@ -1344,16 +1461,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.19933338678931278
+        },
+        "clarityExperiment": {
+          "key": "-150/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.4007391212784892
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.7332792995668376
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.0721235797125517
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.809080238761295
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.388170198078566
+            }
+          ],
+          "energyTrimDb": -0.4137730995049508,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 2.6036808236987197,
+          "correctionDbAt1400": 2.4104461225799403
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "1f05db4c5d7b3a4ace91b0a1d9738758d696c464ead55d6d0b42d42272f042b4"
+          "sha256": "0c972a34bc7b54277ba20c3fbae8679c1c4cbf0db3a4c7307da84ababf0bd5f1"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "b46d38db1ef46adcfd1cfce1aab96d389ce09cb8f06f189f60d252d4905f3583"
+          "sha256": "0f8306960d75a9403d8f4042899a420484e492b81e0ac5f6c892860520db4460"
         }
       },
       "symmetry": {
@@ -1696,16 +1852,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.21072211109340167
+        },
+        "clarityExperiment": {
+          "key": "-140/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.7578751675081605
+            },
+            {
+              "frequency": 630,
+              "gainDb": 2.035423566675367
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.5356428618995417
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.9650141884968417
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.9168284066479018
+            }
+          ],
+          "energyTrimDb": -0.36461573480242193,
+          "itBefore": 15,
+          "itAfter": 16,
+          "correctionDbAt1100": 2.8016614772637705,
+          "correctionDbAt1400": 2.732758930076808
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "0b6713ee9cc2c8605c4d735cbdf5db1409aadac193a3d675d005958a2cdb6453"
+          "sha256": "b9c8b8a1c6f47a57c8f586959ef41c0d9895973dab831b9ec9a8ccf24ff96905"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "62a5cb2e59b369253eba61bd5889856115c070fd4600a173d28f82f09f001c8e"
+          "sha256": "c85b24bc7309188f3da2dd01cb18bf85c522cfabf11d59541d4900d494099226"
         }
       },
       "symmetry": {
@@ -2048,16 +2243,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.2146551385465134
+        },
+        "clarityExperiment": {
+          "key": "-130/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.3559790539352492
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.5209509808821076
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 1.614655179995117
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.9004883195473277
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.3096008767384424
+            }
+          ],
+          "energyTrimDb": -0.23271142497106484,
+          "itBefore": -12,
+          "itAfter": -13,
+          "correctionDbAt1100": 2.4082846530494946,
+          "correctionDbAt1400": 1.7458756438062417
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "bd84eb911709c56aa729cb91d58803b740e05199c8164c6c3610148fa447e718"
+          "sha256": "3c9c9c80d32fba16298a4b11ae5876bcf22d39c1d8c15a1022cc377419354c81"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "77d790c08c1653268edec3d08d28a3d21052f6c12c7ee7d34ed43e18f9878777"
+          "sha256": "a5ff858d1f6941224a0c3c7c7c88918c40947bf39f00a0e2c5191737d09468ec"
         }
       },
       "symmetry": {
@@ -2400,16 +2634,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.22784628772671134
+        },
+        "clarityExperiment": {
+          "key": "-120/0",
+          "rearWeight": 0.972,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.853820684533547
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.9658475432935617
+            },
+            {
+              "frequency": 800,
+              "gainDb": 2.618202346264198
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.7370979993789359
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.1233562158091233
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.768498378842256
+            }
+          ],
+          "energyTrimDb": -0.1542914103481114,
+          "itBefore": -13,
+          "itAfter": -13,
+          "correctionDbAt1100": 2.0334580798390927,
+          "correctionDbAt1400": 0.9144216728698078
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "ec2e2e854c4c8645966d8bf784d5ad391fe174fd77405830ba342e7b711a32e6"
+          "sha256": "7691b38f005f98837f05cab25b056d60f10bc08ca7bb5d016a2a5ded72591540"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "25c774fcf131a0a68b0ab8929e58baa011c20fa82baab86fbe9958472549ff03"
+          "sha256": "3f6f5f95ac0c532365e474e182120643bfd1f5d469612fbcd71d2ac47db45b77"
         }
       },
       "symmetry": {
@@ -2730,16 +3003,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.4766025130264584
+        },
+        "clarityExperiment": {
+          "key": "-110/0",
+          "rearWeight": 0.7839999999999999,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.0693450960708157
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.008286814649211506
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.1545025479057642
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 1.3292677976187162
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.7877174975841461
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.038407846089307834
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.0044972879863412
+            }
+          ],
+          "energyTrimDb": -0.02296298122420234,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 0.4250505440141842,
+          "correctionDbAt1400": -0.4437239349015908
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "66c63bfcd1e3fba6c247efa0499ab6c97b9441bca6d628898aa7feb416bd81d2"
+          "sha256": "329499c17988c82c9919b0d958c8f63942ad6f6e2744cd81762b9250665f018c"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "701191570a8c78ba13edb96af1eed36756dd201c3aa43d200bb07b913966d8ac"
+          "sha256": "52021e9a030ef27fafe2298ce12bf02d2fbba134f95bab37a45be1e1b1ba42d3"
         }
       },
       "symmetry": {
@@ -3060,16 +3372,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.7691720732819096
+        },
+        "clarityExperiment": {
+          "key": "-100/0",
+          "rearWeight": 0.5,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.30348563280164864
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.3092264946059673
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.19937386830138165
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.2606016634360522
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -1.2218682252546842
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.5078342164350376
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.1191910210618145
+            }
+          ],
+          "energyTrimDb": 0.030463796499311597,
+          "itBefore": -8,
+          "itAfter": -8,
+          "correctionDbAt1100": -0.3725982243198529,
+          "correctionDbAt1400": -0.8940690275793699
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "5d63b8639a62d8f04731e746fbd35ebc4fa088c0e4de2e40e4aea659a96660d6"
+          "sha256": "96478885b5ee4f0b5a8d9bd26882898300160650cf4e29b9cc4c7981f39f7962"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "4033c8ed370499411fb957e0d02321d19fd5d3984b011020b280d725bc81984e"
+          "sha256": "39178e9aa77d7ed61e3e420f3b740b94925bf916c7a1cae0b8a7d0d84ad028b4"
         }
       },
       "symmetry": {
@@ -3412,16 +3763,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.7918237116394113
+        },
+        "clarityExperiment": {
+          "key": "-90/0",
+          "rearWeight": 0.216,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.11116311218381691
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.12624761744503596
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.03223632004591134
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.0010170885446488089
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.6184628144536557
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.3344689705823004
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.021903912295106194
+            }
+          ],
+          "energyTrimDb": 0.019027335386692674,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": -0.26357823850917106,
+          "correctionDbAt1400": -0.48808673570126043
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "e5dd856bfe9485e1df07f5db472652044a4b0fc8ad89fcead15fa534780414c4"
+          "sha256": "eaffa71da32648a61936bb65dbf304365cbed48ba3c7222070e40924266bcb0f"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "ac593d2ad67f4ea8a08324d2b80bcd875b34c896bc556e973e5b02a48d91d3f3"
+          "sha256": "7d4d1a858a9e54b8c7d5253b079f84be0f437394924d52302350ecfcb005e325"
         }
       },
       "symmetry": {
@@ -3764,16 +4154,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.7911069669054402
+        },
+        "clarityExperiment": {
+          "key": "-80/0",
+          "rearWeight": 0.028000000000000004,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.011321969325319106
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.010951624652497112
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.00645923519655971
+            },
+            {
+              "frequency": 1000,
+              "gainDb": -0.007662030607395667
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.07832313790519957
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.05043096292178722
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.023407199062992736
+            }
+          ],
+          "energyTrimDb": 0.002764809142293588,
+          "itBefore": 30,
+          "itAfter": 30,
+          "correctionDbAt1100": -0.037843153037607345,
+          "correctionDbAt1400": -0.0655183800532645
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "a61868632b7aa8e764ba9fa6a5b55858ee5021ca499b4eab0d860f9783ce637e"
+          "sha256": "3bd707cdbcf93fce224ebdf4fb892f3aeb7c0faf78f366a300d20ab467441c2d"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "49e03394770d9e7f5cf05a063f61a517d9392cb898f05b9ba738915176c8fca9"
+          "sha256": "6c4584cb37d0c139c6e38fee3a8009a241eb44534fa0b67404c9caf81d1c4749"
         }
       },
       "symmetry": {
@@ -4094,6 +4523,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.7307464038153189
+        },
+        "clarityExperiment": {
+          "key": "-70/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -9,
+          "itAfter": -9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -4424,6 +4892,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.5373375674461798
+        },
+        "clarityExperiment": {
+          "key": "-60/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -12,
+          "itAfter": -12,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -4776,6 +5283,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.5342104122279672
+        },
+        "clarityExperiment": {
+          "key": "-50/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -15,
+          "itAfter": -15,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -5128,6 +5674,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.5093766856300963
+        },
+        "clarityExperiment": {
+          "key": "-40/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -2,
+          "itAfter": -2,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -5480,6 +6065,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.5045875731028815
+        },
+        "clarityExperiment": {
+          "key": "-30/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -5810,6 +6434,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.4212488123590088
+        },
+        "clarityExperiment": {
+          "key": "-20/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -27,
+          "itAfter": -27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -6140,6 +6803,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.35157928326962207
+        },
+        "clarityExperiment": {
+          "key": "-10/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -27,
+          "itAfter": -27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -6492,6 +7194,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.38310981532607435
+        },
+        "clarityExperiment": {
+          "key": "0/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -6843,6 +7584,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3806839715599768
+        },
+        "clarityExperiment": {
+          "key": "10/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 27,
+          "itAfter": 27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -7173,6 +7953,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.7320222714825153
+        },
+        "clarityExperiment": {
+          "key": "20/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 27,
+          "itAfter": 27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -7503,6 +8322,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.049583845057920684
+        },
+        "clarityExperiment": {
+          "key": "30/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -7855,6 +8713,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.062348906367416745
+        },
+        "clarityExperiment": {
+          "key": "40/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 2,
+          "itAfter": 2,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -8207,6 +9104,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.041157864882507056
+        },
+        "clarityExperiment": {
+          "key": "50/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 15,
+          "itAfter": 15,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -8559,6 +9495,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.03655667705799459
+        },
+        "clarityExperiment": {
+          "key": "60/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 12,
+          "itAfter": 12,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -8889,6 +9864,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.31859117353780064
+        },
+        "clarityExperiment": {
+          "key": "70/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 9,
+          "itAfter": 9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -9219,16 +10233,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.39203785836133953
+        },
+        "clarityExperiment": {
+          "key": "80/0",
+          "rearWeight": 0.028000000000000004,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.011321969325319106
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.010951624652497112
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.00645923519655971
+            },
+            {
+              "frequency": 1000,
+              "gainDb": -0.007662030607395667
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.07832313790519957
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.05043096292178722
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.023407199062992736
+            }
+          ],
+          "energyTrimDb": 0.002764809142293588,
+          "itBefore": -30,
+          "itAfter": -30,
+          "correctionDbAt1100": -0.037843153037607345,
+          "correctionDbAt1400": -0.0655183800532645
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "9d083b4aaf0dc18bba35e618eec57f5249c309805716adf595e627ebe8937528"
+          "sha256": "d5561a1ebf7bf4f3239a1710e8e1ba90e13c45e9c5c75d75bc1addf11850d12c"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "923815b2473912b89867bdcf4ba2ba822411b8dcf64106eede63b5e13ccdf933"
+          "sha256": "5193016c8d0bc0be31592577da93ced32f71559d19490403a9a71ccebd3eae29"
         }
       },
       "symmetry": {
@@ -9571,16 +10624,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.39213119754550263
+        },
+        "clarityExperiment": {
+          "key": "90/0",
+          "rearWeight": 0.216,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.11116311218381691
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.12624761744503596
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.03223632004591134
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.0010170885446488089
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.6184628144536557
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.3344689705823004
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.021903912295106194
+            }
+          ],
+          "energyTrimDb": 0.019027335386692674,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": -0.26357823850917106,
+          "correctionDbAt1400": -0.48808673570126043
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "8dcd0e8007f684eb5dc7ca161c71682e3b67f3388ce9e3ea0180d00428f99cb5"
+          "sha256": "92b62297f56f719f1815106d83242452d2c49d9b2e17586d89570350effc0f3b"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "3e8997221ec8a8b283f023e4f28030575b5d5cdef6ed6d630cf8db302ebdb705"
+          "sha256": "7d21c892faeee7c0574455409c894fdd28ffd07dda026bf060fb455719cfd336"
         }
       },
       "symmetry": {
@@ -9923,16 +11015,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.382232106093193
+        },
+        "clarityExperiment": {
+          "key": "100/0",
+          "rearWeight": 0.5,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.30348563280164864
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.3092264946059673
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.19937386830138165
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.2606016634360522
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -1.2218682252546842
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.5078342164350376
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.1191910210618145
+            }
+          ],
+          "energyTrimDb": 0.030463796499311597,
+          "itBefore": 8,
+          "itAfter": 8,
+          "correctionDbAt1100": -0.3725982243198529,
+          "correctionDbAt1400": -0.8940690275793699
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "a2dd5191d3fcb4680866869187e5930a3de27db61cc06066edbcb2b73e5294bc"
+          "sha256": "eee835a1ea6e066eafcd77b2a969d6e520bd000d83c3f2cc995cd0b59c49a682"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "d78eae1602b4f142a1897b22b8d3a46782a729961a29e255ffac2eb98d653ce7"
+          "sha256": "194052cb33eb99cd3ca4ab1bc45152bb4c53e62d0a8ab2900fa9de97be53f73c"
         }
       },
       "symmetry": {
@@ -10253,16 +11384,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.9508936638619936
+        },
+        "clarityExperiment": {
+          "key": "110/0",
+          "rearWeight": 0.7839999999999999,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.0693450960708157
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.008286814649211506
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.1545025479057642
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 1.3292677976187162
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.7877174975841461
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.038407846089307834
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.0044972879863412
+            }
+          ],
+          "energyTrimDb": -0.02296298122420234,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 0.4250505440141842,
+          "correctionDbAt1400": -0.4437239349015908
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "ea9e2f215c7d4b84c846d0e189538f60003a9c0f699a903d0206c9effddb8c24"
+          "sha256": "f85d9a6b72b7b9c05b625ae9a72db50c65e8d9e87ea365b5a86b0e04ff9e0dc4"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "717536a0a08b2010ae0b096227ae62fdf83fae9e8a1769fea1e4dac7cff9642e"
+          "sha256": "f25117777d4c34e196bae0a5fd41a0482ce81ebb6c68b7eab9597f0ae9e28b22"
         }
       },
       "symmetry": {
@@ -10583,16 +11753,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3067507913782741
+        },
+        "clarityExperiment": {
+          "key": "120/0",
+          "rearWeight": 0.972,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.853820684533547
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.9658475432935617
+            },
+            {
+              "frequency": 800,
+              "gainDb": 2.618202346264198
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.7370979993789359
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.1233562158091233
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.768498378842256
+            }
+          ],
+          "energyTrimDb": -0.1542914103481114,
+          "itBefore": 13,
+          "itAfter": 13,
+          "correctionDbAt1100": 2.0334580798390927,
+          "correctionDbAt1400": 0.9144216728698078
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "fd7f32467be9234bcee9dc0f6cb580f3f37552c418bc8179265ebfa339d6c060"
+          "sha256": "bbb0b23d64b86ea4988acba9f2a3de481a10225a0350eda22ed1739cddbca32c"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "84366d1e56b057e4879347f05b43706c7fff45783faabeb7fff03a4299353c57"
+          "sha256": "22eb67a9fe74fec0b9bcef211cf8d0d2d79202fbd5ae30f4cc15a88f33f9645f"
         }
       },
       "symmetry": {
@@ -10935,16 +12144,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.2937832554401343
+        },
+        "clarityExperiment": {
+          "key": "130/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.3559790539352492
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.5209509808821076
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 1.614655179995117
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.9004883195473277
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.3096008767384424
+            }
+          ],
+          "energyTrimDb": -0.23271142497106484,
+          "itBefore": 12,
+          "itAfter": 13,
+          "correctionDbAt1100": 2.4082846530494946,
+          "correctionDbAt1400": 1.7458756438062417
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "ffd2dd5a58477771c60f844c59161c0f7ec6a06bd95032037be25880b9aaeab6"
+          "sha256": "4b90876e3bceeecbb16fb661c7d16e06187baa98df02d12530983b18c9a6fb8c"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "43b16a632c41976ac2fafc627106c5a638c8aafed5fe7864ee34b4905146f692"
+          "sha256": "8daf00a4b608335d27ebbe42fa4182e23095dd523244f7a200d7a444f0dfb4bf"
         }
       },
       "symmetry": {
@@ -11287,16 +12535,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3257328451803634
+        },
+        "clarityExperiment": {
+          "key": "140/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.7578751675081605
+            },
+            {
+              "frequency": 630,
+              "gainDb": 2.035423566675367
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.5356428618995417
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.9650141884968417
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.9168284066479018
+            }
+          ],
+          "energyTrimDb": -0.36461573480242193,
+          "itBefore": -15,
+          "itAfter": -16,
+          "correctionDbAt1100": 2.8016614772637705,
+          "correctionDbAt1400": 2.732758930076808
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "11cbb044193e3206a8531941a477208e29644b2ef2c0aa6e975e9725e6234c16"
+          "sha256": "2968d805ebe02b5cf711c4efed363df98a63edc4013b1f6eb27d8294a8885803"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "3d62a59329f7a64a91c5c3ad67e643890a1799f15b6cdeb07bc1c528e601bae3"
+          "sha256": "02401223afc34ba2b83476d98df3a08d31a5f966b2c5e3828747dbdc3100a96e"
         }
       },
       "symmetry": {
@@ -11639,16 +12926,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3335491574473419
+        },
+        "clarityExperiment": {
+          "key": "150/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.4007391212784892
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.7332792995668376
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.0721235797125517
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.809080238761295
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.388170198078566
+            }
+          ],
+          "energyTrimDb": -0.4137730995049508,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 2.6036808236987197,
+          "correctionDbAt1400": 2.4104461225799403
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "51e33f365ddd6a808c722a156004dd0343829042963d0cb022d85e3bf83401d3"
+          "sha256": "dda6cc4b3eb264a9911837d88d17133b1bab2d93c20125d0b898b288eb339817"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "67a203dfea3320ac6646b2453b29c3fcf5146f235b319e1739ae869cdcae8b8a"
+          "sha256": "34170dd9c4850f2e15b7e0c425fa07d2ccc91bd21fab0eec47110c278df4d076"
         }
       },
       "symmetry": {
@@ -11969,16 +13295,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.19102691386594728
+        },
+        "clarityExperiment": {
+          "key": "160/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.22547987126975944
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.4125034601843032
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.4676043927191014
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.5575736373298685
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.505851250352508
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.533284909877728
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.7975006607957438
+            }
+          ],
+          "energyTrimDb": -0.24922279736576675,
+          "itBefore": -7,
+          "itAfter": -7,
+          "correctionDbAt1100": 1.681231800607839,
+          "correctionDbAt1400": 0.9775261637277438
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "b55e9bac6619d8135b5b8c706da716784fbd9d8612fe7d28b09f6614ead1dca0"
+          "sha256": "6e6ced38ad398fc72a133315b805573642be0dc35549aa771821d1fed0dc0cf3"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "cdb4fd71a9d46f9e679fea5c22ab5c5c183622b1b1a8afde2101a5114c8791a6"
+          "sha256": "72091a29f427e0d5f34ec06e10c97bc93d7c61346a25df82d86e4b66ce573c59"
         }
       },
       "symmetry": {
@@ -12321,16 +13686,55 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3288659521443691
+        },
+        "clarityExperiment": {
+          "key": "170/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.17743787029830216
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.19891918242954798
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.6819246286758567
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.0166282355919063
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.14473865548169443
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0.8056494134557842
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.03623411428030732
+            }
+          ],
+          "energyTrimDb": -0.1444875681185737,
+          "itBefore": -5,
+          "itAfter": -4,
+          "correctionDbAt1100": 1.217097478805992,
+          "correctionDbAt1400": 0.4481499965703676
         }
       },
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "cc8ca91d29ee16dcd0bfb34825a34210374bb221b3da0cfde822b700725d707d"
+          "sha256": "1043692aacf51ff52a3befadb577bca44cf6a6d2a48e91ea2b692779838dced1"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "e6bea8ddb4d9cfe46e8595390ab85739cc7436a77cdb0674f60740aa666c8bc8"
+          "sha256": "f623a000d1af18d4be011c1b48148622a72ad51d9af02462036a0dcc3f285454"
         }
       },
       "symmetry": {
@@ -12651,6 +14055,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.7291793684866565
+        },
+        "clarityExperiment": {
+          "key": "-180/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -23,
+          "itAfter": -23,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -12972,6 +14415,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.1456815997626819
+        },
+        "clarityExperiment": {
+          "key": "-150/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -13324,6 +14806,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.24009451250618952
+        },
+        "clarityExperiment": {
+          "key": "-120/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -22,
+          "itAfter": -22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -13654,6 +15175,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.24271522773152654
+        },
+        "clarityExperiment": {
+          "key": "-90/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -13,
+          "itAfter": -13,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -13984,6 +15544,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.17681370050659773
+        },
+        "clarityExperiment": {
+          "key": "-60/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -21,
+          "itAfter": -21,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -14336,6 +15935,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.2201037670849022
+        },
+        "clarityExperiment": {
+          "key": "-30/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -26,
+          "itAfter": -26,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -14666,6 +16304,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 1.067405406819379
+        },
+        "clarityExperiment": {
+          "key": "0/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -14987,6 +16664,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.1946509970500614
+        },
+        "clarityExperiment": {
+          "key": "30/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 26,
+          "itAfter": 26,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -15339,6 +17055,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.1646616108411667
+        },
+        "clarityExperiment": {
+          "key": "60/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 21,
+          "itAfter": 21,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -15669,6 +17424,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.34636864935586864
+        },
+        "clarityExperiment": {
+          "key": "90/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 13,
+          "itAfter": 13,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -15999,6 +17793,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.26866841188638446
+        },
+        "clarityExperiment": {
+          "key": "120/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 22,
+          "itAfter": 22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -16351,6 +18184,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.2631933672102438
+        },
+        "clarityExperiment": {
+          "key": "150/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -16681,6 +18553,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0
+        },
+        "clarityExperiment": {
+          "key": "-180/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 32,
+          "itAfter": 32,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -17002,6 +18913,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.15461087200899115
+        },
+        "clarityExperiment": {
+          "key": "-150/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -24,
+          "itAfter": -24,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -17354,6 +19304,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.1724137616960455
+        },
+        "clarityExperiment": {
+          "key": "-120/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -16,
+          "itAfter": -16,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -17684,6 +19673,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.5628003321765256
+        },
+        "clarityExperiment": {
+          "key": "-90/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -9,
+          "itAfter": -9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -18014,6 +20042,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.0921642445209283
+        },
+        "clarityExperiment": {
+          "key": "-60/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -10,
+          "itAfter": -10,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -18366,6 +20433,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.10478504144756329
+        },
+        "clarityExperiment": {
+          "key": "-30/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -22,
+          "itAfter": -22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -18696,6 +20802,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3708826893686705
+        },
+        "clarityExperiment": {
+          "key": "0/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 4,
+          "itAfter": 4,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -19017,6 +21162,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.7556072874925093
+        },
+        "clarityExperiment": {
+          "key": "30/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 22,
+          "itAfter": 22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -19369,6 +21553,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.7386044876811848
+        },
+        "clarityExperiment": {
+          "key": "60/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 10,
+          "itAfter": 10,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -19699,6 +21922,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.33229003849922023
+        },
+        "clarityExperiment": {
+          "key": "90/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 9,
+          "itAfter": 9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -20029,6 +22291,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.6855318154883925
+        },
+        "clarityExperiment": {
+          "key": "120/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 16,
+          "itAfter": 16,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -20381,6 +22682,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.673385333623095
+        },
+        "clarityExperiment": {
+          "key": "150/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 24,
+          "itAfter": 24,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -20711,6 +23051,45 @@
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 1.2460919015298284
+        },
+        "clarityExperiment": {
+          "key": "0/90",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 2,
+          "itAfter": 2,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
         }
       },
       "assets": {
@@ -20934,6 +23313,2412 @@
     "level": {
       "dryGlobalGainDb": 0,
       "wetGlobalGainDb": 0
+    },
+    "directClarityExperiment": {
+      "algorithm": "sda-ku100-direct-clarity-h13-guided-v1",
+      "targetSubject": "H13",
+      "scope": "KU100 horizontal rear dry HRIR only; wet room residual copied unchanged",
+      "minimumHz": 500,
+      "maximumHz": 2000,
+      "maximumGainDb": 3,
+      "firTaps": 257,
+      "commonLeftRightFilter": true,
+      "preservesItDAndIld": true,
+      "preservesAboveHz": 2000,
+      "rearWeightRampDegrees": [
+        75,
+        125
+      ],
+      "renderedPathFeedbackCompensation": {
+        "500": 1,
+        "630": 1,
+        "800": 1.15,
+        "1000": 1.5,
+        "1250": 1.6,
+        "1600": 1.4,
+        "2000": 1
+      },
+      "positions": [
+        {
+          "key": "-180/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.3233995509922636
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.2336411603624695
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.1612490226427008
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.984053434020767
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 1.4192677638719091
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.6367392910898015
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.8103165977127125
+            }
+          ],
+          "energyTrimDb": -0.2995295257653773,
+          "itBefore": -2,
+          "itAfter": -2,
+          "correctionDbAt1100": 2.315694421632756,
+          "correctionDbAt1400": 1.5191047341824597
+        },
+        {
+          "key": "-170/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.17743787029830216
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.19891918242954798
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.6819246286758567
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.0166282355919063
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.14473865548169443
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0.8056494134557842
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.03623411428030732
+            }
+          ],
+          "energyTrimDb": -0.1444875681185737,
+          "itBefore": 5,
+          "itAfter": 4,
+          "correctionDbAt1100": 1.217097478805992,
+          "correctionDbAt1400": 0.4481499965703676
+        },
+        {
+          "key": "-160/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.22547987126975944
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.4125034601843032
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.4676043927191014
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.5575736373298685
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.505851250352508
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.533284909877728
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.7975006607957438
+            }
+          ],
+          "energyTrimDb": -0.24922279736576675,
+          "itBefore": 7,
+          "itAfter": 7,
+          "correctionDbAt1100": 1.681231800607839,
+          "correctionDbAt1400": 0.9775261637277438
+        },
+        {
+          "key": "-150/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.4007391212784892
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.7332792995668376
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.0721235797125517
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.809080238761295
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.388170198078566
+            }
+          ],
+          "energyTrimDb": -0.4137730995049508,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 2.6036808236987197,
+          "correctionDbAt1400": 2.4104461225799403
+        },
+        {
+          "key": "-140/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.7578751675081605
+            },
+            {
+              "frequency": 630,
+              "gainDb": 2.035423566675367
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.5356428618995417
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.9650141884968417
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.9168284066479018
+            }
+          ],
+          "energyTrimDb": -0.36461573480242193,
+          "itBefore": 15,
+          "itAfter": 16,
+          "correctionDbAt1100": 2.8016614772637705,
+          "correctionDbAt1400": 2.732758930076808
+        },
+        {
+          "key": "-130/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.3559790539352492
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.5209509808821076
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 1.614655179995117
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.9004883195473277
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.3096008767384424
+            }
+          ],
+          "energyTrimDb": -0.23271142497106484,
+          "itBefore": -12,
+          "itAfter": -13,
+          "correctionDbAt1100": 2.4082846530494946,
+          "correctionDbAt1400": 1.7458756438062417
+        },
+        {
+          "key": "-120/0",
+          "rearWeight": 0.972,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.853820684533547
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.9658475432935617
+            },
+            {
+              "frequency": 800,
+              "gainDb": 2.618202346264198
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.7370979993789359
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.1233562158091233
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.768498378842256
+            }
+          ],
+          "energyTrimDb": -0.1542914103481114,
+          "itBefore": -13,
+          "itAfter": -13,
+          "correctionDbAt1100": 2.0334580798390927,
+          "correctionDbAt1400": 0.9144216728698078
+        },
+        {
+          "key": "-110/0",
+          "rearWeight": 0.7839999999999999,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.0693450960708157
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.008286814649211506
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.1545025479057642
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 1.3292677976187162
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.7877174975841461
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.038407846089307834
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.0044972879863412
+            }
+          ],
+          "energyTrimDb": -0.02296298122420234,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 0.4250505440141842,
+          "correctionDbAt1400": -0.4437239349015908
+        },
+        {
+          "key": "-100/0",
+          "rearWeight": 0.5,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.30348563280164864
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.3092264946059673
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.19937386830138165
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.2606016634360522
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -1.2218682252546842
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.5078342164350376
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.1191910210618145
+            }
+          ],
+          "energyTrimDb": 0.030463796499311597,
+          "itBefore": -8,
+          "itAfter": -8,
+          "correctionDbAt1100": -0.3725982243198529,
+          "correctionDbAt1400": -0.8940690275793699
+        },
+        {
+          "key": "-90/0",
+          "rearWeight": 0.216,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.11116311218381691
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.12624761744503596
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.03223632004591134
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.0010170885446488089
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.6184628144536557
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.3344689705823004
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.021903912295106194
+            }
+          ],
+          "energyTrimDb": 0.019027335386692674,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": -0.26357823850917106,
+          "correctionDbAt1400": -0.48808673570126043
+        },
+        {
+          "key": "-80/0",
+          "rearWeight": 0.028000000000000004,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.011321969325319106
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.010951624652497112
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.00645923519655971
+            },
+            {
+              "frequency": 1000,
+              "gainDb": -0.007662030607395667
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.07832313790519957
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.05043096292178722
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.023407199062992736
+            }
+          ],
+          "energyTrimDb": 0.002764809142293588,
+          "itBefore": 30,
+          "itAfter": 30,
+          "correctionDbAt1100": -0.037843153037607345,
+          "correctionDbAt1400": -0.0655183800532645
+        },
+        {
+          "key": "-70/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -9,
+          "itAfter": -9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-60/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -12,
+          "itAfter": -12,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-50/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -15,
+          "itAfter": -15,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-40/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -2,
+          "itAfter": -2,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-30/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-20/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -27,
+          "itAfter": -27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-10/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -27,
+          "itAfter": -27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "0/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "10/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 27,
+          "itAfter": 27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "20/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 27,
+          "itAfter": 27,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "30/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "40/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 2,
+          "itAfter": 2,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "50/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 15,
+          "itAfter": 15,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "60/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 12,
+          "itAfter": 12,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "70/0",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 9,
+          "itAfter": 9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "80/0",
+          "rearWeight": 0.028000000000000004,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.011321969325319106
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.010951624652497112
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.00645923519655971
+            },
+            {
+              "frequency": 1000,
+              "gainDb": -0.007662030607395667
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.07832313790519957
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.05043096292178722
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.023407199062992736
+            }
+          ],
+          "energyTrimDb": 0.002764809142293588,
+          "itBefore": -30,
+          "itAfter": -30,
+          "correctionDbAt1100": -0.037843153037607345,
+          "correctionDbAt1400": -0.0655183800532645
+        },
+        {
+          "key": "90/0",
+          "rearWeight": 0.216,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.11116311218381691
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.12624761744503596
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.03223632004591134
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.0010170885446488089
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.6184628144536557
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.3344689705823004
+            },
+            {
+              "frequency": 2000,
+              "gainDb": -0.021903912295106194
+            }
+          ],
+          "energyTrimDb": 0.019027335386692674,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": -0.26357823850917106,
+          "correctionDbAt1400": -0.48808673570126043
+        },
+        {
+          "key": "100/0",
+          "rearWeight": 0.5,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.30348563280164864
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.3092264946059673
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.19937386830138165
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0.2606016634360522
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -1.2218682252546842
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.5078342164350376
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.1191910210618145
+            }
+          ],
+          "energyTrimDb": 0.030463796499311597,
+          "itBefore": 8,
+          "itAfter": 8,
+          "correctionDbAt1100": -0.3725982243198529,
+          "correctionDbAt1400": -0.8940690275793699
+        },
+        {
+          "key": "110/0",
+          "rearWeight": 0.7839999999999999,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.0693450960708157
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.008286814649211506
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.1545025479057642
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 1.3292677976187162
+            },
+            {
+              "frequency": 1250,
+              "gainDb": -0.7877174975841461
+            },
+            {
+              "frequency": 1600,
+              "gainDb": -0.038407846089307834
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.0044972879863412
+            }
+          ],
+          "energyTrimDb": -0.02296298122420234,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 0.4250505440141842,
+          "correctionDbAt1400": -0.4437239349015908
+        },
+        {
+          "key": "120/0",
+          "rearWeight": 0.972,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.853820684533547
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.9658475432935617
+            },
+            {
+              "frequency": 800,
+              "gainDb": 2.618202346264198
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.7370979993789359
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.1233562158091233
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 1.768498378842256
+            }
+          ],
+          "energyTrimDb": -0.1542914103481114,
+          "itBefore": 13,
+          "itAfter": 13,
+          "correctionDbAt1100": 2.0334580798390927,
+          "correctionDbAt1400": 0.9144216728698078
+        },
+        {
+          "key": "130/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.3559790539352492
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.5209509808821076
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 1.614655179995117
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.9004883195473277
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.3096008767384424
+            }
+          ],
+          "energyTrimDb": -0.23271142497106484,
+          "itBefore": 12,
+          "itAfter": 13,
+          "correctionDbAt1100": 2.4082846530494946,
+          "correctionDbAt1400": 1.7458756438062417
+        },
+        {
+          "key": "140/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.7578751675081605
+            },
+            {
+              "frequency": 630,
+              "gainDb": 2.035423566675367
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.5356428618995417
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.9650141884968417
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.9168284066479018
+            }
+          ],
+          "energyTrimDb": -0.36461573480242193,
+          "itBefore": -15,
+          "itAfter": -16,
+          "correctionDbAt1100": 2.8016614772637705,
+          "correctionDbAt1400": 2.732758930076808
+        },
+        {
+          "key": "150/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 1.4007391212784892
+            },
+            {
+              "frequency": 630,
+              "gainDb": 1.7332792995668376
+            },
+            {
+              "frequency": 800,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 3
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 2.0721235797125517
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 2.809080238761295
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 2.388170198078566
+            }
+          ],
+          "energyTrimDb": -0.4137730995049508,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 2.6036808236987197,
+          "correctionDbAt1400": 2.4104461225799403
+        },
+        {
+          "key": "160/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0.22547987126975944
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0.4125034601843032
+            },
+            {
+              "frequency": 800,
+              "gainDb": 1.4676043927191014
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.5575736373298685
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.505851250352508
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 1.533284909877728
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.7975006607957438
+            }
+          ],
+          "energyTrimDb": -0.24922279736576675,
+          "itBefore": -7,
+          "itAfter": -7,
+          "correctionDbAt1100": 1.681231800607839,
+          "correctionDbAt1400": 0.9775261637277438
+        },
+        {
+          "key": "170/0",
+          "rearWeight": 1,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": -0.17743787029830216
+            },
+            {
+              "frequency": 630,
+              "gainDb": -0.19891918242954798
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0.6819246286758567
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 2.0166282355919063
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0.14473865548169443
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0.8056494134557842
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0.03623411428030732
+            }
+          ],
+          "energyTrimDb": -0.1444875681185737,
+          "itBefore": -5,
+          "itAfter": -4,
+          "correctionDbAt1100": 1.217097478805992,
+          "correctionDbAt1400": 0.4481499965703676
+        },
+        {
+          "key": "-180/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -23,
+          "itAfter": -23,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-150/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -11,
+          "itAfter": -11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-120/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -22,
+          "itAfter": -22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-90/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -13,
+          "itAfter": -13,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-60/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -21,
+          "itAfter": -21,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-30/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -26,
+          "itAfter": -26,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "0/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 0,
+          "itAfter": 0,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "30/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 26,
+          "itAfter": 26,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "60/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 21,
+          "itAfter": 21,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "90/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 13,
+          "itAfter": 13,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "120/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 22,
+          "itAfter": 22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "150/45",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 11,
+          "itAfter": 11,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-180/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 32,
+          "itAfter": 32,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-150/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -24,
+          "itAfter": -24,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-120/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -16,
+          "itAfter": -16,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-90/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -9,
+          "itAfter": -9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-60/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -10,
+          "itAfter": -10,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "-30/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": -22,
+          "itAfter": -22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "0/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 4,
+          "itAfter": 4,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "30/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 22,
+          "itAfter": 22,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "60/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 10,
+          "itAfter": 10,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "90/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 9,
+          "itAfter": 9,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "120/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 16,
+          "itAfter": 16,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "150/-30",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 24,
+          "itAfter": 24,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        },
+        {
+          "key": "0/90",
+          "rearWeight": 0,
+          "bands": [
+            {
+              "frequency": 500,
+              "gainDb": 0
+            },
+            {
+              "frequency": 630,
+              "gainDb": 0
+            },
+            {
+              "frequency": 800,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1000,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1250,
+              "gainDb": 0
+            },
+            {
+              "frequency": 1600,
+              "gainDb": 0
+            },
+            {
+              "frequency": 2000,
+              "gainDb": 0
+            }
+          ],
+          "energyTrimDb": 0,
+          "itBefore": 2,
+          "itAfter": 2,
+          "correctionDbAt1100": 0,
+          "correctionDbAt1400": 0
+        }
+      ]
     }
   }
 }

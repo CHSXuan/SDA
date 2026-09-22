@@ -100,6 +100,7 @@ declare global {
     samplePos?: number;
     outputActive?: boolean;
     hrtfReady?: boolean;
+    programCodecSupported?: boolean | null;
   }
 
   interface NativeRendererObjectActivity {
@@ -190,6 +191,7 @@ declare global {
       nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
       nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;
       nativeRendererDirectionalHrtf?: (enabled:boolean) => Promise<boolean>;
+      nativeRendererProgramCodec?: (codec: string) => Promise<boolean>;
       nativeRendererNearField?: (settings: {enabled:boolean;metresPerUnit:number}) => Promise<boolean>;
       nativeRendererSourceExtent?: (settings: {enabled:boolean;width:number;diffusion:number}) => Promise<boolean>;
       nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;

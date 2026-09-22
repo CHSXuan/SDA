@@ -59,11 +59,11 @@ const sourceManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (sourceManifest.schemaVersion !== 2) throw new Error("校准构建要求schema v2 provenance manifest");
 const sourceAssetDirectory = dirname(manifestPath);
 const sourceDirectoryName = basename(sourceAssetDirectory);
-const subjectId = sourceDirectoryName === "hrtf"
+const subjectId = sourceDirectoryName === "hrtf" || sourceDirectoryName.startsWith("hrtf-dense")
   ? "ku100"
   : sourceDirectoryName.match(/^hrtf-(d2|h(?:[3-9]|1[0-9]|20))(?:-|$)/i)?.[1]?.toLowerCase()
     ?? sourceDirectoryName.replace(/^hrtf-/, "");
-const completeSubject = sourceManifest.positions.length === 17;
+const completeSubject = sourceManifest.completeSubject === true || sourceManifest.positions.length === 17;
 if (![0, 3].includes(sourceManifest.calibrationVersion ?? 0)) {
   throw new Error("v4校准要求schema v2且具有原始测量 provenance 的资产基线");
 }

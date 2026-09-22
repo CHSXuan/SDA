@@ -207,7 +207,7 @@ fn handle_command(
             let personal = set.strip_prefix("hrtf-personal-")
                 .is_some_and(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
             let safe = matches!(
-                set.as_str(),
+                set.strip_suffix("-dense").filter(|s| s.starts_with("hrtf-h") || *s == "hrtf-d2").unwrap_or(set.as_str()),
                 "hrtf"
                     | "hrtf-dense"
                     | "hrtf-raw"
@@ -272,8 +272,22 @@ fn handle_command(
             write_event(&Event::Ack {command:"setSourceExtent",accepted,detail:if accepted{None}else{Some("invalid extent settings")}});
         }
         Command::SetDirectionalHrtf { enabled } => {
-            state.directional_hrtf=enabled;
+            state.set_directional_hrtf(enabled);
             write_event(&Event::Ack {command:"setDirectionalHrtf",accepted:true,detail:None});
+        }
+        Command::SetProgramCodec { codec } => {
+            let codec = codec.trim().to_ascii_lowercase();
+            let accepted = !codec.is_empty() && codec.len() <= 32 && codec.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+            });
+            if accepted {
+                state.set_program_codec(codec);
+            }
+            write_event(&Event::Ack {
+                command: "setProgramCodec",
+                accepted,
+                detail: (!accepted).then_some("invalid codec name"),
+            });
         }
         Command::SetNearField { settings } => {
             let result = if !settings.valid() { Err("invalid near-field settings".to_string()) }
@@ -613,7 +627,14 @@ fn handle_command(
                 detail: None,
             });
         }
-        Command::Health => write_event(&Event::Health(state.health(fifo, telemetry))),
+        Command::Health => {
+            let health = state.health(fifo, telemetry);
+            state.level_probe_bed_sum = 0.0;
+            state.level_probe_bed_samples = 0;
+            state.level_probe_object_sum = 0.0;
+            state.level_probe_object_samples = 0;
+            write_event(&Event::Health(health));
+        }
         Command::Shutdown => {
             output_manager::stop();
             write_event(&Event::Ack {
@@ -1143,6 +1164,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::HeadPose { .. } => "headPose",
         Command::SetHrtf { .. } => "setHrtf",
         Command::SetLayout { .. } => "setLayout",
+        Command::SetProgramCodec { .. } => "setProgramCodec",
         Command::SetSourceExtent { .. } => "setSourceExtent",
         Command::SetNearField { .. } => "setNearField",
         Command::SetDirectionalHrtf { .. } => "setDirectionalHrtf",

@@ -166,6 +166,10 @@ enum Command {
     SetLayout {
         layout: String,
     },
+    /// Announces the active codec before its first PCM batch. Continuous
+    /// object HRTF is suppressed for MPEG-H/360RA while preserving the user's
+    /// directional-HRTF preference for other codecs.
+    SetProgramCodec { codec: String },
     SetObjectHrtf { enabled: bool },
     SetStereoMode { mode: StereoMode },
     SetCinema { settings: cinema::Settings, profile: Option<String> },
@@ -204,6 +208,9 @@ enum Event<'a> {
         protocol: u32,
         sample_rate: u32,
         output_channels: u16,
+        /// Optional control features understood by this sidecar build.
+        /// Electron uses this to keep older bundled binaries compatible.
+        features: &'static [&'static str],
     },
     Ack {
         command: &'a str,
@@ -263,6 +270,10 @@ struct Health {
     /// diagnostics; zeroed when no objects are active.
     distance_gain_mean: f32,
     occlusion_shaded_sources: usize,
+    /// Input RMS per source class over the last health interval (dBFS, -200
+    /// when silent): the bed-vs-object balance probe.
+    bed_rms_db: f32,
+    object_rms_db: f32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -596,7 +607,11 @@ struct Engine {
     direct_objects: bool,
     source_extent: source_extent::Settings,
     near_field: near_field::Settings,
+    /// User preference for continuous directional object rendering. The
+    /// effective flag below is gated by the active program codec.
+    directional_hrtf_requested: bool,
     directional_hrtf: bool,
+    program_codec: Option<String>,
     direct_mix: f32,
     lfe_path: LfePath,
     hardware_lfe: hardware::Chain,
@@ -643,6 +658,12 @@ struct Engine {
     activity_snapshots: VecDeque<ObjectActivitySnapshot>,
     last_queued_activity: ObjectActivitySnapshot,
     last_emitted_activity: ObjectActivitySnapshot,
+    /// One-second accumulating input RMS per source class, published by
+    /// health() and reset after each report: bed_vs_object balance probe.
+    level_probe_bed_sum: f64,
+    level_probe_bed_samples: u64,
+    level_probe_object_sum: f64,
+    level_probe_object_samples: u64,
 }
 
 impl Engine {
@@ -689,7 +710,9 @@ impl Engine {
             direct_objects: false,
             source_extent: Default::default(),
             near_field: Default::default(),
+            directional_hrtf_requested: false,
             directional_hrtf: false,
+            program_codec: None,
             direct_mix: 0.0,
             lfe_path: LfePath::new(sample_rate),
             hardware_lfe: hardware::Chain::new(&Default::default()),
@@ -738,6 +761,10 @@ impl Engine {
             activity_snapshots: VecDeque::with_capacity(OBJECT_ACTIVITY_QUEUE_CAPACITY),
             last_queued_activity: ObjectActivitySnapshot::empty(0),
             last_emitted_activity: ObjectActivitySnapshot::empty(0),
+            level_probe_bed_sum: 0.0,
+            level_probe_bed_samples: 0,
+            level_probe_object_sum: 0.0,
+            level_probe_object_samples: 0,
         }
     }
 
@@ -763,6 +790,44 @@ impl Engine {
         }
         self.direct_objects = enabled;
         Ok(())
+    }
+
+    fn refresh_directional_hrtf(&mut self) {
+        let previous = self.directional_hrtf;
+        let is_360ra = self.program_codec.as_deref().is_some_and(|codec| {
+            matches!(codec, "mpegh" | "mha1" | "mhm1")
+        });
+        self.directional_hrtf = self.directional_hrtf_requested && !is_360ra;
+        // The codec can become known after PCM sources have already started.
+        // Changing only this flag would leave those sources holding filters
+        // built for the previous object path until an unrelated cinema/monitor
+        // change rebuilt them. Reset the object renderers at the transition so
+        // the selected native HRTF path takes effect immediately.
+        if previous != self.directional_hrtf {
+            self.reset_object_renderers();
+        }
+    }
+
+    fn reset_object_renderers(&mut self) {
+        for source in self.sources.values_mut() {
+            if source.kind == SourceKind::Object {
+                source.direct = None;
+                source.continuous = None;
+                source.continuous_mix = 0.0;
+                source.bass_split = None;
+            }
+        }
+        self.direct_mix = 0.0;
+    }
+
+    fn set_directional_hrtf(&mut self, enabled: bool) {
+        self.directional_hrtf_requested = enabled;
+        self.refresh_directional_hrtf();
+    }
+
+    fn set_program_codec(&mut self, codec: String) {
+        self.program_codec = Some(codec);
+        self.refresh_directional_hrtf();
     }
 
     fn replace_hrtf(&mut self, mut set: hrtf::NativeHrtfSet, wet: f32) -> Result<(), String> {
@@ -1167,6 +1232,8 @@ impl Engine {
         self.render_epoch = self.render_epoch.wrapping_add(1);
         self.pending_object_events.clear();
         self.sources.clear();
+        self.program_codec = None;
+        self.refresh_directional_hrtf();
         self.pcm_coverage=pcm_coverage::PcmCoverage::default();
         self.clear_object_activity(origin);
         self.head_pose = None;
@@ -1241,6 +1308,8 @@ impl Engine {
             occlusion_shaded_sources: self.sources.values()
                 .filter(|source| source.kind == SourceKind::Object && source.occlusion_targets.iter().any(|open| *open < 0.99))
                 .count(),
+            bed_rms_db: if self.level_probe_bed_samples > 0 { (10.0 * (self.level_probe_bed_sum / self.level_probe_bed_samples as f64).sqrt().log10()) as f32 } else { -200.0 },
+            object_rms_db: if self.level_probe_object_samples > 0 { (10.0 * (self.level_probe_object_sum / self.level_probe_object_samples as f64).sqrt().log10()) as f32 } else { -200.0 },
         }
     }
 
@@ -1332,6 +1401,12 @@ impl Engine {
         for source in &mut sources {source.fast_mixed=true;}
         #[cfg(test)] {self.fast_object_blocks+=sources.len() as u64;}
         object_mixer::mix(&mut sources,&mut self.fast_mix_buffers,&controls,ctx,&self.vbap,&self.fast_activity);
+        for buffer in &self.fast_mix_buffers {
+            for (is_bed, (sum, count)) in &buffer.level_probe {
+                if *is_bed { self.level_probe_bed_sum += sum; self.level_probe_bed_samples += count; }
+                else { self.level_probe_object_sum += sum; self.level_probe_object_samples += count; }
+            }
+        }
         let bus=self.bus_renderer.as_mut().unwrap();
         for buffer in &self.fast_mix_buffers {
             self.underrun_samples+=buffer.underruns;self.route_update_count+=buffer.route_updates;
@@ -1520,6 +1595,11 @@ impl Engine {
                 // object start one step ahead of its scheduled codec sample.
                 let perf_mix_start=performance::start();
                 let raw = source.samples.take(at);
+                if let Some(value) = raw {
+                    let is_bed = source.kind == SourceKind::Bed;
+                    if is_bed { self.level_probe_bed_sum += (value as f64) * (value as f64); self.level_probe_bed_samples += 1; }
+                    else { self.level_probe_object_sum += (value as f64) * (value as f64); self.level_probe_object_samples += 1; }
+                }
                 let target = if raw.is_some() { 1.0 } else { 0.0 };
                 if target != source.availability_target {
                     // Streams legitimately encode whole silent passages per object.
@@ -2068,6 +2148,26 @@ mod tests {
         engine.rebuild_bus_renderer().unwrap();
         engine.output_active = true;
         engine
+    }
+
+    #[test]
+    fn directional_hrtf_preference_is_gated_only_for_360ra_codecs() {
+        let mut engine = Engine::new(48_000, 2);
+        engine.set_directional_hrtf(true);
+        assert!(engine.directional_hrtf);
+        assert!(engine.directional_hrtf_requested);
+
+        engine.set_program_codec("mpegh".into());
+        assert!(!engine.directional_hrtf, "360RA must retain the legacy object path");
+        assert!(engine.directional_hrtf_requested, "the user preference must be retained");
+
+        engine.set_program_codec("eac3".into());
+        assert!(engine.directional_hrtf, "Dolby content must restore the requested path");
+
+        engine.set_directional_hrtf(false);
+        engine.set_program_codec("iamf".into());
+        assert!(!engine.directional_hrtf);
+        assert!(!engine.directional_hrtf_requested);
     }
 
     #[test]
@@ -3331,6 +3431,163 @@ mod tests {
         Engine::set_source_route(&mut source, one_hot_route(2), 0);
         assert_eq!(source.lfe_gain, 0.0);
         assert_eq!(source.bus_gains[2], 1.0);
+    }
+
+    #[test]
+    #[ignore = "offline A/B of the decoded 雨蝶 ADM segment at multiple KU100 wet weights"]
+    fn diagnose_yudie_ku100_room_weight_ab() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Frame {
+            sample_pos: u64,
+            n: usize,
+            labels: Vec<String>,
+            events: Vec<NativeObjectEvent>,
+        }
+
+        const SAMPLE_RATE: usize = 48_000;
+        const WINDOW_START: usize = 12 * SAMPLE_RATE;
+        const WINDOW_END: usize = 24 * SAMPLE_RATE;
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp/yudie-diag");
+        let frames: Vec<Frame> = serde_json::from_slice(&std::fs::read(root.join("decoded.json")).unwrap()).unwrap();
+        let pcm = std::fs::read(root.join("decoded.pcm")).unwrap();
+        assert!(!frames.is_empty());
+        assert_eq!(frames[0].sample_pos, 0);
+
+        let render = |directory: &str, wet: f32, rear_only: bool| {
+            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../desktop/native-renderer/hrtf-assets")
+                .join(directory)
+                .join("hrtf-set.json");
+            let mut engine = Engine::new(SAMPLE_RATE as u32, 2);
+            engine.set_layout(vbap::LayoutId::Dolby7_1_4).unwrap();
+            engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest).unwrap(), wet).unwrap();
+            engine.output_active = true;
+            engine.paused = false;
+            engine.directional_hrtf = true;
+            for label in &frames[0].labels {
+                let object_id = label.strip_prefix("Obj_").and_then(|id| id.parse::<u32>().ok());
+                let source = Source {
+                    kind: if object_id.is_some() { SourceKind::Object } else { SourceKind::Bed },
+                    bed_label: object_id.is_none().then(|| label.clone()),
+                    object_id,
+                    gain: 1.0,
+                    target_gain: 1.0,
+                    availability: 1.0,
+                    availability_target: 1.0,
+                    ..Source::default()
+                };
+                engine.sources.insert(label.clone(), source);
+            }
+            engine.set_direct_objects(true).unwrap();
+
+            let mut pcm_offset = 0usize;
+            let mut window = Vec::with_capacity((WINDOW_END - WINDOW_START) * 2);
+            for frame in &frames {
+                let channels = frame.labels.len();
+                let frame_bytes = frame.n * channels * std::mem::size_of::<f32>();
+                assert!(pcm_offset + frame_bytes <= pcm.len());
+                for event in &frame.events {
+                    if let Some(source) = engine.sources.get_mut(&format!("Obj_{}", event.id)) {
+                        if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
+                            let spatial = SpatialEvent {
+                                position: event.pos,
+                                spread: spatial::spread_from_size(event.size),
+                                extent: event.size.map(|value| if value.is_finite() { value.abs().clamp(0.0, 1.0) } else { 0.0 }),
+                                diffuse: event.diffuse.clamp(0.0, 1.0),
+                                horizontal_only: event.horizontal_only,
+                                zone_exclusion: event.zone_exclusion.clone().into(),
+                                ramp: event.ramp_duration,
+                            };
+                            if event.sample_pos > engine.sample_pos {
+                                source.spatial_events.insert(event.sample_pos, spatial);
+                            } else {
+                                Engine::start_source_motion(source, spatial);
+                            }
+                        }
+                        if event.gain_db.is_finite() {
+                            let position = if event.has_pos { event.pos } else { source.position };
+                            let distance = position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                            let gain = 10.0_f32.powf(event.gain_db / 20.0) * if distance > 1.0 { distance.recip() } else { 1.0 };
+                            if event.sample_pos > engine.sample_pos {
+                                source.gain_events.insert(event.sample_pos, GainEvent { gain, ramp: event.ramp_duration });
+                            } else {
+                                source.target_gain = gain;
+                                source.ramp_remaining = event.ramp_duration;
+                                source.ramp_step = if event.ramp_duration == 0 { source.gain = gain; 0.0 } else { (gain - source.gain) / event.ramp_duration as f32 };
+                            }
+                        }
+                    }
+                }
+                for (channel, label) in frame.labels.iter().enumerate() {
+                    let bytes = &pcm[pcm_offset + channel * frame.n * 4..pcm_offset + (channel + 1) * frame.n * 4];
+                    let mut input = Vec::with_capacity(frame.n);
+                    for sample in bytes.chunks_exact(4) {
+                        input.push(f32::from_le_bytes(sample.try_into().unwrap()));
+                    }
+                    if rear_only && !matches!(label.as_str(), "Obj_16" | "Obj_21") {
+                        input.fill(0.0);
+                    }
+                    engine.sources.get_mut(label).unwrap().samples.write(engine.sample_pos, frame.sample_pos, &input);
+                }
+                pcm_offset += frame_bytes;
+                let mut output = vec![0.0; frame.n * 2];
+                engine.render_into(&mut output, 2);
+                let start = frame.sample_pos as usize;
+                let end = start + frame.n;
+                let copy_start = start.max(WINDOW_START);
+                let copy_end = end.min(WINDOW_END);
+                if copy_start < copy_end {
+                    let from = (copy_start - start) * 2;
+                    let to = (copy_end - start) * 2;
+                    window.extend_from_slice(&output[from..to]);
+                }
+                if end >= WINDOW_END { break; }
+            }
+            assert_eq!(window.len(), (WINDOW_END - WINDOW_START) * 2);
+            window
+        };
+        let level = |pcm: &[f32], start: usize, end: usize, frequency: f32| {
+            let mut power = 0.0_f64;
+            for ear in 0..2 {
+                let mut real = 0.0_f64;
+                let mut imaginary = 0.0_f64;
+                let step = std::f64::consts::TAU * frequency as f64 / SAMPLE_RATE as f64;
+                for (index, frame) in (start..end).enumerate() {
+                    let phase = index as f64 * step;
+                    let sample = pcm[frame * 2 + ear] as f64;
+                    real += sample * phase.cos();
+                    imaginary -= sample * phase.sin();
+                }
+                power += real * real + imaginary * imaginary;
+            }
+            10.0 * power.max(1e-30).log10()
+        };
+
+        let mut datasets = vec![("KU100", "hrtf-dense")];
+        if std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../desktop/native-renderer/hrtf-assets/hrtf-ku100-clarity-experimental/hrtf-set.json")
+            .exists()
+        {
+            datasets.push(("KU100-clarity-experiment", "hrtf-ku100-clarity-experimental"));
+        }
+        for (dataset_name, directory) in datasets {
+            // Earlier wet-weight A/B ruled out the room tail; keep this
+            // acceptance run at the production wet mix so it remains tractable.
+            for wet in [0.04_f32] {
+                let full = render(directory, wet, false);
+                let rear = render(directory, wet, true);
+                for (name, start, end) in [("rear-right", 18 * SAMPLE_RATE, 20 * SAMPLE_RATE), ("rear-left", 22 * SAMPLE_RATE, 24 * SAMPLE_RATE)] {
+                    let relative = [1_100.0_f32, 1_400.0].map(|frequency| {
+                        let rear_db = level(&rear, start - WINDOW_START, end - WINDOW_START, frequency);
+                        let full_db = level(&full, start - WINDOW_START, end - WINDOW_START, frequency);
+                        rear_db - full_db
+                    });
+                    eprintln!("雨蝶 {dataset_name} wet={wet:.2} {name}: rear/full at 1100Hz={:.2}dB, 1400Hz={:.2}dB", relative[0], relative[1]);
+                }
+            }
+        }
     }
 }
 

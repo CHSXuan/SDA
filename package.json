@@ -14,6 +14,8 @@
     "head-tracking:test": "cargo test --manifest-path apps/head-tracking-helper/Cargo.toml --locked --offline",
     "head-tracking:test-js": "node scripts/test-head-tracking.mjs",
     "hrtf:build": "node scripts/build-hrtf.mjs",
+    "hrtf:subject-dense": "node scripts/build-subject-dense-hrtf.mjs",
+    "hrtf:subject-dense-test": "node scripts/test-subject-dense-hrtf.mjs",
     "hrtf:calibrate": "node scripts/build-calibrated-hrtf.mjs",
     "hrtf:analyze": "node scripts/analyze-hrtf-calibration.mjs",
     "hrtf:verify": "node scripts/verify-hrtf-assets.mjs",
