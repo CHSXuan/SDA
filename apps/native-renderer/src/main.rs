@@ -3127,14 +3127,15 @@ mod tests {
     }
 
     #[test]
-    fn dense_object_assets_preserve_physical_speaker_directions() {
+    fn dense_assets_use_exact_speaker_measurements_and_standard_fallbacks() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/public");
         for (dense, standard) in [("hrtf-dense", "hrtf"), ("hrtf-dense-raw", "hrtf-raw")] {
             let dense = hrtf::NativeHrtfSet::load_calibrated(&root.join(dense).join("hrtf-set.json")).unwrap();
             let standard = hrtf::NativeHrtfSet::load_calibrated(&root.join(standard).join("hrtf-set.json")).unwrap();
             for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Dolby9_1_6] {
                 for speaker in vbap::speakers(layout) {
-                    let expected = standard.mixed_speaker(speaker.name, layout.as_str(), speaker.azimuth as f64, speaker.elevation as f64, 0.04).unwrap();
+                    let expected_set = if dense.has_exact_measurement(speaker.azimuth as f64, speaker.elevation as f64) { &dense } else { &standard };
+                    let expected = expected_set.mixed_speaker(speaker.name, layout.as_str(), speaker.azimuth as f64, speaker.elevation as f64, 0.04).unwrap();
                     let actual = dense.mixed_speaker(speaker.name, layout.as_str(), speaker.azimuth as f64, speaker.elevation as f64, 0.04).unwrap();
                     for (actual, expected) in [(&actual.0, &expected.0), (&actual.1, &expected.1)] {
                         for i in 0..actual.len().max(expected.len()) {

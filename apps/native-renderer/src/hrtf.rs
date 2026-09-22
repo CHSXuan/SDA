@@ -126,8 +126,8 @@ impl NativeHrtfSet {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        // Dense object grids omit some physical speaker anchors (e.g. +/-45
-        // degrees overhead). Keep the matching standard set for speaker buses.
+        // Dense grids omit some physical speaker anchors (e.g. +/-45 degrees
+        // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
             Some("hrtf-dense") => Some("hrtf"),
             Some("hrtf-dense-raw") => Some("hrtf-raw"),
@@ -174,6 +174,21 @@ impl NativeHrtfSet {
         cached.azimuth = position.azimuth;
         cached.elevation = position.elevation;
         Ok(cached)
+    }
+
+    /// A dense HRTF grid may omit some layout anchors. Speaker buses must use
+    /// its calibrated measurement where one exists, rather than silently
+    /// substituting the coarser companion set used only for absent anchors.
+    pub fn has_exact_measurement(&self, azimuth: f64, elevation: f64) -> bool {
+        let key = Self::direction_key(azimuth, elevation);
+        self.positions.iter().any(|position| Self::direction_key(position.azimuth, position.elevation) == key)
+    }
+
+    fn speaker_ir(&self, azimuth: f64, elevation: f64) -> Result<StereoIr, String> {
+        if self.has_exact_measurement(azimuth, elevation) {
+            return self.nearest(azimuth, elevation);
+        }
+        self.speaker_set.as_deref().unwrap_or(self).nearest(azimuth, elevation)
     }
 
     pub fn directional_dry(&self, direction: crate::directional::Direction, layout: crate::vbap::LayoutId,
@@ -308,8 +323,9 @@ impl NativeHrtfSet {
                 && profile.simulation.as_ref().and_then(|v| v.get("sourceModel"))
                     .and_then(|v| v.as_str()) == Some("ideal-omnidirectional");
             if simulated_room || self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-")) {
-                let ir = if simulated_room { self.speaker_set.as_deref().unwrap_or(self) } else { self }
-                    .nearest(azimuth, elevation)?;
+                let ir = if simulated_room { self.speaker_ir(azimuth, elevation)? } else {
+                    self.nearest(azimuth, elevation)?
+                };
                 let n = ir.dry.len() / 2;
                 let dry = (&ir.dry[..n], &ir.dry[n..]);
                 // Keep the accepted personal direct response. The room contributes only
@@ -340,7 +356,7 @@ impl NativeHrtfSet {
                     if wet == 0.0 { 0.0 } else { 1.0 }, speaker.onset_sample)
             }
         } else {
-            let ir = self.speaker_set.as_deref().unwrap_or(self).nearest(azimuth, elevation)?;
+            let ir = self.speaker_ir(azimuth, elevation)?;
             let d = ir.dry.len() / 2;
             let r = ir.wet.len() / 2;
             self.cinema.mix((&ir.dry[..d], &ir.dry[d..]), (&ir.wet[..r], &ir.wet[r..]), wet, 128)
@@ -783,7 +799,7 @@ mod simulated_room_balance_tests {
 mod subject_dense_tests {
     use super::*;
     #[test]
-    fn dense_subjects_keep_their_own_measurements_and_standard_speaker_anchors() {
+    fn dense_subjects_use_exact_speaker_measurements_and_fallback_for_missing_anchors() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
         for head in std::iter::once("d2".to_string()).chain((3..=20).map(|n|format!("h{n}"))) {
             let dense=NativeHrtfSet::load_calibrated(&root.join(format!("hrtf-{head}-dense/hrtf-set.json"))).unwrap();
@@ -797,6 +813,20 @@ mod subject_dense_tests {
             // the standard 17-point speaker anchors must fall back to a neighbor.
             assert_eq!(dense.nearest(70.0,0.0).unwrap().azimuth,70.0);
             assert_ne!(standard.nearest(70.0,0.0).unwrap().azimuth,70.0);
+
+            for (name,azimuth) in [("FrontLeft",30.0),("Center",0.0),("SurroundLeft",110.0)] {
+                assert!(dense.has_exact_measurement(azimuth,0.0));
+                let ir=dense.nearest(azimuth,0.0).unwrap();
+                let dry=ir.dry.len()/2; let wet=ir.wet.len()/2;
+                let mut expected=dense.cinema.mix((&ir.dry[..dry],&ir.dry[dry..]),(&ir.wet[..wet],&ir.wet[wet..]),0.04,128);
+                expected.0.resize(dense.speaker_filter_len(),0.0);expected.1.resize(dense.speaker_filter_len(),0.0);
+                assert_eq!(dense.mixed_speaker(name,"5.1",azimuth,0.0,0.04).unwrap(),expected,"{head} {name}");
+            }
+
+            assert!(!dense.has_exact_measurement(45.0,45.0));
+            let fallback=dense.mixed_speaker("TopFrontLeft","7.1.4",45.0,45.0,0.04).unwrap();
+            let expected=standard.mixed_speaker("TopFrontLeft","7.1.4",45.0,45.0,0.04).unwrap();
+            assert_eq!(fallback,expected,"{head} absent dense anchor must use standard HRTF");
         }
     }
 }
