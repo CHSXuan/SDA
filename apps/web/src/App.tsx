@@ -1696,15 +1696,16 @@ export function App() {
     localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY, next);
     localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, nextDense ? "1" : "0");
   };
-  const applyPersonalHrtf = async (next: string, parameters?:PhrtfParameters, assessment?:unknown) => {
+  const applyPersonalHrtf = async (next: string, parameters?:PhrtfParameters, assessment?:unknown): Promise<string> => {
     if (personalHrtfBusy) throw new Error("HRTF 正在切换");
     setPersonalHrtfBusy(true);
     try {
-      if(parameters){
+      if(next==="generated"&&(parameters||assessment)){
         if(!window.sdaDesktop?.generatePersonalHrtf)throw new Error("生成与保存 pHRTF 需要新版桌面端");
         next=(await window.sdaDesktop.generatePersonalHrtf(parameters,assessment)).id;
       }
       await applyPersonalHrtfInternal(next);
+      return next;
     }
     finally { setPersonalHrtfBusy(false); }
   };
@@ -2021,7 +2022,7 @@ export function App() {
       case "hrtfGenerate":{
         if(playing&&!paused)throw Error("请先暂停歌曲，再保存测试结果");
         if(roomComparison!==null)throw Error("请先退出对照试听");
-        const request=command.value as {parameters:PhrtfParameters;assessment:unknown};
+        const request=command.value as {parameters?:PhrtfParameters;assessment:unknown};
         await applyPersonalHrtf("generated",request.parameters,request.assessment);await remoteToolsFetch.current();break;
       }
       case "hrtf":

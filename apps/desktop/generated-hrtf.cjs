@@ -1,37 +1,48 @@
 const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
-async function generate(parameters,assessment,store){
- const {validParameters,parameterKey,synthesizeHrir}=await import("./parametric-hrtf.mjs");
- if(!validParameters(parameters))throw new Error("无效 pHRTF 参数");
+
+const SUBJECT=/^(?:ku100|h(?:[3-9]|1[0-9]|20))$/;
+const safeAsset=name=>typeof name==="string"&&/^[A-Za-z0-9][A-Za-z0-9_.-]*\.f32$/.test(name);
+
+function referenceSubject(assessment){
+ const requested=assessment?.referenceSubject??assessment?.previousHead;
+ return typeof requested==="string"&&SUBJECT.test(requested)?requested:"ku100";
+}
+function bundledRoot(){
+ const roots=[path.join(__dirname,"native-renderer","hrtf-assets"),process.resourcesPath&&path.join(process.resourcesPath,"native-renderer","hrtf-assets")].filter(Boolean);
+ const root=roots.find(candidate=>fs.existsSync(candidate));
+ if(!root)throw new Error("找不到内置实测 HRTF 资产");
+ return root;
+}
+function sourceDirectory(subject){return subject==="ku100"?"hrtf":`hrtf-${subject}`;}
+
+/** A portable archive that preserves one whole bundled measured HRTF unchanged. */
+async function generate(_parameters,assessment,store){
  const record=JSON.stringify(assessment??null);
  if(record.length>1024*1024)throw new Error("测试记录过大");
- const digest=crypto.createHash("sha256").update("sda-parametric-hrtf-v1\0"+parameterKey(parameters)+record).digest("hex");
+ const subject=referenceSubject(assessment),directory=sourceDirectory(subject);
+ const sourceRoot=path.join(bundledRoot(),directory),manifestPath=path.join(sourceRoot,"hrtf-set.json");
+ if(!fs.existsSync(manifestPath))throw new Error(`内置实测 HRTF 不存在：${subject}`);
+ const sourceBytes=fs.readFileSync(manifestPath),sourceManifest=JSON.parse(sourceBytes.toString("utf8"));
+ if(sourceManifest?.sampleRate!==48000||sourceManifest.completeSubject!==true||!Array.isArray(sourceManifest.positions)||sourceManifest.positions.length<8)throw new Error("内置 HRTF 格式无效");
+ const files=[...new Set(sourceManifest.positions.flatMap(position=>[position?.dry,position?.wet]) )];
+ if(!files.length||files.some(name=>!safeAsset(name)||!fs.statSync(path.join(sourceRoot,name)).isFile()))throw new Error("内置 HRTF 资产不完整");
+ const digest=crypto.createHash("sha256").update("sda-bundled-measured-proxy-v1\0").update(subject).update("\0").update(sourceBytes).update("\0").update(record).digest("hex");
  const id=`personal-${digest}`,target=path.join(store,`hrtf-${id}`);
  fs.mkdirSync(store,{recursive:true});
- if(fs.existsSync(path.join(target,"hrtf-set.json")))return {id,name:"个人生成 pHRTF",method:"parametric-feedback"};
- const staging=fs.mkdtempSync(path.join(store,"generated-"));
+ const name=`实测 HRTF 代理 · ${sourceManifest.source?.name??subject.toUpperCase()}`;
+ if(fs.existsSync(path.join(target,"hrtf-set.json")))return {id,name,method:"bundled-measured-proxy"};
+ const staging=fs.mkdtempSync(path.join(store,"measured-proxy-"));
  try{
-  const positions=[];
-  for(const el of [-45,-30,0,30,45,60,90])for(let az=-180;az<180;az+=5){
-   if(el===90&&az!==0)continue;
-   const name=`az${az<0?"m":""}${Math.abs(az)}_el${el<0?"m":""}${Math.abs(el)}_dry.f32`;
-   const packed=synthesizeHrir(az,el,parameters);fs.writeFileSync(path.join(staging,name),Buffer.from(packed.buffer));
-   positions.push({azimuth:az,elevation:el,dry:name,wet:name});
-  }
-  if(parameters.version===2)for(const anchor of parameters.anchors){
-   if(positions.some(p=>Math.abs(p.azimuth-anchor.az)<1e-8&&Math.abs(p.elevation-anchor.el)<1e-8))continue;
-   const name=`az${positions.length}_el0_dry.f32`,packed=synthesizeHrir(anchor.az,anchor.el,parameters);
-   fs.writeFileSync(path.join(staging,name),Buffer.from(packed.buffer));
-   positions.push({azimuth:anchor.az,elevation:anchor.el,dry:name,wet:name});
-  }
-  const manifest={schemaVersion:2,parametricHrtfVersion:1,calibrationVersion:0,sampleRate:48000,completeSubject:true,subjectId:id,
-   source:{name:"个人生成 pHRTF",method:"parametric-feedback",parameters,measured:false,description:"Structural approximation selected by subjective responses; not anatomical measurement"},
-   processing:{calibrated:false,preserveSamples:true,roomResponse:false,normalization:false},
-   azimuthConvention:"positive left; elevation positive up; degrees",positions};
+  for(const file of files)fs.copyFileSync(path.join(sourceRoot,file),path.join(staging,file));
+  const manifest={...sourceManifest,schemaVersion:2,measuredProxyVersion:1,calibrationVersion:0,subjectId:id,completeSubject:true,
+   source:{...sourceManifest.source,name,method:"bundled-measured-proxy",referenceSubject:subject,measured:true,proxyForListener:true,
+    description:"完整内置实测 HRIR/BRIR 的无改动代理；它是受试者匹配结果，不是听者耳朵的物理测量"},
+   processing:{...sourceManifest.processing,preserveSamples:true,normalization:false},positions:sourceManifest.positions};
   fs.writeFileSync(path.join(staging,"hrtf-set.json"),JSON.stringify(manifest,null,2));
   fs.writeFileSync(path.join(staging,"profile-info.json"),JSON.stringify({createdAt:new Date().toISOString(),createdAtSource:"recorded"},null,2));
   fs.writeFileSync(path.join(staging,"assessment.json"),record);
   fs.renameSync(staging,target);
  }finally{if(fs.existsSync(staging))fs.rmSync(staging,{recursive:true,force:true});}
- return {id,name:"个人生成 pHRTF",method:"parametric-feedback"};
+ return {id,name,method:"bundled-measured-proxy"};
 }
-module.exports={generate};
+module.exports={generate,referenceSubject,sourceDirectory};

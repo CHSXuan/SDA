@@ -1,13 +1,13 @@
 import { Slider } from "./Slider";
 import type {VirtualSpeaker} from "@sda/renderer";
 import {useEffect,useMemo,useRef,useState} from "react";
-import {trialStart,trialEnd,layoutPositions,speakerTrials,confirmedField,layoutMotionTrials,PHRTF_KEY,PersonalHrtfAudition,answerError,generateCandidate,readProfile,
-  type DirectionalHrtfParameters,type TestPosition,type PhrtfParameters,type HrtfTestVisual,type Answer,type PersonalProfile,type Trial} from "../phrtf";
+import {trialStart,trialEnd,layoutPositions,speakerTrials,measuredLayoutMotionTrials,PHRTF_KEY,PersonalHrtfAudition,answerError,readProfile,SUBJECTS,
+  type TestPosition,type PhrtfParameters,type HrtfTestVisual,type Answer,type PersonalProfile,type Trial} from "../phrtf";
 import "./PersonalHrtfPanel.css";
 import {PersonalHrtfLibrary} from "./PersonalHrtfLibrary";
 
 export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,onVisual,onPrepare,layout}:{
-  onPrepare?:()=>Promise<void>;layout:readonly VirtualSpeaker[];onVisual?:(value:HrtfTestVisual|null)=>void;currentHead:string;playing:boolean;locked:boolean;onApply:(subject:string,parameters?:PhrtfParameters,assessment?:unknown)=>Promise<void>;
+  onPrepare?:()=>Promise<void>;layout:readonly VirtualSpeaker[];onVisual?:(value:HrtfTestVisual|null)=>void;currentHead:string;playing:boolean;locked:boolean;onApply:(subject:string,parameters?:PhrtfParameters,assessment?:unknown)=>Promise<string>;
 }) {
   const [profile,setProfile]=useState(readProfile);
   const [preparing,setPreparing]=useState(false);
@@ -23,7 +23,7 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
   useEffect(()=>{if(playing||locked){epoch.current++;audition.current?.stop();setHeard(false);setBusy(false);guard.current=false;}},[playing,locked]);
   const trial=trials[index];
   const positions=useMemo(()=>layoutPositions(layout),[layout]);
-  const snapshot=useRef<TestPosition[]>([]),confirmations=useRef<Answer[]>([]),field=useRef<DirectionalHrtfParameters|null>(null);
+  const snapshot=useRef<TestPosition[]>([]),confirmations=useRef<Answer[]>([]),reference=useRef("ku100");
   const layoutChanged=(phase==="screen"||phase==="validation")&&JSON.stringify(positions)!==JSON.stringify(snapshot.current);
   useEffect(()=>{if(layoutChanged){epoch.current++;audition.current?.stop();setHeard(false);setBusy(false);guard.current=false;}},[layoutChanged]);
   const [candidateIndex,setCandidateIndex]=useState(0);
@@ -36,8 +36,8 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
       else if(playing)throw Error("请先暂停歌曲再开始测试");
       if(!alive.current)return;
     previous.current=currentHead;responsesTotal.current=0;
-    snapshot.current=positions;confirmations.current=[];field.current=null;setCandidateIndex(0);
-    setTrials(speakerTrials(positions));setAnswers([]);setIndex(0);setPhase("screen");setHeard(false);setError("");
+    snapshot.current=positions;confirmations.current=[];reference.current=SUBJECTS.includes(currentHead)?currentHead:"ku100";setCandidateIndex(0);
+    setTrials(speakerTrials(positions,reference.current));setAnswers([]);setIndex(0);setPhase("screen");setHeard(false);setError("");
     }catch(error){if(alive.current)setError(String(error));}
     finally{preparingRef.current=false;if(alive.current)setPreparing(false);}
   };
@@ -57,39 +57,38 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
   const answer=(response:boolean)=>{
     if(!trial||!heard||busy||playing||locked||layoutChanged)return;
     responsesTotal.current++;
-    const recorded:Answer={...trial,response,error:answerError(trial,response),...(trial.kind==="motion"?{parameters:undefined,interpolationPower:(trial.parameters as DirectionalHrtfParameters).power}:{})};
+    const recorded:Answer={...trial,response,error:answerError(trial,response),...(trial.kind==="motion"?{parameters:undefined,...(trial.parameters?.version===2?{interpolationPower:trial.parameters.power}:{})}:{})};
     const next=[...answers.slice(-999),recorded];
     setAnswers(next);setHeard(false);
     if(!response){
       if(phase==="screen"){
-        const parameters=generateCandidate().parameters;
-        setTrials(items=>items.map((t,i)=>i===index?{...t,parameters}:t));
+        // The final archive now preserves a whole measured HRTF. A retry checks
+        // audibility only and must never synthesize an unrelated replacement.
       }else{
         // Repeat the actual playback route; keep all accepted speaker responses intact.
-        // Playback uses fixed speaker HRIRs: a retry must not tune an unused parameter.
-        setTrials(items=>items.map((t,i)=>i>=index?{...t,parameters:field.current!}:t));
+        // The measured route is unchanged by retries.
       }
       setCandidateIndex(candidateIndex+1);return;
     }
     if(phase==="screen")confirmations.current=[...confirmations.current,{...trial,response:true,error:0}];
     if(index+1<trials.length){setIndex(index+1);return;}
     if(phase==="screen"){
-      field.current=confirmedField(confirmations.current);
-      const movement=layoutMotionTrials(snapshot.current,field.current);
+      const movement=measuredLayoutMotionTrials(snapshot.current,reference.current);
       if(movement.length){setTrials(movement);setIndex(0);setPhase("validation");return;}
     }
     setPhase("result");
     void apply(resultProfile(next),true);
   };
-  const resultProfile=(record:Answer[]):PersonalProfile=>({version:6,method:"per-speaker-audibility",subject:"generated",parameters:field.current!,confirmations:confirmations.current,
-    renderMethod:"speaker-vbap-v1",createdAt:new Date().toISOString(),dataset:"parametric",answers:record,output:"system-default",generationCount:candidateIndex+1,responsesTotal:responsesTotal.current,
+  const resultProfile=(record:Answer[]):PersonalProfile=>({version:7,method:"measured-proxy-validation",subject:"generated",referenceSubject:reference.current,confirmations:confirmations.current,
+    renderMethod:"speaker-vbap-v1",createdAt:new Date().toISOString(),dataset:"SADIE II",answers:record,output:"system-default",generationCount:candidateIndex+1,responsesTotal:responsesTotal.current,
     historyTruncated:responsesTotal.current>1000,previousHead:previous.current,gainDb:gain});
 
   const apply=async(p:PersonalProfile,save:boolean)=>{
     if(guard.current||(save&&playing)||locked)return;guard.current=true;setBusy(true);setError("");
     try{
-      await onApply(p.subject,p.parameters,p.version>=5?p:undefined);
-      if(save){localStorage.setItem(PHRTF_KEY,JSON.stringify(p));setProfile(p);}
+      const assessment=p.version===7?{...p,referenceSubject:p.referenceSubject}:p.version>=5?{...p,referenceSubject:previous.current}:undefined;
+      const applied=await onApply(p.subject,p.parameters,assessment);
+      if(save){const saved={...p,subject:applied};localStorage.setItem(PHRTF_KEY,JSON.stringify(saved));setProfile(saved);}
     }catch(e){if(alive.current)setError(String(e));}
     finally{guard.current=false;if(alive.current)setBusy(false);}
   };
@@ -98,7 +97,7 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
     try{await onApply(profile.previousHead);}catch(e){setError(String(e));}finally{guard.current=false;setBusy(false);}
   };
   return <section className="phrtf" aria-label="个性化 HRTF">
-    <header><div><h3>个性化 HRTF</h3><p>为当前耳机创建并管理个人空间响应</p></div><span className="phrtf-badge">实验性</span></header>
+    <header><div><h3>耳廓档案</h3><p>以完整内置实测人头建立可验证的空间响应代理</p></div><span className="phrtf-badge">实测代理</span></header>
     <div className="phrtf-tabs" role="tablist" aria-label="个人 HRTF 分类">
       {([{id:"test",label:"感知测试"},{id:"library",label:"档案与导入"}] as const).map(tab=><button
         key={tab.id} id={`phrtf-tab-${tab.id}`} type="button" role="tab" aria-selected={view===tab.id}
@@ -109,8 +108,8 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
     </div>
     <div id="phrtf-view-test" role="tabpanel" aria-labelledby="phrtf-tab-test" hidden={view!=="test"}>
     {phase==="idle"&&<>
-      <div className="phrtf-intro"><h4>找到更适合你的声音方向</h4><p>逐个试听并确认方向，完成后自动保存并应用。</p></div>
-      {profile&&profile.version>=5&&<div className="phrtf-saved"><strong>{profile.version>=5?"个人生成 pHRTF":`${profile.subject.toUpperCase()} · 旧版匹配档案`} · 已保存</strong>
+      <div className="phrtf-intro"><h4>验证内置实测空间响应</h4><p>先从下方内置测量库选择听感最清晰的受试者，再逐个试听并确认方向；完成后会将该完整测量集保存为代理档案。</p></div>
+      {profile&&profile.version>=5&&<div className="phrtf-saved"><strong>{profile.version===7?"实测 HRTF 代理":profile.version===6?"旧版合成档案":`${profile.subject.toUpperCase()} · 旧版匹配档案`} · 已保存</strong>
         <small>{new Date(profile.createdAt).toLocaleDateString()} · 当前耳机与佩戴条件下的定位匹配</small>
         <details className="phrtf-help"><summary>使用已保存结果</summary><div className="phrtf-actions"><button disabled={busy||locked} onClick={()=>void apply(profile,false)}>应用档案</button>
           <button disabled={busy||locked} onClick={()=>void restore()}>恢复匹配前档案</button></div></details></div>}
@@ -120,12 +119,12 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
         <span>已戴好耳机，设为系统默认输出，并关闭系统空间音效。</span></label>
       <button className="phrtf-primary" disabled={!confirmed||(playing&&!onPrepare)||locked||busy||preparing||positions.length===0} onClick={()=>void start()}>{preparing?"正在准备测试…":playing&&onPrepare?"暂停歌曲并开始测试":"开始感知测试"}</button>
       {locked?<p role="status">请先结束房间对照或等待当前音效切换完成。</p>:positions.length===0?<p role="status">当前没有可测试的音箱，请先选择输出布局。</p>:!confirmed?<p className="dim">请先确认上方的耳机与系统输出设置。</p>:null}
-      <details className="phrtf-help"><summary>测试方式与注意事项</summary><p>保持头朝前、佩戴不变。回答否，只调整当前音箱并重听；回答是，保留响应并进入下一只。已经通过的音箱不会重置。</p><p>每只音箱独立生成和确认，最后合成一份 pHRTF。低音炮不参与方向定位测试。</p></details>
+      <details className="phrtf-help"><summary>测试方式与注意事项</summary><p>保持头朝前、佩戴不变。回答否，只重听当前音箱；回答是，进入下一只。已经通过的音箱不会重置。</p><p>保存时会原样使用当前内置实测 HRTF 的完整响应，不会再为每只音箱随机合成耳廓滤波。低音炮不参与方向定位测试。</p></details>
     </>}
     {(phase==="screen"||phase==="validation")&&<>
       <div className="phrtf-progress"><strong>{trial?.kind==="motion"?"移动感知":"位置感知"}</strong><span>{phase==="screen"?"音箱":"路径"} {index+1} / {trials.length}</span></div>
       <progress max={trials.length} value={index}/>
-      <small>{phase==="screen"?`已完成 ${index} 只音箱；否只重试当前音箱，是进入下一只。`:"按正式播放的音箱路由试听；否会重听当前路径，不改动已确认响应。"}</small>
+      <small>{phase==="screen"?`已完成 ${index} 只音箱；否只重听当前音箱，是进入下一只。`:"按正式播放的音箱路由试听；否会重听当前路径，不改动已确认响应。"}</small>
       <p>{busy?"正在播放，请对照中间视图的测试标记…":"听完回答是或否，下一段声音会自动播放。"}</p>
       <label className="phrtf-level">测试电平 <Slider aria-label="测试电平"  min="-48" max="-18" step="1" value={gain} disabled={busy||answers.length>0} onChange={e=>setGain(Number(e.target.value))}/><span>{gain} dBFS</span></label>
       <small>此数值是测试信号增益，不是声压级。第一题可调至舒适音量，提交后锁定。</small>
@@ -141,11 +140,11 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
       <small>视觉会影响位置判断，本测试用于视听主观匹配，不是盲测。听不清可重听或结束，不要为了完成而猜测。暂停测试后可留在本面板，关闭面板不会保存未完成测试。</small>
     </>}
     {phase==="result"&&<>
-      <h4>本次独立生成的 pHRTF 已通过感知确认</h4>
-      <p>当前布局的各只音箱已分别通过感知确认。保留每只音箱的响应，自动保存为一份 pHRTF，并用于播放器。</p>
-      <p role="status">{busy?"正在生成并保存 pHRTF…":profile?.answers===answers?"pHRTF 已保存并应用。":"保存未完成，可重试。"}</p>
-      <small>位置与移动测试使用已确认的音箱响应，移动按正式播放的 VBAP 路由合成。测试为干声点对象；歌曲的扩散、头部姿态、房间及其他处理仍可能改变定位。这是主观确认的近似响应，不是耳朵测量。</small>
-      <div className="phrtf-actions"><button disabled={busy||playing||locked} className="phrtf-primary" onClick={()=>void (profile?.answers===answers?apply(profile,false):apply(resultProfile(answers),true))}>{profile?.answers===answers?"重新应用 pHRTF":"重试保存 pHRTF"}</button><button disabled={busy} onClick={cancel}>返回</button></div>
+      <h4>实测 HRTF 已通过播放验证</h4>
+      <p>当前布局的各只音箱已完成试听确认。保存时会保留一个完整内置实测人头的原始响应，用于播放器。</p>
+      <p role="status">{busy?"正在保存实测 HRTF 代理…":profile?.answers===answers?"实测 HRTF 代理已保存并应用。":"保存未完成，可重试。"}</p>
+      <small>位置与移动测试使用正式播放的 VBAP 路由。此档案使用内置受试者的完整实测 HRIR/BRIR；它能保证方向响应同源，但不是对你的耳朵进行物理测量。</small>
+      <div className="phrtf-actions"><button disabled={busy||playing||locked} className="phrtf-primary" onClick={()=>void (profile?.answers===answers?apply(profile,false):apply(resultProfile(answers),true))}>{profile?.answers===answers?"重新应用实测代理":"重试保存实测代理"}</button><button disabled={busy} onClick={cancel}>返回</button></div>
     </>}
     </div>
     {layoutChanged&&<p role="status">布局已改变，测试已暂停。恢复原布局可继续，或结束后按新布局重新开始。</p>}

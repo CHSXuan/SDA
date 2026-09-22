@@ -39,20 +39,24 @@ export interface Trial {position?:TestPosition;endPosition?:TestPosition;paramet
 export interface Answer extends Trial {response:boolean; error:number; interpolationPower?:number}
 interface LegacyAnswer {subject:string;direction:number;phase:"screen"|"validation";response:number;error:number}
 export interface PersonalProfile {
-  version:1|2|3|4|5|6; confirmations?:Answer[]; parameters?:PhrtfParameters; method:"per-speaker-audibility"|"adaptive-audibility"|"perceptual-database-match"|"yes-no-location-match"|"location-motion-match"|"subjective-position-path-match"; subject:string; createdAt:string;
+  version:1|2|3|4|5|6|7; confirmations?:Answer[]; parameters?:PhrtfParameters; method:"per-speaker-audibility"|"adaptive-audibility"|"perceptual-database-match"|"yes-no-location-match"|"location-motion-match"|"subjective-position-path-match"|"measured-proxy-validation"; subject:string; createdAt:string;
   dataset:"SADIE II"|"parametric"; answers:Answer[]|LegacyAnswer[]; output:"system-default";
-  baseline?:string; previousHead:string; gainDb:number; generationCount?:number; responsesTotal?:number; historyTruncated?:boolean; renderMethod?:"speaker-vbap-v1";
+  baseline?:string; previousHead:string; referenceSubject?:string; gainDb:number; generationCount?:number; responsesTotal?:number; historyTruncated?:boolean; renderMethod?:"speaker-vbap-v1";
 }
 export function layoutPositions(layout:readonly VirtualSpeaker[]):TestPosition[]{
  return layout.filter(s=>!s.isLfe&&!s.binauralOnly).map(s=>({name:s.name,label:speakerLabel(s.name),az:((s.azimuth+180)%360+360)%360-180,el:s.elevation}));
 }
-export function speakerTrials(positions:TestPosition[]):Trial[]{return positions.map((position,direction)=>({subject:"generated",parameters:generateParameters(),position,direction,probe:direction,phase:"screen",kind:"location",assessment:"self-report"}));}
+export function speakerTrials(positions:TestPosition[],subject="generated"):Trial[]{return positions.map((position,direction)=>({subject,...(subject==="generated"?{parameters:generateParameters()}:{}),position,direction,probe:direction,phase:"screen",kind:"location",assessment:"self-report"}));}
 export function confirmedField(confirmed:Answer[],power=2):DirectionalHrtfParameters {
  return {version:2,power,anchors:confirmed.filter(a=>a.kind==="location"&&a.response&&a.position&&a.parameters?.version===1).map(a=>({name:a.position!.name,az:a.position!.az,el:a.position!.el,parameters:a.parameters as import("../../desktop/parametric-hrtf.mjs").SingleHrtfParameters}))};
 }
 export function layoutMotionTrials(positions:TestPosition[],parameters:DirectionalHrtfParameters):Trial[]{
  if(positions.length<2)return [];
  return positions.map((position,i)=>({subject:"generated",parameters,position,endPosition:positions[(i+1)%positions.length]!,direction:i,probe:i,motionEnd:(i+1)%positions.length,phase:"validation",kind:"motion",assessment:"self-report"}));
+}
+export function measuredLayoutMotionTrials(positions:TestPosition[],subject:string):Trial[]{
+ if(positions.length<2)return [];
+ return MOTION_PATHS.map(({direction,motionEnd})=>({subject,direction,probe:direction,motionEnd, motionPathVersion:2 as const,phase:"validation" as const,kind:"motion" as const,assessment:"self-report" as const}));
 }
 export function challengeKey(t:Trial){return t.kind==="motion"?`m:${t.direction}:${t.motionEnd}`:`l:${t.direction}`;}
 export function generateCandidate(){return {subject:"generated",parameters:generateParameters()};}
@@ -147,6 +151,13 @@ export function rankAnswers(answers:Answer[],phase:Trial["phase"]) {
 export function readProfile():PersonalProfile|null {
   try {
     const p=JSON.parse(localStorage.getItem(PHRTF_KEY)??"null");
+    if(p?.version===7){
+      if(p.method!=="measured-proxy-validation"||!/^personal-[a-f0-9]{64}$/.test(p.subject)||!SUBJECTS.includes(p.referenceSubject??"")||!Array.isArray(p.confirmations)||p.confirmations.length>128||!Array.isArray(p.answers)||p.answers.length>1000
+        ||typeof p.createdAt!=="string"||typeof p.previousHead!=="string"||!Number.isFinite(p.gainDb)||p.output!=="system-default")return null;
+      const locations=p.confirmations.filter((a:Answer)=>a.kind==="location");
+      if(locations.length!==p.confirmations.length||p.confirmations.some((a:Answer)=>a.response!==true||a.error!==0))return null;
+      return p;
+    }
     if(p?.version===6){
       if(p.method!=="per-speaker-audibility"||p.subject!=="generated"||!validParameters(p.parameters)||p.parameters.version!==2
         ||!Array.isArray(p.confirmations)||p.confirmations.length>128||!Array.isArray(p.answers)||p.answers.length>1000

@@ -128,7 +128,7 @@ declare global {
       listPersonalHrtf?: () => Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}[]>;
       renamePersonalHrtf?: (id:string,name:string)=>Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}>;
       personalHrtfArchive?: (action:"copy"|"export",id:string,value:string)=>Promise<{id?:string;path?:string}>;
-      generatePersonalHrtf?: (parameters:import("../../desktop/parametric-hrtf.mjs").PhrtfParameters,assessment?:unknown) => Promise<{id:string;name:string;method:string}>;
+      generatePersonalHrtf?: (parameters:import("../../desktop/parametric-hrtf.mjs").PhrtfParameters|undefined,assessment?:unknown) => Promise<{id:string;name:string;method:string}>;
       importPersonalHrtf?: (sourcePath:string) => Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}>;
       browseMedia?: {
         (action:"places"):Promise<MediaBrowserPlaces>;
