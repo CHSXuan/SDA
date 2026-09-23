@@ -422,6 +422,9 @@ struct Source {
     continuous: Option<Box<directional::ContinuousSource>>,
     continuous_mix: f32,
     continuous_active: bool,
+    /// Automatic exact-direction mode for objects above the selected layout's
+    /// highest speaker ring. This is separate from the user's global toggle.
+    auto_sky_directional: bool,
     fast_mixed: bool,
     near_target: [f32; 2],
     samples: pcm_ring::AbsolutePcmRing,
@@ -481,7 +484,7 @@ impl Default for Source {
             samples: pcm_ring::AbsolutePcmRing::new(MAX_PENDING_SAMPLES),
             bass_split: None,
             direct: None,
-            continuous: None, continuous_mix:0.0, continuous_active:false, fast_mixed:false, near_target:[1.0;2],
+            continuous: None, continuous_mix:0.0, continuous_active:false, auto_sky_directional:false, fast_mixed:false, near_target:[1.0;2],
             kind: SourceKind::Bed,
             bed_label: None,
             object_id: None,
@@ -814,6 +817,7 @@ impl Engine {
                 source.direct = None;
                 source.continuous = None;
                 source.continuous_mix = 0.0;
+                source.auto_sky_directional = false;
                 source.bass_split = None;
             }
         }
@@ -828,6 +832,20 @@ impl Engine {
     fn set_program_codec(&mut self, codec: String) {
         self.program_codec = Some(codec);
         self.refresh_directional_hrtf();
+    }
+
+    fn is_dolby_object_codec(codec: Option<&str>) -> bool {
+        matches!(codec, Some("ac3" | "eac3" | "ac4" | "truehd" | "mlpa"))
+    }
+
+    fn object_requires_sky_hrtf(source: &Source, layout_ceiling: f32) -> bool {
+        source.kind == SourceKind::Object
+            && !source.horizontal_only
+            && source.zone_exclusion.is_empty()
+            && source.position.iter().all(|axis| axis.is_finite())
+            // A small deadband prevents an object hovering at the top ring
+            // from repeatedly switching paths due to metadata quantization.
+            && spatial::adm_to_spherical(source.position).elevation > layout_ceiling + 0.5
     }
 
     fn replace_hrtf(&mut self, mut set: hrtf::NativeHrtfSet, wet: f32) -> Result<(), String> {
@@ -1336,8 +1354,11 @@ impl Engine {
     /// intentionally source-local: a late object fades itself out instead of
     /// stopping all beds and objects at the next convolution boundary.
     fn prepare_source_renderers(source: &mut Source, set: Option<&hrtf::NativeHrtfSet>, wet: f32,
-        directional: bool, effective_direct: bool, near_active: bool) {
-        source.continuous_active = source.kind == SourceKind::Object && directional
+        directional: bool, auto_sky_directional: bool, effective_direct: bool, near_active: bool) {
+        if source.auto_sky_directional != auto_sky_directional {
+            source.auto_sky_directional = auto_sky_directional;
+        }
+        source.continuous_active = source.kind == SourceKind::Object && (directional || auto_sky_directional)
             && source.zone_exclusion.is_empty();
         if source.continuous_active && source.continuous.is_none() {
             source.continuous = set.and_then(|set| directional::ContinuousSource::new(set).ok()).map(Box::new);
@@ -1454,10 +1475,19 @@ impl Engine {
         });
         let lfe_target = self.speaker_target("LFE");
             let near_active = self.near_field.enabled && (!self.cinema.monitor.hardware.enabled || self.directional_hrtf);
-            let effective_direct = self.directional_hrtf || ((self.direct_objects || near_active) && !self.cinema.monitor.hardware.enabled);
+            let base_effective_direct = self.directional_hrtf || ((self.direct_objects || near_active) && !self.cinema.monitor.hardware.enabled);
+            let layout_ceiling = self.vbap.highest_elevation();
+            let auto_sky_codec = !self.directional_hrtf && Self::is_dolby_object_codec(self.program_codec.as_deref());
+            let auto_sky_active = auto_sky_codec && self.sources.values().any(|source| {
+                Self::object_requires_sky_hrtf(source, layout_ceiling)
+            });
+            let effective_direct = base_effective_direct || auto_sky_active;
         for (id,source) in self.sources.iter_mut() {
+            let auto_sky_directional = auto_sky_codec
+                && Self::object_requires_sky_hrtf(source, layout_ceiling);
             Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
-                self.directional_hrtf,effective_direct,near_active);
+                self.directional_hrtf,auto_sky_directional,
+                base_effective_direct || auto_sky_directional,near_active);
             if performance::enabled() {
                 if let Some(c)=&mut source.continuous {if c.perf_id.is_empty(){c.perf_id=id.clone();}}
                 if let Some(c)=&mut source.direct {if c.perf_id.is_empty(){c.perf_id=id.clone();}}
@@ -1544,8 +1574,16 @@ impl Engine {
                     let mut changed = false;
                     if let Some(event) = source.spatial_events.remove(&at) {
                         changed = Self::start_source_motion(source, event);
-                        if changed {Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
-                            self.directional_hrtf,effective_direct,near_active);}
+                        if changed {
+                            // A moving object can cross the layout ceiling after
+                            // this render block starts. Evaluate its new metadata
+                            // directly instead of relying on the block-start scan.
+                            let auto_sky = auto_sky_codec
+                                && Self::object_requires_sky_hrtf(source, layout_ceiling);
+                            Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
+                                self.directional_hrtf,auto_sky,
+                                base_effective_direct || auto_sky,near_active);
+                        }
                     }
                     // Preserve the authored motion resolution independently of
                     // the FFT partition used by long room/headphone filters.
@@ -2168,6 +2206,47 @@ mod tests {
         engine.set_program_codec("iamf".into());
         assert!(!engine.directional_hrtf);
         assert!(!engine.directional_hrtf_requested);
+    }
+
+    #[test]
+    fn sky_objects_use_exact_direction_above_every_dolby_layout_ceiling() {
+        let mut source = Source { kind: SourceKind::Object, position: [0.0, 0.5, 1.0], ..Source::default() };
+        for layout in [
+            vbap::LayoutId::Dolby5_1_2,
+            vbap::LayoutId::Dolby5_1_4,
+            vbap::LayoutId::Dolby7_1_2,
+            vbap::LayoutId::Dolby7_1_4,
+            vbap::LayoutId::Dolby9_1_2,
+            vbap::LayoutId::Dolby9_1_4,
+            vbap::LayoutId::Dolby9_1_6,
+            vbap::LayoutId::Dolby11_1_8,
+        ] {
+            let ceiling = vbap::VbapSolver::with_layout(layout).highest_elevation();
+            assert_eq!(ceiling, 45.0, "{} ceiling", layout.as_str());
+            assert!(Engine::object_requires_sky_hrtf(&source, ceiling), "{} must preserve a sky object", layout.as_str());
+        }
+
+        source.position = [0.0, 1.0, 1.0];
+        assert!(!Engine::object_requires_sky_hrtf(&source, 45.0));
+        source.horizontal_only = true;
+        source.position = [0.0, 0.5, 1.0];
+        assert!(!Engine::object_requires_sky_hrtf(&source, 45.0));
+
+        source.horizontal_only = false;
+        source.position = [0.0, 0.0, 1.0];
+        let itu_ceiling = vbap::VbapSolver::with_layout(vbap::LayoutId::Itu22_2).highest_elevation();
+        assert_eq!(itu_ceiling, 90.0);
+        assert!(!Engine::object_requires_sky_hrtf(&source, itu_ceiling));
+    }
+
+    #[test]
+    fn automatic_sky_mode_is_limited_to_dolby_object_codecs() {
+        assert!(Engine::is_dolby_object_codec(Some("eac3")));
+        assert!(Engine::is_dolby_object_codec(Some("truehd")));
+        assert!(Engine::is_dolby_object_codec(Some("ac4")));
+        assert!(!Engine::is_dolby_object_codec(Some("mpegh")));
+        assert!(!Engine::is_dolby_object_codec(Some("iamf")));
+        assert!(!Engine::is_dolby_object_codec(None));
     }
 
     #[test]
@@ -3589,6 +3668,215 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "offline A/B of the decoded Dolby Atmos objects 12/14"]
+    fn diagnose_dolby_shizuku_rear_room_ab() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Frame {
+            sample_pos: u64,
+            n: usize,
+            events: Vec<NativeObjectEvent>,
+            pcm_offset: usize,
+            pcm_samples: usize,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Fixture {
+            frames: Vec<Frame>,
+            sample_rate: u32,
+            start: u64,
+            end: u64,
+        }
+        const SAMPLE_RATE: u32 = 48_000;
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+        let fixture: Fixture = serde_json::from_slice(&std::fs::read(root.join("shizuku-dolby-window.json")).unwrap()).unwrap();
+        let pcm = std::fs::read(root.join("shizuku-dolby-window.pcm")).unwrap();
+        assert_eq!(fixture.sample_rate, SAMPLE_RATE);
+        assert!(!fixture.frames.is_empty());
+
+        let render = |room: bool, wet: f32| {
+            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../desktop/native-renderer/hrtf-assets/hrtf-dense/hrtf-set.json");
+            let mut engine = Engine::new(SAMPLE_RATE, 2);
+            engine.set_layout(vbap::LayoutId::Dolby7_1_4).unwrap();
+            engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest).unwrap(), wet).unwrap();
+            engine.cinema.enabled = room;
+            engine.output_active = true;
+            engine.paused = false;
+            engine.directional_hrtf = true;
+            engine.sample_pos = fixture.start;
+            for id in [12_u32, 14_u32] {
+                engine.sources.insert(format!("Obj_{id}"), Source {
+                    kind: SourceKind::Object,
+                    object_id: Some(id),
+                    gain: 1.0,
+                    target_gain: 1.0,
+                    availability: 1.0,
+                    availability_target: 1.0,
+                    ..Source::default()
+                });
+            }
+            engine.set_direct_objects(true).unwrap();
+            let mut output = Vec::with_capacity(((fixture.end - fixture.start) * 2) as usize);
+            for frame in &fixture.frames {
+                for event in &frame.events {
+                    if let Some(source) = engine.sources.get_mut(&format!("Obj_{}", event.id)) {
+                        if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
+                            let spatial = SpatialEvent {
+                                position: event.pos,
+                                spread: spatial::spread_from_size(event.size),
+                                extent: event.size.map(|value| value.abs().clamp(0.0, 1.0)),
+                                diffuse: event.diffuse.clamp(0.0, 1.0),
+                                horizontal_only: event.horizontal_only,
+                                zone_exclusion: event.zone_exclusion.clone().into(),
+                                ramp: event.ramp_duration,
+                            };
+                            if event.sample_pos > engine.sample_pos { source.spatial_events.insert(event.sample_pos, spatial); }
+                            else { Engine::start_source_motion(source, spatial); }
+                        }
+                        if event.gain_db.is_finite() {
+                            let gain = 10.0_f32.powf(event.gain_db / 20.0);
+                            if event.sample_pos > engine.sample_pos { source.gain_events.insert(event.sample_pos, GainEvent { gain, ramp: event.ramp_duration }); }
+                            else { source.target_gain = gain; source.gain = gain; }
+                        }
+                    }
+                }
+                let offset = frame.pcm_offset;
+                let count = frame.pcm_samples / 2;
+                assert!(offset + frame.pcm_samples <= pcm.len() / 4);
+                let samples: Vec<f32> = pcm[offset * 4..(offset + frame.pcm_samples) * 4]
+                    .chunks_exact(4).map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())).collect();
+                let start = frame.sample_pos.max(fixture.start);
+                let end = (frame.sample_pos + frame.n as u64).min(fixture.end);
+                let skip = (start - frame.sample_pos) as usize;
+                for (index, id) in [12_u32, 14_u32].iter().enumerate() {
+                    let source = engine.sources.get_mut(&format!("Obj_{id}")).unwrap();
+                    let channel: Vec<f32> = (0..count).map(|i| samples[i * 2 + index]).collect();
+                    source.samples.write(engine.sample_pos, start, &channel[skip..skip + (end - start) as usize]);
+                }
+                let mut block = vec![0.0_f32; frame.n * 2];
+                engine.render_into(&mut block, 2);
+                output.extend_from_slice(&block[..((end - start) as usize * 2)]);
+                if engine.sample_pos >= fixture.end { break; }
+            }
+            output
+        };
+        let rms = |pcm: &[f32], start_sec: f32, end_sec: f32| {
+            let start = ((start_sec * SAMPLE_RATE as f32) as u64).saturating_sub(fixture.start) as usize * 2;
+            let end = ((end_sec * SAMPLE_RATE as f32) as u64).saturating_sub(fixture.start) as usize * 2;
+            let slice = &pcm[start.min(pcm.len())..end.min(pcm.len())];
+            (slice.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / slice.len().max(1) as f64).sqrt()
+        };
+        for wet in [0.0_f32, 0.04] {
+            let dry = render(false, wet);
+            let room = render(true, wet);
+            eprintln!("Dolby Shizuku wet={wet:.2} 130-154 rms dry={:.6} room={:.6} ratio={:.2}dB; 156-158 dry={:.6} room={:.6} ratio={:.2}dB",
+                rms(&dry, 130.0, 154.0), rms(&room, 130.0, 154.0), 20.0 * (rms(&room, 130.0, 154.0) / rms(&dry, 130.0, 154.0)).max(1e-12).log10(),
+                rms(&dry, 156.0, 158.0), rms(&room, 156.0, 158.0), 20.0 * (rms(&room, 156.0, 158.0) / rms(&dry, 156.0, 158.0)).max(1e-12).log10());
+        }
+    }
+
+    #[test]
+    #[ignore = "offline A/B of Symbol III Obj_19 at ADM [1,0,1]"]
+    fn diagnose_symbol_height_postmix_matrix() {
+        let pcm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/symbol-height-current/Obj_19.f32");
+        let pcm_bytes = std::fs::read(pcm_path).unwrap();
+        let pcm: Vec<f32> = pcm_bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let start = 90 * 48_000usize;
+        let frames = 6 * 48_000usize;
+        assert!(start + frames <= pcm.len());
+        for directory in ["hrtf-dense", "hrtf-h13-dense"] {
+        for wet in [0.0_f32, 0.04] {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../desktop/native-renderer/hrtf-assets")
+                .join(directory).join("hrtf-set.json");
+            let mut engine = Engine::new(48_000, 2);
+            engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), wet).unwrap();
+            engine.set_program_codec("eac3".into());
+            engine.set_directional_hrtf(true);
+            engine.output_active = true;
+            engine.paused = false;
+            engine.sample_pos = start as u64;
+            let mut source = Source { kind: SourceKind::Object, object_id: Some(19), gain: 1.0,
+                target_gain: 1.0, availability: 1.0, availability_target: 1.0, position: [1.0, 0.0, 1.0], ..Source::default() };
+            source.samples.write(start as u64, start as u64, &pcm[start..start + frames]);
+            engine.sources.insert("obj:19".into(), source);
+            engine.route_source_now("obj:19", 0).unwrap();
+            engine.set_direct_objects(true).unwrap();
+            let mut output = vec![0.0_f32; frames * 2];
+            engine.render_into(&mut output, 2);
+            let rms = |from: usize, to: usize| {
+                let slice = &output[from * 2..to * 2];
+                (slice.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / slice.len().max(1) as f64).sqrt()
+            };
+            let left = output.iter().step_by(2).map(|v| (*v as f64) * (*v as f64)).sum::<f64>();
+            let right = output.iter().skip(1).step_by(2).map(|v| (*v as f64) * (*v as f64)).sum::<f64>();
+            eprintln!("Symbol {directory} Obj_19 wet={wet:.2} total_rms={:.8} L/R={:.2}dB/{:.2}dB windows=[{:.8},{:.8},{:.8},{:.8},{:.8},{:.8}]",
+                rms(0, frames),
+                10.0 * (left / right.max(1e-30)).log10(),
+                10.0 * (right.max(1e-30)).log10(),
+                rms(0, 48_000), rms(48_000, 96_000), rms(96_000, 144_000), rms(144_000, 192_000), rms(192_000, 240_000), rms(240_000, 288_000));
+            std::fs::write(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tmp/symbol-obj19-wet-{wet:.2}.f32")),
+                output.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()).unwrap();
+        }
+        }
+    }
+
+    #[test]
+    #[ignore = "offline full-mix masking A/B of Symbol III Obj_19"]
+    fn diagnose_symbol_height_full_mix_masking() {
+        const START: usize = 94 * 48_000;
+        const FRAMES: usize = 6 * 48_000;
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/symbol-height-current");
+        let positions: &[(u32, [f32; 3])] = &[
+            (10, [-1.0, 0.77, 0.0]), (11, [1.0, 0.77, 0.0]), (12, [-1.0, 1.0, 0.0]),
+            (13, [-1.0, 0.0, 0.0]), (14, [1.0, 1.0, 0.0]), (15, [-1.0, -1.0, 0.0]),
+            (16, [1.0, 0.0, 0.0]), (17, [-1.0, 0.0, 1.0]), (18, [1.0, -1.0, 0.0]),
+            (19, [1.0, 0.0, 1.0]), (20, [-1.0, 0.1, 0.0]), (21, [1.0, 0.1, 0.0]),
+        ];
+        let load_pcm = |id: u32| -> Vec<f32> {
+            let bytes = std::fs::read(root.join(format!("Obj_{id}.f32"))).unwrap();
+            bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
+        };
+        let render = |only: Option<u32>| {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../desktop/native-renderer/hrtf-assets/hrtf/hrtf-set.json");
+            let mut engine = Engine::new(48_000, 2);
+            engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+            engine.set_program_codec("eac3".into());
+            engine.set_directional_hrtf(true);
+            engine.output_active = true;
+            engine.paused = false;
+            engine.sample_pos = START as u64;
+            for &(id, position) in positions {
+                if only.is_some_and(|wanted| wanted != id) { continue; }
+                let mut source = Source { kind: SourceKind::Object, object_id: Some(id), gain: 1.0,
+                    target_gain: 1.0, availability: 1.0, availability_target: 1.0, position, ..Source::default() };
+                let pcm = load_pcm(id);
+                source.samples.write(START as u64, START as u64, &pcm[START..START + FRAMES]);
+                let key = format!("obj:{id}");
+                engine.sources.insert(key.clone(), source);
+                engine.route_source_now(&key, 0).unwrap();
+            }
+            engine.set_direct_objects(true).unwrap();
+            let mut output = vec![0.0_f32; FRAMES * 2];
+            engine.render_into(&mut output, 2);
+            output
+        };
+        let full = render(None);
+        let solo = render(Some(19));
+        let others = render(Some(10));
+        let rms = |pcm: &[f32], from: usize, to: usize| {
+            let slice = &pcm[from * 2..to * 2];
+            (slice.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / slice.len().max(1) as f64).sqrt()
+        };
+        eprintln!("Symbol full mix rms all={:.8}/{:.8}/{:.8} solo19={:.8}/{:.8}/{:.8} oneOther={:.8}/{:.8}/{:.8}",
+            rms(&full, 0, 96_000), rms(&full, 96_000, 192_000), rms(&full, 192_000, 288_000),
+            rms(&solo, 0, 96_000), rms(&solo, 96_000, 192_000), rms(&solo, 192_000, 288_000),
+            rms(&others, 0, 96_000), rms(&others, 96_000, 192_000), rms(&others, 192_000, 288_000));
     }
 }
 

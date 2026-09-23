@@ -30,6 +30,11 @@ const ROOM_DECORRELATION_MAXIMUM_HZ = 16000;
 /** Four sections preserve C80 of the high-passed residual while separating reused BRIR variants. */
 const ROOM_DECORRELATION_SECTIONS = 4;
 const ROOM_DECORRELATION_MAX_ENERGY_TRIM_DB = 0.25;
+// A sparse BRIR source can describe one measured loudspeaker direction. It must
+// not be turned into another virtual direction by decorrelation: that preserves
+// tail energy while inventing directional room evidence. KU100 falls back to its
+// measured dry HRIR for these non-unique wet sources.
+const KU100_RESIDUAL_QUALITY_GATE_VERSION = "sda-ku100-brir-residual-quality-v1";
 const DEFAULT_MAX_SPEAKER_LEVEL_GAIN_DB = 3;
 /** v3 双侧对称化：KU100 头模左右耳/测量摆放的反对称偏差会让同一对象在 +θ 与 -θ
  *  经 VBAP 相干叠加后同侧耳能量差最高达 4.4dB（±80°），听感就是 7.1.x/9.1.x
@@ -59,12 +64,13 @@ const sourceManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (sourceManifest.schemaVersion !== 2) throw new Error("校准构建要求schema v2 provenance manifest");
 const sourceAssetDirectory = dirname(manifestPath);
 const sourceDirectoryName = basename(sourceAssetDirectory);
-const subjectId = sourceDirectoryName === "hrtf" || sourceDirectoryName.startsWith("hrtf-dense")
+const subjectId = sourceManifest.subjectId ?? (sourceDirectoryName === "hrtf" || sourceDirectoryName.startsWith("hrtf-dense")
   ? "ku100"
   : sourceDirectoryName.match(/^hrtf-(d2|h(?:[3-9]|1[0-9]|20))(?:-|$)/i)?.[1]?.toLowerCase()
-    ?? sourceDirectoryName.replace(/^hrtf-/, "");
+    ?? sourceDirectoryName.replace(/^hrtf-/, ""));
 const completeSubject = sourceManifest.completeSubject === true || sourceManifest.positions.length === 17;
-if (![0, 3].includes(sourceManifest.calibrationVersion ?? 0)) {
+const ku100ResidualQualityGate = subjectId === "ku100";
+if (![0, 3, 4].includes(sourceManifest.calibrationVersion ?? 0)) {
   throw new Error("v4校准要求schema v2且具有原始测量 provenance 的资产基线");
 }
 if (!Array.isArray(sourceManifest.positions) || sourceManifest.positions.length < 2) {
@@ -413,10 +419,17 @@ const rows = sourceManifest.positions.map((position) => {
   if (!pairedDryMatch || pairedDryMatch.distanceDegrees > 1e-3) {
     throw new Error(`BRIR方向缺同坐标HRIR: ${wet.azimuth}/${wet.elevation}`);
   }
+  const priorResidualBands = position.processing?.wet?.residualBands;
   return {
     position,
-    baselineResidualBassEnergyDb: energyDb(stereoBandEnergy(baselineResidual, ...ROOM_RESIDUAL_BASS_BAND_HZ)),
-    baselineResidualMidEnergyDb: energyDb(stereoBandEnergy(baselineResidual, 250, 4000)),
+    // A v5 rebuild starts from v4 assets. Keep the original v3 acceptance
+    // baseline instead of relabelling the previous v4 output as raw v3 data.
+    baselineResidualBassEnergyDb: Number.isFinite(priorResidualBands?.baselineV3BassEnergyDb)
+      ? priorResidualBands.baselineV3BassEnergyDb
+      : energyDb(stereoBandEnergy(baselineResidual, ...ROOM_RESIDUAL_BASS_BAND_HZ)),
+    baselineResidualMidEnergyDb: Number.isFinite(priorResidualBands?.baselineV3MidEnergyDb)
+      ? priorResidualBands.baselineV3MidEnergyDb
+      : energyDb(stereoBandEnergy(baselineResidual, 250, 4000)),
     targetDry,
     wet,
     pairedDry: pairedDryMatch.impulse,
@@ -476,6 +489,34 @@ for (const row of rows) {
       elevation: row.position.elevation,
     });
   }
+}
+const roomSourceUseCount = new Map();
+for (const row of rows) {
+  const sourcePath = row.position.measurement.wet.sourcePath;
+  roomSourceUseCount.set(sourcePath, (roomSourceUseCount.get(sourcePath) ?? 0) + 1);
+}
+
+function roomTailQuality(row) {
+  const sourcePath = row.position.measurement.wet.sourcePath;
+  const uses = roomSourceUseCount.get(sourcePath) ?? 0;
+  const canonical = roomSourceCanonical.get(sourcePath);
+  const nonCanonicalReuse = uses > 1
+    && (canonical.azimuth !== row.position.azimuth || canonical.elevation !== row.position.elevation);
+  const rejected = ku100ResidualQualityGate && nonCanonicalReuse;
+  return {
+    version: KU100_RESIDUAL_QUALITY_GATE_VERSION,
+    status: rejected ? "rejected" : "accepted",
+    weight: rejected ? 0 : 1,
+    reason: rejected
+      ? "wet BRIR source is shared by multiple virtual directions; preserve measured dry KU100 rather than synthesize a directional room tail"
+      : uses > 1
+        ? "canonical virtual direction retains its measured BRIR tail"
+        : "wet BRIR source is unique to this virtual direction",
+    wetSourceUseCount: uses,
+    wetAngularErrorDegrees: row.position.measurement.wet.angularErrorDegrees,
+    canonicalTarget: canonical,
+    dryFallback: rejected,
+  };
 }
 
 function stereoSymmetryScore(a, b, sign, shift, perEarLen) {
@@ -626,13 +667,24 @@ for (const entry of prepared) {
   scaleStereo(tail, gainFromDb(roomGainDb));
   const sourcePath = row.position.measurement.wet.sourcePath;
   const canonical = roomSourceCanonical.get(sourcePath);
+  const roomTailQualityRecord = roomTailQuality(row);
   let roomTailOutput = tail;
   let roomTailDecorrelation = {
     role: "canonical",
     canonicalTarget: canonical,
     algorithm: null,
   };
-  if (canonical.azimuth !== row.position.azimuth || canonical.elevation !== row.position.elevation) {
+  if (roomTailQualityRecord.status === "rejected") {
+    roomTailOutput = {
+      left: new Float64Array(tail.left.length),
+      right: new Float64Array(tail.right.length),
+    };
+    roomTailDecorrelation = {
+      role: "rejected-reused-source",
+      canonicalTarget: canonical,
+      algorithm: null,
+    };
+  } else if (canonical.azimuth !== row.position.azimuth || canonical.elevation !== row.position.elevation) {
     const decorrelated = decorrelateRoomTail(tail, row.position);
     roomTailOutput = decorrelated.stereo;
     roomTailDecorrelation = {
@@ -648,6 +700,7 @@ for (const entry of prepared) {
   entry.tailEnergyBefore = stereoEnergy(roomTailOutput);
   entry.roomGainDb = roomGainDb;
   entry.roomTailDecorrelation = roomTailDecorrelation;
+  entry.roomTailQuality = roomTailQualityRecord;
   dryTotalGains.push(dryGainDb);
   wetTotalGains.push(roomGainDb);
 }
@@ -715,6 +768,7 @@ for (const [azimuth, elevation] of symmetryPairs) {
     const trimDb = rescaleToEnergy(entry.finalDry, dryPairTarget);
     const tailTrimDb = (() => {
       const current = stereoRangeEnergy(entry.finalTail, ...tailWindow);
+      if (tailPairTarget === 0 && current === 0) return 0;
       const trim = energyDb(tailPairTarget) - energyDb(current);
       scaleStereo(entry.finalTail, gainFromDb(trim));
       return trim;
@@ -810,6 +864,7 @@ for (const entry of prepared) {
   const { row, dryBeforeGain, dryEnergyDbBeforeGain, dryGainDb, filteredWetAnalysis } = entry;
   const roomGainDb = entry.roomGainDb;
   const roomTailDecorrelation = entry.roomTailDecorrelation;
+  const roomTailQuality = entry.roomTailQuality;
   const baselineWetAnalysis = entry.baselineWetAnalysis;
   const dryAligned = entry.finalDry;
   const wetOutput = combineWet(entry.finalDry, entry.finalTail);
@@ -891,6 +946,7 @@ for (const entry of prepared) {
             totalEnergyDb: preSymmetryWetAnalysis.windows.totalEnergyDb,
           },
         },
+        roomTailQuality,
         outputOnset: wetOutputAnalysis.onset,
       },
     },
@@ -913,7 +969,7 @@ for (let index = 0; index < positions.length; index++) {
 
 const manifest = {
   ...sourceManifest,
-  calibrationVersion: 4,
+  calibrationVersion: ku100ResidualQualityGate ? 5 : 4,
   completeSubject,
   subjectId,
   processing: {
@@ -923,10 +979,10 @@ const manifest = {
     calibrated: true,
     runtimeEnergyNormalization: false,
     directPathModel: "target HRIR plus calibrated BRIR room tail",
-    note: "One complete subject room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization only where both measured directions exist; no layout- or programme-specific EQ.",
+    note: "One complete subject room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, KU100 dry fallback for reused sparse BRIR tails, and bilateral mirror-pair symmetrization only where both measured directions exist; no layout- or programme-specific EQ.",
   },
   calibration: {
-    algorithm: "sda-subject-room-v4",
+    algorithm: ku100ResidualQualityGate ? "sda-ku100-room-v5" : "sda-subject-room-v4",
     baseline: calibrationBaseline,
     sampleRate,
     commonArrivalSample: COMMON_ARRIVAL_SAMPLE,
@@ -995,6 +1051,15 @@ const manifest = {
       maximumEnergyTrimDb: ROOM_DECORRELATION_MAX_ENERGY_TRIM_DB,
       commonLeftRightFilter: true,
     },
+    ...(ku100ResidualQualityGate ? {
+      roomResidualQualityGate: {
+        version: KU100_RESIDUAL_QUALITY_GATE_VERSION,
+        scope: "offline KU100 derived BRIR room residual only",
+        rule: "a wet BRIR source may serve only its canonical virtual direction",
+        rejectedAction: "zero the derived room tail and preserve the calibrated dry KU100 response",
+        excludes: ["dry HRIR", "runtime LFE", "final headphone EQ", "programme analysis", "room-specific measurement claims"],
+      },
+    } : {}),
     level: { dryGlobalGainDb, wetGlobalGainDb },
   },
   positions,

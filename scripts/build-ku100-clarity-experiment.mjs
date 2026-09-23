@@ -50,13 +50,16 @@ const gainFromDb = (db) => 10 ** (db / 20);
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const smoothstep = (value) => value * value * (3 - 2 * value);
 const rearWeight = (azimuth, elevation) => {
-  // The observed fault is a horizontal rear moving object. Leave every height
-  // direction byte-identical until it has its own measured acceptance case.
-  if (elevation !== 0) return 0;
+  // Apply the same azimuth-gated correction to measured height directions.
+  // The H13 comparison is made at the matching elevation, so excluding all
+  // non-horizontal points leaves elevated side/rear objects uncalibrated.
   const rear = Math.abs(azimuth);
-  if (rear <= 75) return 0;
-  if (rear >= 125) return 1;
-  return smoothstep((rear - 75) / 50);
+  const horizontalWeight = rear <= 75 ? 0 : rear >= 125 ? 1 : smoothstep((rear - 75) / 50);
+  const height = clamp(Math.abs(elevation) / 45, 0, 1);
+  // A source above/below the listener still needs the H13-guided correction
+  // when it is at the side or rear. Keep frontal overhead directions at zero.
+  const elevatedSideWeight = height * (rear <= 45 ? 0 : smoothstep((rear - 45) / 45));
+  return Math.max(horizontalWeight, elevatedSideWeight);
 };
 const magnitudeAt = (signal, frequency) => {
   let real = 0;
@@ -193,14 +196,14 @@ const manifest = {
   processing: {
     ...kuManifest.processing,
     directPathModel: "KU100 calibrated direct path plus bounded H13-guided clarity experiment",
-    note: "EXPERIMENTAL and reversible. KU100-only, direction-dependent common-left-right 500-2000Hz direct-path correction, capped at ±3dB, broadband energy matched per direction; room tail and high-frequency pinna structure are unchanged.",
+    note: "EXPERIMENTAL and reversible. KU100-only, direction-dependent common-left-right 500-2000Hz direct-path correction for lateral/rear horizontal and elevated directions, capped at ±3dB, broadband energy matched per direction; room tail and high-frequency pinna structure are unchanged.",
   },
   calibration: {
     ...kuManifest.calibration,
     directClarityExperiment: {
       algorithm: "sda-ku100-direct-clarity-h13-guided-v1",
       targetSubject: "H13",
-      scope: "KU100 horizontal rear dry HRIR only; wet room residual copied unchanged",
+      scope: "KU100 lateral/rear dry HRIR, including measured elevated directions; wet room residual copied unchanged",
       minimumHz: MIN_HZ,
       maximumHz: MAX_HZ,
       maximumGainDb: MAX_GAIN_DB,

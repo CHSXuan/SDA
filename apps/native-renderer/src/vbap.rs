@@ -316,6 +316,16 @@ impl VbapSolver {
         self.speakers.len()
     }
 
+    /// Highest elevation represented by a physical speaker in this layout.
+    /// Objects above this ceiling cannot retain their authored height when
+    /// rendered only as a sum of the layout's speaker filters.
+    pub fn highest_elevation(&self) -> f32 {
+        self.speakers
+            .iter()
+            .map(|speaker| speaker.elevation)
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0)
+    }
     pub fn speaker_index(&self, name: &str) -> Option<usize> {
         self.speakers.iter().position(|speaker| speaker.name == name)
     }
@@ -543,6 +553,7 @@ mod tests {
         assert_eq!(VbapSolver::with_layout(LayoutId::Dolby7_1_4).bus_count(), 11);
         assert_eq!(VbapSolver::with_layout(LayoutId::Dolby9_1_6).bus_count(), 15);
     }
+
 
     #[test]
     fn horizontal_5_1_uses_continuous_pair_panning() {

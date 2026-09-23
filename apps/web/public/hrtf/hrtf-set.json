@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "calibrationVersion": 4,
+  "calibrationVersion": 5,
   "completeSubject": true,
   "subjectId": "ku100",
   "sampleRate": 48000,
@@ -32,7 +32,7 @@
     "calibrated": true,
     "runtimeEnergyNormalization": false,
     "directPathModel": "target HRIR plus calibrated BRIR room tail",
-    "note": "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ."
+    "note": "One complete subject room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, KU100 dry fallback for reused sparse BRIR tails, and bilateral mirror-pair symmetrization only where both measured directions exist; no layout- or programme-specific EQ."
   },
   "positions": [
     {
@@ -334,6 +334,19 @@
               "directToLateDb": 32.21578464652804,
               "totalEnergyDb": 0.8235996791664204
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 0,
+            "canonicalTarget": {
+              "azimuth": 0,
+              "elevation": 0
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 145,
@@ -663,6 +676,19 @@
               "directToLateDb": 33.41928227136924,
               "totalEnergyDb": 0.8159333098658075
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "canonical virtual direction retains its measured BRIR tail",
+            "wetSourceUseCount": 2,
+            "wetAngularErrorDegrees": 15.000000000000018,
+            "canonicalTarget": {
+              "azimuth": 30,
+              "elevation": 0
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 141,
@@ -994,6 +1020,19 @@
               "totalEnergyDb": 0.8107430276212371
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "canonical virtual direction retains its measured BRIR tail",
+            "wetSourceUseCount": 2,
+            "wetAngularErrorDegrees": 14.999999999999996,
+            "canonicalTarget": {
+              "azimuth": -30,
+              "elevation": 0
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 154,
             "rightSample": 141,
@@ -1114,11 +1153,11 @@
           "roomEarlyEnergyTargetDb": -8.925657868655488,
           "residualBands": {
             "baselineV3BassEnergyDb": 17.347514667503752,
-            "outputBassEnergyDb": 2.6907444738478556,
+            "outputBassEnergyDb": null,
             "baselineV3MidEnergyDb": 24.093959211747745,
-            "outputMidEnergyDb": 24.352274434269017,
-            "bassReductionDb": -14.656770193655897,
-            "midDifferenceDb": 0.25831522252127215
+            "outputMidEnergyDb": null,
+            "bassReductionDb": null,
+            "midDifferenceDb": null
           },
           "roomCorrectionBands": [
             {
@@ -1305,34 +1344,12 @@
           "directPathSource": "D1/D1_HRIR_WAV/48K_24bit/azi_60,0_ele_0,0.wav",
           "roomTailSource": "D1/D1_BRIR_WAV/48K_24bit/azi_45,0_ele_0,0.wav",
           "roomTailDecorrelation": {
-            "role": "variant",
+            "role": "rejected-reused-source",
             "canonicalTarget": {
               "azimuth": 30,
               "elevation": 0
             },
-            "algorithm": "sda-ku100-tail-ap-v2",
-            "key": "60/0",
-            "digestSha256": "0980281d82127803638fdfdccd403d3992f57591fb95121a3eece876a78c77ae",
-            "sections": [
-              {
-                "centerHz": 179.3983842591195,
-                "radius": 0.6459477372467518
-              },
-              {
-                "centerHz": 598.6823580641392,
-                "radius": 0.5383284607902169
-              },
-              {
-                "centerHz": 2742.8110041541668,
-                "radius": 0.6249297945061698
-              },
-              {
-                "centerHz": 12540.738085973153,
-                "radius": 0.5595386637141928
-              }
-            ],
-            "commonLeftRightFilter": true,
-            "energyTrimDb": 2.787596486973211e-7,
+            "algorithm": null,
             "baselineMetrics": {
               "c50Db": 33.832437764771534,
               "c80Db": 45.47388479401412,
@@ -1340,17 +1357,30 @@
               "totalEnergyDb": 0.8000889155050657
             },
             "outputMetrics": {
-              "c50Db": 33.62321524856113,
-              "c80Db": 45.04820124516576,
-              "directToLateDb": 33.137912069122194,
-              "totalEnergyDb": 0.8065904813446273
+              "c50Db": null,
+              "c80Db": null,
+              "directToLateDb": null,
+              "totalEnergyDb": 0.303255401588497
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "rejected",
+            "weight": 0,
+            "reason": "wet BRIR source is shared by multiple virtual directions; preserve measured dry KU100 rather than synthesize a directional room tail",
+            "wetSourceUseCount": 2,
+            "wetAngularErrorDegrees": 14.999999999999996,
+            "canonicalTarget": {
+              "azimuth": 30,
+              "elevation": 0
+            },
+            "dryFallback": true
           },
           "outputOnset": {
             "leftSample": 156,
-            "rightSample": 133,
-            "commonSample": 144.5,
-            "itdSamples": 23
+            "rightSample": 131,
+            "commonSample": 143.5,
+            "itdSamples": 25
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.24518069739680115
@@ -1363,7 +1393,7 @@
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "ac210cc18e54111e8cb657240ba6855e96d37210e8ed30c9b6d3ea4d2ecd9aa0"
+          "sha256": "d9aa1d0cee7caf25ebe8fc69a4066fbb16e04c9654b4f367c51741920e5d97cc"
         }
       },
       "symmetry": {
@@ -1373,7 +1403,7 @@
         "shiftSamples": 0,
         "directWindowCorrelation": 0.7875979197827903,
         "energyTrimDb": 0.4872462706452788,
-        "roomTailTrimDb": 2.325548596687696
+        "roomTailTrimDb": 0
       }
     },
     {
@@ -1466,11 +1496,11 @@
           "roomEarlyEnergyTargetDb": -8.925657868655488,
           "residualBands": {
             "baselineV3BassEnergyDb": 17.347514667503752,
-            "outputBassEnergyDb": 2.690744473847855,
+            "outputBassEnergyDb": null,
             "baselineV3MidEnergyDb": 24.093959211747745,
-            "outputMidEnergyDb": 24.352274434269017,
-            "bassReductionDb": -14.656770193655897,
-            "midDifferenceDb": 0.25831522252127215
+            "outputMidEnergyDb": null,
+            "bassReductionDb": null,
+            "midDifferenceDb": null
           },
           "roomCorrectionBands": [
             {
@@ -1657,34 +1687,12 @@
           "directPathSource": "D1/D1_HRIR_WAV/48K_24bit/azi_300,0_ele_0,0.wav",
           "roomTailSource": "D1/D1_BRIR_WAV/48K_24bit/azi_315,0_ele_0,0.wav",
           "roomTailDecorrelation": {
-            "role": "variant",
+            "role": "rejected-reused-source",
             "canonicalTarget": {
               "azimuth": -30,
               "elevation": 0
             },
-            "algorithm": "sda-ku100-tail-ap-v2",
-            "key": "-60/0",
-            "digestSha256": "6a231b70d1ac7d99f3ca21612abda673baea9e7394d7a0bb1090379ff3eaa1b2",
-            "sections": [
-              {
-                "centerHz": 170.90964543237948,
-                "radius": 0.5974167611682788
-              },
-              {
-                "centerHz": 378.4056700572831,
-                "radius": 0.49126009028404954
-              },
-              {
-                "centerHz": 2716.8190317372155,
-                "radius": 0.5508851569145918
-              },
-              {
-                "centerHz": 10595.880615428847,
-                "radius": 0.42211236916482453
-              }
-            ],
-            "commonLeftRightFilter": true,
-            "energyTrimDb": 3.793486125569841e-8,
+            "algorithm": null,
             "baselineMetrics": {
               "c50Db": 34.82429984539813,
               "c80Db": 47.60508468170314,
@@ -1692,17 +1700,30 @@
               "totalEnergyDb": 0.8178153617531779
             },
             "outputMetrics": {
-              "c50Db": 34.5760782558384,
-              "c80Db": 47.3976515716151,
-              "directToLateDb": 34.08952708025092,
-              "totalEnergyDb": 0.823291296882795
+              "c50Db": null,
+              "c80Db": null,
+              "directToLateDb": null,
+              "totalEnergyDb": 0.32542113016194163
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "rejected",
+            "weight": 0,
+            "reason": "wet BRIR source is shared by multiple virtual directions; preserve measured dry KU100 rather than synthesize a directional room tail",
+            "wetSourceUseCount": 2,
+            "wetAngularErrorDegrees": 14.999999999999996,
+            "canonicalTarget": {
+              "azimuth": -30,
+              "elevation": 0
+            },
+            "dryFallback": true
+          },
           "outputOnset": {
-            "leftSample": 133,
+            "leftSample": 131,
             "rightSample": 156,
-            "commonSample": 144.5,
-            "itdSamples": -23
+            "commonSample": 143.5,
+            "itdSamples": -25
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.41144365297502716
@@ -1715,7 +1736,7 @@
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "a400fc211a9ff60deade6f45542818583c1592a5b5503cf10a0dcf555ea25e38"
+          "sha256": "d25d9a69124aecbd72d28449d5f1726a2f5decc0780cedd78484d39baf40fa7f"
         }
       },
       "symmetry": {
@@ -1725,7 +1746,7 @@
         "shiftSamples": 0,
         "directWindowCorrelation": 0.7875979197827903,
         "energyTrimDb": 0.4872462706452788,
-        "roomTailTrimDb": 2.325548596687696
+        "roomTailTrimDb": 0
       }
     },
     {
@@ -2027,6 +2048,19 @@
               "directToLateDb": 36.389478854509065,
               "totalEnergyDb": 0.8098126479458947
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 10.000000000000012,
+            "canonicalTarget": {
+              "azimuth": 100,
+              "elevation": 0
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 145,
@@ -2358,6 +2392,19 @@
               "totalEnergyDb": 0.8125255904358328
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 10.000000000000012,
+            "canonicalTarget": {
+              "azimuth": -100,
+              "elevation": 0
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 137,
             "rightSample": 145,
@@ -2687,6 +2734,19 @@
               "directToLateDb": 37.167424903085696,
               "totalEnergyDb": 0.8129072869000414
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 17.570711132875722,
+            "canonicalTarget": {
+              "azimuth": 110,
+              "elevation": 0
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 144,
@@ -3018,6 +3078,19 @@
               "totalEnergyDb": 0.8102929010347308
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 17.570711132875722,
+            "canonicalTarget": {
+              "azimuth": -110,
+              "elevation": 0
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 138,
             "rightSample": 144,
@@ -3347,6 +3420,19 @@
               "directToLateDb": 37.1715770092367,
               "totalEnergyDb": 0.8145110666330313
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 4.999999999999992,
+            "canonicalTarget": {
+              "azimuth": 140,
+              "elevation": 0
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 145,
@@ -3678,6 +3764,19 @@
               "totalEnergyDb": 0.801625072637749
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 4.999999999999918,
+            "canonicalTarget": {
+              "azimuth": -140,
+              "elevation": 0
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 125,
             "rightSample": 145,
@@ -4007,6 +4106,19 @@
               "directToLateDb": 33.416557907198815,
               "totalEnergyDb": 0.8193655085241165
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 9.700000000000008,
+            "canonicalTarget": {
+              "azimuth": 45,
+              "elevation": 45
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 147,
@@ -4338,6 +4450,19 @@
               "totalEnergyDb": 0.8181137473331426
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 9.700000000000008,
+            "canonicalTarget": {
+              "azimuth": -45,
+              "elevation": 45
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 153,
             "rightSample": 147,
@@ -4667,6 +4792,19 @@
               "directToLateDb": 35.16435880727771,
               "totalEnergyDb": 0.820995768902498
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 0,
+            "canonicalTarget": {
+              "azimuth": 90,
+              "elevation": 45
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 144,
@@ -4998,6 +5136,19 @@
               "totalEnergyDb": 0.8200996258858102
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 0,
+            "canonicalTarget": {
+              "azimuth": -90,
+              "elevation": 45
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 130,
             "rightSample": 144,
@@ -5327,6 +5478,19 @@
               "directToLateDb": 36.2241458409308,
               "totalEnergyDb": 0.8119208028077269
             }
+          },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 9.700000000000008,
+            "canonicalTarget": {
+              "azimuth": 135,
+              "elevation": 45
+            },
+            "dryFallback": false
           },
           "outputOnset": {
             "leftSample": 148,
@@ -5658,6 +5822,19 @@
               "totalEnergyDb": 0.8093243520919785
             }
           },
+          "roomTailQuality": {
+            "version": "sda-ku100-brir-residual-quality-v1",
+            "status": "accepted",
+            "weight": 1,
+            "reason": "wet BRIR source is unique to this virtual direction",
+            "wetSourceUseCount": 1,
+            "wetAngularErrorDegrees": 9.700000000000008,
+            "canonicalTarget": {
+              "azimuth": -135,
+              "elevation": 45
+            },
+            "dryFallback": false
+          },
           "outputOnset": {
             "leftSample": 130,
             "rightSample": 148,
@@ -5690,7 +5867,8 @@
     }
   ],
   "calibration": {
-    "algorithm": "sda-ku100-room-v4",
+    "algorithm": "sda-ku100-room-v5",
+    "baseline": "raw-provenance",
     "sampleRate": 48000,
     "commonArrivalSample": 128,
     "bilateralSymmetry": {
@@ -5892,6 +6070,19 @@
       "maximumHz": 16000,
       "maximumEnergyTrimDb": 0.25,
       "commonLeftRightFilter": true
+    },
+    "roomResidualQualityGate": {
+      "version": "sda-ku100-brir-residual-quality-v1",
+      "scope": "offline KU100 derived BRIR room residual only",
+      "rule": "a wet BRIR source may serve only its canonical virtual direction",
+      "rejectedAction": "zero the derived room tail and preserve the calibrated dry KU100 response",
+      "excludes": [
+        "dry HRIR",
+        "runtime LFE",
+        "final headphone EQ",
+        "programme analysis",
+        "room-specific measurement claims"
+      ]
     },
     "level": {
       "dryGlobalGainDb": -0.3460837212930966,

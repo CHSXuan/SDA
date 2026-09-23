@@ -43,9 +43,6 @@ pub fn gains(position: [f32; 3], head: Option<[f32; 4]>, settings: Settings) -> 
     }
     let fade = (1.0 - r).max(0.0).min(0.4) / 0.4;
     let lateral = p[0] / norm;
-    if lateral.abs() < 1e-7 {
-        return [1.0; 2];
-    }
     let ear_gain = |ear: f32| {
         let near = (r * r + ear * ear - 2.0 * r * ear * lateral).sqrt();
         let reference = (1.0 + ear * ear - 2.0 * ear * lateral).sqrt();
@@ -217,6 +214,17 @@ mod tests {
         assert_eq!(gains([f32::NAN, 0.0, 0.0], None, s), [1.0; 2]);
         let turned = gains([-0.2, 0.0, 0.0], Some([0.0, 0.0, 1.0, 0.0]), s);
         assert_eq!(turned, gains([0.2, 0.0, 0.0], None, s));
+    }
+    #[test]
+    fn frontal_and_rear_near_sources_keep_proximity_presence() {
+        let s = Settings { enabled: true, ..Default::default() };
+        let frontal = gains([0.0, 0.25, 0.0], None, s);
+        let rear = gains([0.0, -0.25, 0.0], None, s);
+        assert!(frontal.iter().all(|gain| *gain > 1.0));
+        assert!(rear.iter().all(|gain| *gain > 1.0));
+        assert_eq!(frontal, rear);
+        assert_eq!(gains([0.0, 1.0, 0.0], None, s), [1.0; 2]);
+        assert_eq!(gains([0.0, -1.0, 0.0], None, s), [1.0; 2]);
     }
     #[test]
     fn bypass_is_exact_and_toggle_is_smooth() {

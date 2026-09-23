@@ -296,6 +296,12 @@ impl Grid {
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn ku100_notch_guard_enabled(&self) -> bool {
+        self.ku100_notch_guard
+    }
+
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
         let u = unit(az, el);
         let mut distances: Vec<_> = self
@@ -647,8 +653,7 @@ mod tests {
         let solver = crate::vbap::VbapSolver::with_layout(layout);
         let amounts = [0.0; crate::vbap::MAX_BUS_COUNT];
         let frequencies = [50.0_f32, 80.0, 120.0, 160.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
-        let azimuths = [-180.0_f32, -165.0, -150.0, -135.0, -120.0, -105.0, -90.0, -75.0, -60.0, -45.0,
-            -30.0, -15.0, 0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0, 105.0, 120.0, 135.0, 150.0, 165.0, 180.0];
+        let directions = [(-90.0_f32, 45.0_f32), (-90.0, 0.0), (0.0, 45.0)];
         let response = |ir: &[f32], frequency: f32| {
             let mut real = 0.0_f64;
             let mut imaginary = 0.0_f64;
@@ -663,19 +668,23 @@ mod tests {
         let magnitude = |pair: [(f64, f64); 2]| {
             (pair.iter().map(|(real, imaginary)| real * real + imaginary * imaginary).sum::<f64>()).sqrt()
         };
-        let direction = |azimuth: f32| Direction {
+        let direction = |azimuth: f32, elevation: f32| Direction {
             // ADM x is right, and adm_to_spherical maps it to negative azimuth.
-            position: [-azimuth.to_radians().sin(), azimuth.to_radians().cos(), 0.0],
+            position: [
+                -elevation.to_radians().cos() * azimuth.to_radians().sin(),
+                elevation.to_radians().cos() * azimuth.to_radians().cos(),
+                elevation.to_radians().sin(),
+            ],
             head: None,
             diffuse: 0.0,
-            horizontal_only: true,
+            horizontal_only: false,
             width: 0.0,
             height: 0.0,
             depth: 0.0,
         };
 
-        for azimuth in azimuths {
-            let direction = direction(azimuth);
+        for (azimuth, elevation) in directions {
+            let direction = direction(azimuth, elevation);
             let gains = solver.pan(direction.position, 0.0);
             let direct = set.directional_dry_compact(direction, layout, gains, amounts).unwrap();
             let mut residual = (vec![0.0_f32; set.speaker_filter_len()], vec![0.0_f32; set.speaker_filter_len()]);
@@ -713,7 +722,7 @@ mod tests {
                 let residual_db = 20.0 * (magnitude(reflection_response) / direct_magnitude).log10();
                 let summed_db = 20.0 * (magnitude(summed_response) / direct_magnitude).log10();
                 eprintln!(
-                    "KU100 reflection diagnostic az={azimuth:>6.1} freq={frequency:>7.0}Hz residual={residual_db:>6.2}dB summed/direct={summed_db:>6.2}dB"
+                    "KU100 reflection diagnostic az={azimuth:>6.1} el={elevation:>5.1} freq={frequency:>7.0}Hz residual={residual_db:>6.2}dB summed/direct={summed_db:>6.2}dB"
                 );
             }
         }
@@ -838,6 +847,31 @@ mod tests {
         let actual: f64 = out_left.iter().chain(&out_right).map(|v| (*v as f64).powi(2)).sum();
         assert!(actual > target * 0.45, "direct anchor was lost during cancellation: {actual} / {target}");
         assert!(out_left.iter().chain(&out_right).all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn ku100_notch_guard_preserves_the_dominant_measurement_after_full_cancellation() {
+        let mut waveform = vec![0.0; 64];
+        for (index, sample) in waveform[12..52].iter_mut().enumerate() {
+            *sample = ((index as f32) * 0.37).sin() * 0.8;
+        }
+        let mut anchor = waveform.clone();
+        anchor.extend_from_slice(&waveform);
+        let mut cancelled = waveform.iter().map(|sample| -*sample).collect::<Vec<_>>();
+        cancelled.extend(waveform.iter().map(|sample| -*sample));
+        let irs = vec![
+            StereoIr { azimuth: -30.0, elevation: 0.0, dry: anchor.clone(), wet: vec![] },
+            StereoIr { azimuth: 30.0, elevation: 0.0, dry: cancelled, wet: vec![] },
+        ];
+        let grid = Grid::new_with_notch_guard(&irs, true);
+        let (left, right) = grid.interpolate(&irs, 0.0, 0.0);
+        let expected_energy: f64 = waveform.iter().map(|sample| (*sample as f64).powi(2)).sum();
+        let left_energy: f64 = left.iter().map(|sample| (*sample as f64).powi(2)).sum();
+        let right_energy: f64 = right.iter().map(|sample| (*sample as f64).powi(2)).sum();
+        assert!((left_energy / expected_energy - 1.0).abs() < 1e-6,
+            "expected={expected_energy} left={left_energy} right={right_energy}");
+        assert!((right_energy / expected_energy - 1.0).abs() < 1e-6);
+        assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
     }
     #[test]
     fn waveform_alignment_refines_subsample_arrival() {

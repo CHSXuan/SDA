@@ -137,9 +137,16 @@ impl NativeHrtfSet {
             let parent = root.parent().ok_or("HRTF asset root has no parent")?;
             Self::load_calibrated(&parent.join(name).join("hrtf-set.json")).map(Box::new)
         }).transpose()?;
-        let ku100_notch_guard = is_dense_ku100
-            && !complete_subject
-            && manifest.subject_id.as_deref().map_or(true, |id| id == "ku100");
+        // KU100 is a complete dummy-head measurement set, not an individual
+        // subject profile. Its measured pinna notches remain valid at both the
+        // standard and dense resolutions, but a time-domain mix of adjacent
+        // directions can still cancel a narrow-band moving source. Keep the
+        // guard available for every calibrated KU100 set; it only takes over
+        // after the interpolated response has already collapsed. The original
+        // dense KU100 manifest predates `subjectId`, so retain its established
+        // 61-point fallback until that provenance is added to the asset.
+        let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
+            || (is_dense_ku100 && manifest.subject_id.is_none());
         Ok(Self {
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
@@ -719,6 +726,17 @@ mod raw_tests {
                 assert!((wet_right[i] - original.wet[14400 + i]).abs() < 1e-6);
             }
         }
+    }
+
+    #[test]
+    fn ku100_notch_guard_covers_complete_standard_and_dense_measurement_sets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
+        for name in ["hrtf", "hrtf-dense"] {
+            let set = NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
+            assert!(set.directional_grid.ku100_notch_guard_enabled(), "{name}");
+        }
+        let other = NativeHrtfSet::load_calibrated(&root.join("hrtf-h13").join("hrtf-set.json")).unwrap();
+        assert!(!other.directional_grid.ku100_notch_guard_enabled());
     }
 
     #[test]
