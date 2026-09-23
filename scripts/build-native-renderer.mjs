@@ -1,4 +1,4 @@
-import { copyFile, cp, mkdir, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,9 +30,41 @@ if (!isWindows) {
   await chmod(target, 0o755);
 }
 const hrtfDestination = join(destination, "hrtf-assets");
+const hrtfSets = [
+  "hrtf", "hrtf-dense", "hrtf-raw", "hrtf-dense-raw", "hrtf-d2", "hrtf-d2-dense",
+  ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}-dense`),
+  ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}`),
+];
 await rm(hrtfDestination, { recursive: true, force: true });
 await mkdir(hrtfDestination, { recursive: true });
-for (const set of ["hrtf", "hrtf-dense", "hrtf-raw", "hrtf-dense-raw", "hrtf-d2", "hrtf-d2-dense", ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}-dense`), ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}`)]) {
+for (const set of hrtfSets) {
   await cp(join(root, "apps", "web", "public", set), join(hrtfDestination, set), { recursive: true });
 }
-console.log(`Native renderer: ${target} (bundled calibrated HRTF assets)`);
+
+async function filesUnder(directory, relative = "") {
+  const entries = await readdir(join(directory, relative), { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const entryRelative = join(relative, entry.name);
+    if (entry.isDirectory()) files.push(...await filesUnder(directory, entryRelative));
+    else if (entry.isFile()) files.push(entryRelative);
+  }
+  return files.sort();
+}
+
+async function verifyHrtfStage(set) {
+  const source = join(root, "apps", "web", "public", set);
+  const staged = join(hrtfDestination, set);
+  const sourceFiles = await filesUnder(source);
+  const stagedFiles = await filesUnder(staged);
+  if (sourceFiles.length === 0 || sourceFiles.join("\0") !== stagedFiles.join("\0")) {
+    throw new Error(`HRTF stage mismatch for ${set}`);
+  }
+  for (const file of sourceFiles) {
+    const [sourceBytes, stagedBytes] = await Promise.all([readFile(join(source, file)), readFile(join(staged, file))]);
+    if (!sourceBytes.equals(stagedBytes)) throw new Error(`HRTF stage content mismatch for ${set}/${file}`);
+  }
+}
+
+await Promise.all(hrtfSets.map(verifyHrtfStage));
+console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);
