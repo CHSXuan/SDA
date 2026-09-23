@@ -106,10 +106,29 @@ impl AbsolutePcmRing {
     }
 
     pub(super) fn has_at(&self, clock: u64) -> bool {
+        self.sample_at(clock).is_some()
+    }
+
+    fn sample_at(&self, clock: u64) -> Option<f32> {
         if let Some(index) = clock.checked_sub(self.read_start).filter(|index| *index < READ_CACHE_SIZE.min(self.slots.len()) as u64) {
-            return self.read_cache[index as usize].clock == clock;
+            let slot = self.read_cache[index as usize];
+            return (slot.clock == clock).then_some(slot.sample);
         }
-        self.slots[(clock % self.slots.len() as u64) as usize].clock == clock
+        let slot = self.slots[(clock % self.slots.len() as u64) as usize];
+        (slot.clock == clock).then_some(slot.sample)
+    }
+
+    /// Whether the upcoming render block carries signal above `threshold`.
+    /// Metadata streams often keep declared objects alive with all-zero PCM;
+    /// those placeholders must not take part in perceptual interactions such as
+    /// source-to-source occlusion.
+    pub(super) fn has_signal_within(&self, start: u64, frames: usize, threshold: f32) -> bool {
+        let threshold = threshold.abs();
+        (0..frames).any(|offset| {
+            start.checked_add(offset as u64)
+                .and_then(|clock| self.sample_at(clock))
+                .is_some_and(|sample| sample.abs() >= threshold)
+        })
     }
 
     fn flush_read_cache(&mut self) {
@@ -176,6 +195,16 @@ mod tests {
         assert_eq!(ring.take(10), None);
         assert_eq!(ring.take(12), Some(0.25));
         assert_eq!(ring.take(13), Some(0.5));
+    }
+
+    #[test]
+    fn signal_probe_distinguishes_zero_pcm_from_an_audible_block() {
+        let mut ring = AbsolutePcmRing::new(16);
+        ring.write(0, 0, &[0.0; 8]);
+        assert!(!ring.has_signal_within(0, 8, 0.001));
+        ring.write(0, 4, &[0.001; 1]);
+        assert!(ring.has_signal_within(0, 8, 0.001));
+        assert!(!ring.has_signal_within(8, 8, 0.001));
     }
 
     #[test]

@@ -1017,7 +1017,16 @@ impl Engine {
         for source in self.sources.values() {
             if count >= MAX_OCCLUDERS { break; }
             if source.kind != SourceKind::Object || source.muted || source.lfe_target != 0.0
-                || source.position.iter().any(|axis| !axis.is_finite()) {
+                || source.suspended || source.gain.abs() < OBJECT_ACTIVITY_THRESHOLD
+                || source.position.iter().any(|axis| !axis.is_finite())
+                // A declared ADM/MPEG-H object can legitimately contain a block
+                // of zero PCM. Letting it shadow an audible object makes the
+                // latter lose one ear even though no physical occluder exists.
+                || !source.samples.has_signal_within(
+                    self.sample_pos,
+                    convolution::DEFAULT_PARTITION,
+                    OBJECT_ACTIVITY_THRESHOLD,
+                ) {
                 continue;
             }
             positions[count] = source.position;
@@ -2247,6 +2256,40 @@ mod tests {
         assert!(!Engine::is_dolby_object_codec(Some("mpegh")));
         assert!(!Engine::is_dolby_object_codec(Some("iamf")));
         assert!(!Engine::is_dolby_object_codec(None));
+    }
+
+    #[test]
+    fn only_audible_objects_cast_per_ear_occlusion() {
+        let source = |position, pcm: Vec<f32>| {
+            let mut source = Source {
+                kind: SourceKind::Object,
+                position,
+                gain: 1.0,
+                target_gain: 1.0,
+                availability: 1.0,
+                availability_target: 1.0,
+                ..Source::default()
+            };
+            source.samples.write(0, 0, &pcm);
+            source
+        };
+        let mut engine = Engine::new(48_000, 2);
+        // The nearer silent placeholder has the same bearing as the audible
+        // far object. Before the activity gate it incorrectly shaded the far
+        // object's left ear, making a mono stem appear right-biased.
+        engine.sources.insert("far".into(), source([1.0, 0.0, 0.0], vec![0.1; convolution::DEFAULT_PARTITION]));
+        engine.sources.insert("silent-near".into(), source([0.25, 0.0, 0.0], vec![0.0; convolution::DEFAULT_PARTITION]));
+        engine.update_occlusion(None);
+        assert_eq!(engine.sources["far"].occlusion_targets, [1.0; 2]);
+
+        engine.sources.get_mut("silent-near").unwrap().samples.write(
+            0,
+            0,
+            &[0.1; convolution::DEFAULT_PARTITION],
+        );
+        engine.update_occlusion(None);
+        let openness = engine.sources["far"].occlusion_targets;
+        assert!(openness[0] < 0.99 && openness[1] > 0.99, "active near object must shade the far ear: {openness:?}");
     }
 
     #[test]
