@@ -166,9 +166,9 @@ enum Command {
     SetLayout {
         layout: String,
     },
-    /// Announces the active codec before its first PCM batch. Continuous
-    /// object HRTF is suppressed for MPEG-H/360RA while preserving the user's
-    /// directional-HRTF preference for other codecs.
+    /// Announces the active codec before its first PCM batch. The codec still
+    /// selects the format layout; the user's continuous object HRTF preference
+    /// applies uniformly across codecs.
     SetProgramCodec { codec: String },
     SetObjectHrtf { enabled: bool },
     SetStereoMode { mode: StereoMode },
@@ -797,10 +797,11 @@ impl Engine {
 
     fn refresh_directional_hrtf(&mut self) {
         let previous = self.directional_hrtf;
-        let is_360ra = self.program_codec.as_deref().is_some_and(|codec| {
-            matches!(codec, "mpegh" | "mha1" | "mhm1")
-        });
-        self.directional_hrtf = self.directional_hrtf_requested && !is_360ra;
+        // Keep 360RA's format-specific 13-speaker layout, but honor the
+        // continuous-direction HRTF preference for its objects. Previously
+        // MPEG-H was forcibly routed through the shared virtual-speaker bus,
+        // so the preference could never help low-level rear objects.
+        self.directional_hrtf = self.directional_hrtf_requested;
         // The codec can become known after PCM sources have already started.
         // Changing only this flag would leave those sources holding filters
         // built for the previous object path until an unrelated cinema/monitor
@@ -1013,6 +1014,7 @@ impl Engine {
     fn update_occlusion(&mut self, head_pose: Option<[f32; 4]>) {
         const MAX_OCCLUDERS: usize = 64;
         let mut positions: [[f32; 3]; MAX_OCCLUDERS] = [[0.0; 3]; MAX_OCCLUDERS];
+        let mut object_ids: [u32; MAX_OCCLUDERS] = [u32::MAX; MAX_OCCLUDERS];
         let mut count = 0usize;
         for source in self.sources.values() {
             if count >= MAX_OCCLUDERS { break; }
@@ -1029,6 +1031,11 @@ impl Engine {
                 ) {
                 continue;
             }
+            if let Some(object_id) = source.object_id {
+                object_ids[count] = object_id;
+            } else {
+                continue;
+            }
             positions[count] = source.position;
             count += 1;
         }
@@ -1042,14 +1049,8 @@ impl Engine {
             let openness = crate::occlusion::ear_openness_prepared(
                 &positions[index], &rotated[index], &positions[..count], &rotated[..count], index,
             );
-            let mut seen = 0usize;
-            for source in self.sources.values_mut() {
-                if source.kind != SourceKind::Object || source.muted || source.lfe_target != 0.0
-                    || source.position.iter().any(|axis| !axis.is_finite()) {
-                    continue;
-                }
-                if seen == index { source.occlusion_targets = openness; break; }
-                seen += 1;
+            if let Some(source) = self.sources.values_mut().find(|source| source.object_id == Some(object_ids[index])) {
+                source.occlusion_targets = openness;
             }
         }
     }
@@ -2198,14 +2199,14 @@ mod tests {
     }
 
     #[test]
-    fn directional_hrtf_preference_is_gated_only_for_360ra_codecs() {
+    fn directional_hrtf_preference_applies_to_360ra_codecs() {
         let mut engine = Engine::new(48_000, 2);
         engine.set_directional_hrtf(true);
         assert!(engine.directional_hrtf);
         assert!(engine.directional_hrtf_requested);
 
         engine.set_program_codec("mpegh".into());
-        assert!(!engine.directional_hrtf, "360RA must retain the legacy object path");
+        assert!(engine.directional_hrtf, "360RA must honor the continuous HRTF preference");
         assert!(engine.directional_hrtf_requested, "the user preference must be retained");
 
         engine.set_program_codec("eac3".into());
@@ -2215,6 +2216,39 @@ mod tests {
         engine.set_program_codec("iamf".into());
         assert!(!engine.directional_hrtf);
         assert!(!engine.directional_hrtf_requested);
+    }
+
+    #[test]
+    fn mpegh_object_pcm_uses_continuous_hrtf_on_360ra_layout() {
+        let mut engine = calibrated_engine();
+        engine.set_layout(vbap::LayoutId::Sony360Ra13).unwrap();
+        engine.set_program_codec("mpegh".into());
+        engine.set_directional_hrtf(true);
+        engine.paused = false;
+        let frames = convolution::DEFAULT_PARTITION * 4;
+        let samples: Vec<_> = (0..frames)
+            .map(|index| (index as f32 * 0.17).sin() * 0.01)
+            .collect();
+        let mut source = Source {
+            kind: SourceKind::Object,
+            object_id: Some(20),
+            position: [0.7, -0.7, 0.25],
+            gain: 1.0,
+            target_gain: 1.0,
+            availability: 1.0,
+            availability_target: 1.0,
+            ..Source::default()
+        };
+        source.samples.write(0, 0, &samples);
+        engine.sources.insert("obj:20".into(), source);
+        engine.route_source_now("obj:20", 0).unwrap();
+        let mut output = vec![0.0; frames * 2];
+        engine.render_into(&mut output, 2);
+        let source = &engine.sources["obj:20"];
+        assert!(source.continuous_active && source.continuous.is_some());
+        assert!(source.direct.is_none());
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > 1e-6));
     }
 
     #[test]
@@ -2277,8 +2311,12 @@ mod tests {
         // The nearer silent placeholder has the same bearing as the audible
         // far object. Before the activity gate it incorrectly shaded the far
         // object's left ear, making a mono stem appear right-biased.
-        engine.sources.insert("far".into(), source([1.0, 0.0, 0.0], vec![0.1; convolution::DEFAULT_PARTITION]));
-        engine.sources.insert("silent-near".into(), source([0.25, 0.0, 0.0], vec![0.0; convolution::DEFAULT_PARTITION]));
+        let mut far = source([1.0, 0.0, 0.0], vec![0.1; convolution::DEFAULT_PARTITION]);
+        far.object_id = Some(1);
+        let mut silent_near = source([0.25, 0.0, 0.0], vec![0.0; convolution::DEFAULT_PARTITION]);
+        silent_near.object_id = Some(2);
+        engine.sources.insert("far".into(), far);
+        engine.sources.insert("silent-near".into(), silent_near);
         engine.update_occlusion(None);
         assert_eq!(engine.sources["far"].occlusion_targets, [1.0; 2]);
 
@@ -2290,6 +2328,44 @@ mod tests {
         engine.update_occlusion(None);
         let openness = engine.sources["far"].occlusion_targets;
         assert!(openness[0] < 0.99 && openness[1] > 0.99, "active near object must shade the far ear: {openness:?}");
+    }
+
+    #[test]
+    fn occlusion_writeback_stays_with_audible_source_ids_after_silent_placeholders() {
+        let source = |position, pcm: Vec<f32>| {
+            let mut source = Source {
+                kind: SourceKind::Object,
+                position,
+                gain: 1.0,
+                target_gain: 1.0,
+                availability: 1.0,
+                availability_target: 1.0,
+                ..Source::default()
+            };
+            source.samples.write(0, 0, &pcm);
+            source
+        };
+        let mut engine = Engine::new(48_000, 2);
+        let block = convolution::DEFAULT_PARTITION;
+        let mut far = source([0.0, 1.0, 0.0], vec![0.1; block]);
+        far.object_id = Some(10);
+        let mut near = source([0.0, 0.25, 0.0], vec![0.1; block]);
+        near.object_id = Some(11);
+        // Inactive declarations sort before the audible objects. The old
+        // ordinal writeback therefore assigned the far source the near
+        // source's (open) result instead of its own shadowed result.
+        for index in 0..8 {
+            let mut placeholder = source([0.0, 0.25, 0.0], vec![0.0; block]);
+            placeholder.object_id = Some(100 + index);
+            engine.sources.insert(format!("a-silent-placeholder-{index}"), placeholder);
+        }
+        engine.sources.insert("middle-far-harmony".into(), far);
+        engine.sources.insert("middle-near-vocal".into(), near);
+        engine.update_occlusion(None);
+        assert_eq!(engine.sources["middle-near-vocal"].occlusion_targets, [1.0; 2]);
+        let openness = engine.sources["middle-far-harmony"].occlusion_targets;
+        assert!(openness[0] < 0.99 && openness[1] < 0.99,
+            "far harmony must receive the near vocal's shadow: {openness:?}");
     }
 
     #[test]
@@ -3921,6 +3997,7 @@ mod tests {
             rms(&solo, 0, 96_000), rms(&solo, 96_000, 192_000), rms(&solo, 192_000, 288_000),
             rms(&others, 0, 96_000), rms(&others, 96_000, 192_000), rms(&others, 192_000, 288_000));
     }
+
 }
 
 #[cfg(test)]

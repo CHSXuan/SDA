@@ -52,6 +52,7 @@ fn main() {
     println!("cargo:rerun-if-changed=asio-link/helpers.hpp");
     println!("cargo:rerun-if-changed=asio-link/helpers.cpp");
     println!("cargo:rerun-if-env-changed={}", CPAL_ASIO_DIR);
+    println!("cargo:rerun-if-env-changed=SDA_ASIO_BINDINGS_FILE");
 
     // ASIO SDK directory
     let cpal_asio_dir = get_asio_dir();
@@ -79,11 +80,27 @@ fn main() {
     // If they don't create them
     let mut binding_path = out_dir.clone();
     binding_path.push("asio_bindings.rs");
-    { // Regenerate: target ABI or Clang arguments may have changed.
-        if is_msvc() {
-            invoke_vcvars_if_not_set();
+    {
+        // Some Windows distributions ship a newer Clang builtin header set
+        // than the libclang bundled with bindgen. In that case an existing
+        // bindings file generated for the same target remains valid and lets
+        // the native renderer build without weakening its real ASIO support.
+        if let Ok(bindings_file) = env::var("SDA_ASIO_BINDINGS_FILE") {
+            let bindings_file = PathBuf::from(bindings_file);
+            println!("cargo:rerun-if-changed={}", bindings_file.display());
+            std::fs::copy(&bindings_file, &binding_path).unwrap_or_else(|error| {
+                panic!(
+                    "Unable to copy SDA_ASIO_BINDINGS_FILE {}: {error}",
+                    bindings_file.display()
+                )
+            });
+        } else {
+            // Regenerate: target ABI or Clang arguments may have changed.
+            if is_msvc() {
+                invoke_vcvars_if_not_set();
+            }
+            create_bindings(&cpal_asio_dir);
         }
-        create_bindings(&cpal_asio_dir);
     }
 }
 
