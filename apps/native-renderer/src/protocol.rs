@@ -711,25 +711,22 @@ pub(super) fn apply_render_command(
     }
 }
 
-fn object_scalar_gain(gain_db: f32, position: [f32; 3]) -> f32 {
+fn object_scalar_gain(gain_db: f32) -> f32 {
     if gain_db <= -128.0 {
         return 0.0;
     }
-    let distance = position
-        .iter()
-        .map(|value| value * value)
-        .sum::<f32>()
-        .sqrt();
-    let distance_gain = if distance > 1.0 {
-        distance.recip()
-    } else {
-        1.0
-    };
-    10.0_f32.powf(gain_db / 20.0) * distance_gain
+    10.0_f32.powf(gain_db / 20.0)
 }
 
 fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectEvent) {
     let ramp = event.ramp_duration;
+    let distance_m = if event.distance_infinite {
+        None
+    } else {
+        event
+            .distance_m
+            .filter(|distance| distance.is_finite() && *distance > 0.0)
+    };
     if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
         let spatial = SpatialEvent {
             position: event.pos,
@@ -738,6 +735,25 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
             diffuse: if event.diffuse.is_finite() { event.diffuse.clamp(0.0, 1.0) } else { 0.0 },
             horizontal_only: event.horizontal_only,
             zone_exclusion: event.zone_exclusion.into(),
+            distance_m,
+            ramp,
+        };
+        if event.sample_pos > sample_pos {
+            source.spatial_events.insert(event.sample_pos, spatial);
+        } else {
+            Engine::start_source_motion(source, spatial);
+        }
+    } else if event.distance_m.is_some() || event.distance_infinite {
+        // A codec may update physical depth without changing the authored
+        // bearing. Keep the current spatial fields and apply only depth.
+        let spatial = SpatialEvent {
+            position: source.position,
+            spread: source.spread,
+            extent: source.extent,
+            diffuse: source.diffuse,
+            horizontal_only: source.horizontal_only,
+            zone_exclusion: source.zone_exclusion.clone(),
+            distance_m,
             ramp,
         };
         if event.sample_pos > sample_pos {
@@ -747,12 +763,7 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
         }
     }
     if event.gain_db.is_finite() {
-        let position = if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
-            event.pos
-        } else {
-            source.position
-        };
-        let gain = object_scalar_gain(event.gain_db, position);
+        let gain = object_scalar_gain(event.gain_db);
         if event.sample_pos > sample_pos {
             source
                 .gain_events
@@ -1380,6 +1391,37 @@ mod tests {
         assert!((source.gain - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
         assert_eq!(source.ramp_remaining, 0);
         assert_eq!(source.ramp_step, 0.0);
+    }
+
+    #[test]
+    fn direction_only_atmos_coordinates_do_not_change_authored_loudness() {
+        for pos in [[0.0, -0.25, 0.0], [1.0, -1.0, 0.0]] {
+            let event: NativeObjectEvent = serde_json::from_value(serde_json::json!({
+                "id": 12, "samplePos": 0, "hasPos": true, "pos": pos,
+                "gainDb": 0, "size": [0, 0, 0], "rampDuration": 0
+            })).unwrap();
+            let mut source = Source { kind: SourceKind::Object, ..Source::default() };
+            apply_object_event(&mut source, 0, event);
+            assert_eq!(source.distance_m, None);
+            assert!((source.gain - 1.0).abs() < 1e-6, "position={pos:?}");
+            Engine::advance_distance_gain(&mut source, 48_000);
+            assert!((source.distance_gain - 1.0).abs() < 1e-6, "position={pos:?}");
+        }
+    }
+
+    #[test]
+    fn explicit_atmos_distance_controls_depth_without_using_direction_length() {
+        let event: NativeObjectEvent = serde_json::from_value(serde_json::json!({
+            "id": 12, "samplePos": 0, "hasPos": true, "pos": [1, -1, 0],
+            "gainDb": 0, "size": [0, 0, 0], "distanceM": 0.5,
+            "rampDuration": 0
+        })).unwrap();
+        let mut source = Source { kind: SourceKind::Object, ..Source::default() };
+        apply_object_event(&mut source, 0, event);
+        assert_eq!(source.distance_m, Some(0.5));
+        assert!((source.gain - 1.0).abs() < 1e-6);
+        Engine::advance_distance_gain(&mut source, 48_000);
+        assert!((source.distance_gain - 2.0).abs() < 1e-5);
     }
 
     #[test]

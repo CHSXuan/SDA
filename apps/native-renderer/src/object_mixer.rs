@@ -354,14 +354,17 @@ fn mix_source(
             );
         }
         if block_index % 128 == 0 {
-            // Auto-enable for objects carrying real ADM depth (transparent at
-            // r >= 1, so far placements are untouched).
             let near_settings = crate::near_field::Settings {
-                enabled: ctx.near_active
-                    || source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() < 1.0,
+                enabled: ctx.near_active || source.distance_m.is_some(),
                 ..ctx.near_field
             };
-            source.near_target = crate::near_field::gains(source.position, head_pose, near_settings);
+            source.near_target = if ctx.near_active {
+                crate::near_field::gains(source.position, head_pose, near_settings)
+            } else if let Some(position) = Engine::physical_near_position(source, near_settings) {
+                crate::near_field::gains(position, head_pose, near_settings)
+            } else {
+                [1.0; 2]
+            };
         }
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
@@ -371,7 +374,8 @@ fn mix_source(
         if input != 0.0 {
             // Near sources sit outside the reverberant field: fade their room
             // contribution as they close in (mirror of the general path).
-            let norm = source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+            let norm = if ctx.near_active { source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() }
+                else { source.distance_m.map(|distance| distance / ctx.near_field.metres_per_unit).unwrap_or(1.0) };
             let proximity_dry = if norm < 1.0 { (0.25 + 0.75 * norm).max(0.25) } else { 1.0 };
             buffer.add_reflections(
                 input * proximity_dry,

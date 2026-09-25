@@ -76,7 +76,7 @@ const rendererMode = ["swiftshader", "hardware", "2d"].includes(requestedRendere
   : "hardware";
 const enable3D = rendererMode !== "2d";
 const openDevTools = process.env.SDA_OPEN_DEVTOOLS === "1" || process.argv.includes("--open-devtools");
-const DEV_URL = process.env.SDA_DEV_URL ?? "http://localhost:5173";
+const DEV_URL = process.env.SDA_DEV_URL ?? "http://localhost:4176";
 
 // 音频应用：窗口被遮挡、最小化或切到后台时都不得节流 —
 // Chromium 默认会冻结后台 renderer 的定时器/worker，直接导致解码喂不动 worklet。

@@ -1089,6 +1089,7 @@ mod tests {
                         horizontal_only: false,
                         diffuse: 0.0,
                         spread: 0.0,
+                        distance_m: None,
                         ramp: total_frames,
                     },
                 );
@@ -1202,6 +1203,7 @@ mod tests {
                             horizontal_only: id % 2 == 0,
                             diffuse: 0.2,
                             spread: 0.0,
+                            distance_m: None,
                             ramp: 15000,
                         },
                     );

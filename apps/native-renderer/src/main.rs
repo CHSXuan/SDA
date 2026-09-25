@@ -291,6 +291,12 @@ struct NativeObjectEvent {
     horizontal_only: bool,
     #[serde(default)]
     zone_exclusion: Vec<adm_zone::Zone>,
+    /// Cartesian object coordinates are directional unless this physical
+    /// distance is explicitly supplied by the codec.
+    #[serde(default)]
+    distance_m: Option<f32>,
+    #[serde(default)]
+    distance_infinite: bool,
     #[serde(default = "default_object_ramp")]
     ramp_duration: u32,
 }
@@ -318,6 +324,7 @@ struct SpatialEvent {
     diffuse: f32,
     horizontal_only: bool,
     zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
+    distance_m: Option<f32>,
     ramp: u32,
 }
 
@@ -467,11 +474,10 @@ struct Source {
     /// Suspended sources skip PCM and mixing work while metadata and envelopes
     /// retain their codec timing. PCM, gain events, or an unmute wake the source.
     suspended: bool,
-    /// Smoothed inverse-distance loudness for objects. ADM Cartesian positions
-    /// carry depth: |pos| < 1 sits closer to the listener than the unit-sphere
-    /// reference, |pos| > 1 sits farther. Without this the whole depth axis of
-    /// an object master collapses and approaching objects stay equally loud.
+    /// Smoothed inverse-distance loudness, enabled only by explicit codec metres.
     distance_gain: f32,
+    /// Finite codec distance in metres. `None` means direction-only metadata.
+    distance_m: Option<f32>,
     /// Per-ear openness targets for the current block, computed once per block
     /// from the pairwise occlusion pass (1 = unoccluded).
     occlusion_targets: [f32; 2],
@@ -521,6 +527,7 @@ impl Default for Source {
             mute_events: BTreeMap::new(),
             suspended: false,
             distance_gain: 1.0,
+            distance_m: None,
             occlusion_targets: [1.0; 2],
         }
     }
@@ -972,26 +979,16 @@ impl Engine {
         }
     }
 
-    /// Object depth loudness: relative spherical spreading referenced to the
-    /// ADM unit sphere. Objects carry unnormalised Cartesian positions, so an
-    /// approaching block (|pos| shrinking) must get louder the way a real
-    /// source does. Clamped to ±12 dB and smoothed (~30 ms per step) so jumps
-    /// in the metadata never click; beds and the LFE keep unity gain.
+    /// Object depth loudness uses explicit codec metres, never the magnitude of
+    /// a Cartesian direction vector. Atmos object coordinates can be off the
+    /// unit sphere while carrying no physical distance semantics.
     fn advance_distance_gain(source: &mut Source, samples: u32) {
         if source.kind != SourceKind::Object || source.lfe_gain != 0.0 || source.lfe_target != 0.0 {
             return;
         }
-        let distance = source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
-        if !distance.is_finite() || distance < 1e-4 {
-            return;
-        }
-        // Both halves of the mix must be treated: objects nearer than the ADM
-        // reference sphere gain up to +9 dB (enough to read as "approaching",
-        // not enough to let one close object mask the whole mix), and far
-        // placements stay at unity so the programme's object-vs-bed balance —
-        // which the loudness reference already accounts for — is preserved.
-        // Beds sit on the layout sphere (r = 1) and are never scaled.
-        let target = if distance < 1.0 { (1.0 / distance).clamp(1.0, 2.8) } else { 1.0 };
+        let target = source.distance_m
+            .filter(|distance| distance.is_finite() && *distance >= 1e-4)
+            .map_or(1.0, |distance| distance.recip().clamp(0.25, 2.8));
         // Exponential approach per sample; at 48 kHz the 0.9985 coefficient
         // settles a full ±12 dB swing in roughly 100 ms without zipper noise.
         let coefficient = (1.0 - (-(samples as f32) / 1600.0).exp()).min(1.0);
@@ -1001,6 +998,21 @@ impl Engine {
     /// Current smoothed distance gain of an object source.
     fn distance_gain(source: &Source) -> f32 {
         if source.kind != SourceKind::Object { 1.0 } else { source.distance_gain }
+    }
+
+    /// Convert explicit physical metres to the coordinate scale expected by
+    /// the near-field filter while retaining the authored direction vector.
+    fn physical_near_position(source: &Source, settings: near_field::Settings) -> Option<[f32; 3]> {
+        let distance = source.distance_m?;
+        if !distance.is_finite() || distance <= 0.0 || !settings.valid() {
+            return None;
+        }
+        let norm = source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        if !norm.is_finite() || norm < 1e-5 {
+            return None;
+        }
+        let units = distance / settings.metres_per_unit;
+        Some(source.position.map(|axis| axis * units / norm))
     }
 
     /// Pairwise source-to-source occlusion for the current render block. A
@@ -1081,11 +1093,12 @@ impl Engine {
     }
 
     fn start_source_motion(source: &mut Source, event: SpatialEvent) -> bool {
-        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.extent == event.extent && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only && source.zone_exclusion == event.zone_exclusion {
+        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.extent == event.extent && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only && source.zone_exclusion == event.zone_exclusion && source.distance_m == event.distance_m {
             return false;
         }
         source.horizontal_only = event.horizontal_only;
         source.zone_exclusion = event.zone_exclusion.clone();
+        source.distance_m = event.distance_m;
         if event.ramp == 0 {
             source.position = event.position;
             source.extent = event.extent;
@@ -1365,6 +1378,10 @@ impl Engine {
     /// stopping all beds and objects at the next convolution boundary.
     fn prepare_source_renderers(source: &mut Source, set: Option<&hrtf::NativeHrtfSet>, wet: f32,
         directional: bool, auto_sky_directional: bool, effective_direct: bool, near_active: bool) {
+        // Codec-provided metres enable the same dry-reference path as the
+        // manual near-field switch. Applying the correction to the full BRIR
+        // would also filter room residuals and alter the authored ambience.
+        let source_near_active = near_active || source.distance_m.is_some();
         if source.auto_sky_directional != auto_sky_directional {
             source.auto_sky_directional = auto_sky_directional;
         }
@@ -1380,9 +1397,9 @@ impl Engine {
             source.direct=set.and_then(|set|direct_renderer::DirectSource::new(set,wet).ok()).map(Box::new);
         }
         if let Some(direct)=&mut source.direct {
-            if !near_active {direct.release_near_reference_when_bypassed();}
+            if !source_near_active {direct.release_near_reference_when_bypassed();}
             if source.continuous_active && source.continuous_mix==1.0 {direct.release_near_reference_when_silent();}
-            if near_active && (!source.continuous_active || source.continuous_mix<1.0) && direct.near_reference.is_none() {
+            if source_near_active && (!source.continuous_active || source.continuous_mix<1.0) && direct.near_reference.is_none() {
                 direct.near_reference=set.and_then(|set|direct_renderer::DirectSource::new(set,0.0).ok()).map(Box::new);
             }
         }
@@ -1772,14 +1789,17 @@ impl Engine {
                         }
                     }
                     if block_index % 128 == 0 {
-                        // Objects carrying real ADM depth get near-field timbre
-                        // cues automatically: gains() is transparent at r >= 1,
-                        // so enabling it here never affects far placements.
                         let near_settings = near_field::Settings {
-                            enabled: near_active || source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() < 1.0,
+                            enabled: near_active || source.distance_m.is_some(),
                             ..self.near_field
                         };
-                        source.near_target = near_field::gains(source.position, head_pose, near_settings);
+                        source.near_target = if near_active {
+                            near_field::gains(source.position, head_pose, near_settings)
+                        } else if let Some(position) = Self::physical_near_position(source, near_settings) {
+                            near_field::gains(position, head_pose, near_settings)
+                        } else {
+                            [1.0; 2]
+                        };
                     }
                     let object_sample=sample*ROOM_SPEAKER_REFERENCE_GAIN*self.direct_mix;
                     if let Some(direct) = &mut source.direct {
@@ -1795,7 +1815,8 @@ impl Engine {
                         if input!=0.0 {
                             // Near sources sit outside the reverberant field:
                             // fade their room contribution as they close in.
-                            let norm=source.position.iter().map(|axis|axis*axis).sum::<f32>().sqrt();
+                            let norm=if near_active { source.position.iter().map(|axis|axis*axis).sum::<f32>().sqrt() }
+                                else { source.distance_m.map(|distance| distance / self.near_field.metres_per_unit).unwrap_or(1.0) };
                             let proximity_dry=if norm<1.0 {(0.25+0.75*norm).max(0.25)}else{1.0};
                             self.bus_renderer.as_mut().unwrap().add_reflections(input*proximity_dry,&std::array::from_fn(|bus|source.bus_gains[bus]*self.speaker_levels[bus]),block_index);
                         }
@@ -2631,7 +2652,7 @@ mod tests {
             // Obj14's captured OAMD uses this path and 1536-sample duration.
             // Retain its 577-sample QMF offset and shift the event to the first frame.
             source.spatial_events.insert(577, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
-                position: [-1.0, -1.0, 0.0], spread: 0.0, ramp: 1536,
+                position: [-1.0, -1.0, 0.0], spread: 0.0, distance_m: None, ramp: 1536,
             });
             engine.sources.insert("obj:14".into(), source);
             engine.route_source_now("obj:14", 0).unwrap();
@@ -2689,7 +2710,7 @@ mod tests {
                 position: [-1.0, 1.0, 0.0], gain: 1.0, target_gain: 1.0, ..Source::default() };
             source.samples.write(0, 0, &pcm);
             source.spatial_events.insert(12000, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
-                position: [1.0, 1.0, 0.0], spread: 0.0, ramp: 24000,
+                position: [1.0, 1.0, 0.0], spread: 0.0, distance_m: None, ramp: 24000,
             });
             engine.sources.insert("obj:14".into(), source);
             engine.route_source_now("obj:14", 0).unwrap();
@@ -3024,6 +3045,7 @@ mod tests {
             SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: target_position,
                 spread: 0.2,
+                distance_m: None,
                 ramp: 32,
             },
         );
@@ -3111,7 +3133,7 @@ mod tests {
             ..Source::default()
         };
         let position = [1.0, 0.0, 0.0];
-        source.spatial_events.insert(96, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0, position, spread: 0.2, ramp: 0 });
+        source.spatial_events.insert(96, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0, position, spread: 0.2, distance_m: None, ramp: 0 });
         source.gain_events.insert(96, GainEvent { gain: 0.25, ramp: 0 });
         engine.sources.insert("obj:7".into(), source);
         engine.route_source_now("obj:7", 0).unwrap();
@@ -3697,6 +3719,7 @@ mod tests {
                                 diffuse: event.diffuse.clamp(0.0, 1.0),
                                 horizontal_only: event.horizontal_only,
                                 zone_exclusion: event.zone_exclusion.clone().into(),
+                                distance_m: if event.distance_infinite { None } else { event.distance_m.filter(|distance| distance.is_finite() && *distance > 0.0) },
                                 ramp: event.ramp_duration,
                             };
                             if event.sample_pos > engine.sample_pos {
@@ -3851,6 +3874,7 @@ mod tests {
                                 diffuse: event.diffuse.clamp(0.0, 1.0),
                                 horizontal_only: event.horizontal_only,
                                 zone_exclusion: event.zone_exclusion.clone().into(),
+                                distance_m: if event.distance_infinite { None } else { event.distance_m.filter(|distance| distance.is_finite() && *distance > 0.0) },
                                 ramp: event.ramp_duration,
                             };
                             if event.sample_pos > engine.sample_pos { source.spatial_events.insert(event.sample_pos, spatial); }

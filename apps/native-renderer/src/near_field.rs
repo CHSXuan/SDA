@@ -112,6 +112,7 @@ mod tests {
     fn render(
         enabled: bool,
         position: [f32; 3],
+        distance_m: Option<f32>,
         bed: bool,
         room: bool,
         hardware: bool,
@@ -141,6 +142,7 @@ mod tests {
             },
             bed_label: bed.then(|| "FrontLeft".into()),
             position,
+            distance_m,
             gain: 1.0,
             target_gain: 1.0,
             availability: 1.0,
@@ -163,9 +165,8 @@ mod tests {
     }
     #[test]
     fn near_field_changes_object_pcm_but_preserves_far_beds_and_blocked_modes() {
-        // Objects carrying ADM depth auto-enable the correction, so the toggle
-        // no longer changes near objects; far objects and beds stay identical
-        // across the toggle, and hardware mode keeps blocking it.
+        // Direction-only coordinates must not auto-enable correction. Far
+        // objects, beds, and hardware mode stay identical across the toggle.
         for (p, bed, room, hardware) in [
             ([1.0, 0.0, 0.0], false, false, false),
             ([1.0, 0.0, 0.0], true, false, false),
@@ -173,15 +174,14 @@ mod tests {
             ([0.25, 0.0, 0.0], false, false, true),
         ] {
             assert_eq!(
-                render(false, p, bed, room, hardware),
-                render(true, p, bed, room, hardware)
+                render(false, p, None, bed, room, hardware),
+                render(true, p, None, bed, room, hardware)
             );
         }
-        // A near object now renders the correction whether or not the global
-        // toggle is on (auto-enable for real depth), so only the far case must
-        // bypass; the near render must differ from a far render's timbre.
-        let near_object = render(false, [0.25, 0.0, 0.0], false, false, false);
-        let far_object = render(false, [1.0, 0.0, 0.0], false, false, false);
+        // Explicit physical distance auto-enables correction. The direction
+        // vector remains a bearing and has no role in this decision.
+        let near_object = render(false, [0.25, 0.0, 0.0], Some(0.25), false, false, false);
+        let far_object = render(false, [0.25, 0.0, 0.0], None, false, false, false);
         let near_energy: f32 = near_object[24000..].iter().map(|x| x * x).sum();
         let delta: f32 = near_object[24000..]
             .iter()
