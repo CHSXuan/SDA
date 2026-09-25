@@ -1494,6 +1494,10 @@ export class SdaPlayer {
     if (!Number.isFinite(seconds) || seconds < 0) throw new Error("Invalid seek time");
     const epoch=++this.decodeEpoch;
     console.log(`[SDA] player#${this.id} seek ${seconds}s epoch=${epoch}`);
+    // Keep a currently writing codec batch ordered with the sidecar pipe, but
+    // discard every older batch that has not begun. Otherwise reset can sit
+    // behind seconds of obsolete PCM (and an earlier failed ACK) indefinitely.
+    this.nativeFrames.invalidatePending();
     this.seekSeconds = seconds;
     const sample = Math.round(seconds * this.sampleRate);
     this.pendingSeekSample = sample;this.seekBufferedNotified=false;
