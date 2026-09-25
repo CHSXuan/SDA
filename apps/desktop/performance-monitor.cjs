@@ -20,9 +20,9 @@ class DebugSequence {
   }
 }
 
-function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable}){
+function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDev,nativeCommand,nativePid,dialog,nativeExecutable,nativeTheme,webAssetRoot}){
   let simulating=false;
-  let child=null,endpoint=null,directory=null,monitorWindow=null,snapshot={},active=false;
+  let child=null,endpoint=null,directory=null,monitorWindow=null,snapshot={},active=false,nativeThemeEventsAttached=false,starting=false;
   let sent=0,dropped=0,networkIn=0,networkOut=0,chromiumReceived=0,chromiumRequestBody=0;
   const attached=new Set();
   function networkProbe(win){if(win.isDestroyed()||win.sdaPerformance||win.sdaRtcWorker||attached.has(win.webContents.id))return;try{const debug=win.webContents.debugger;if(debug.isAttached())return;debug.attach("1.3");attached.add(win.webContents.id);debug.on("message",(_event,method,params)=>{if(!active)return;if(method==="Network.loadingFinished")chromiumReceived+=Number(params.encodedDataLength)||0;if(method==="Network.requestWillBeSent")chromiumRequestBody+=Buffer.byteLength(params.request?.postData||"");});void debug.sendCommand("Network.enable").catch(()=>{});}catch{emit({stage:"network.chromium_unavailable",id:String(win.webContents.id),ms:0});}}
@@ -30,37 +30,54 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
   function emit(value){if(!active||!child)return;if(sent>4096){dropped++;return;}sent++;child.postMessage({type:'event',value:{maxAtMs:Date.now(),...value}});}
   function nativeConfig(){return {type:'setPerformance',enabled:active,path:directory?path.join(directory,`native-${nativePid()||'next'}.jsonl`):null};}
   function openWindow(){
-    if(monitorWindow&&!monitorWindow.isDestroyed()){monitorWindow.show();monitorWindow.focus();return;}
-    monitorWindow=new BrowserWindow({width:1160,height:800,title:'SDA 性能监视器',webPreferences:{preload:path.join(__dirname,'performance-preload.cjs'),contextIsolation:true,nodeIntegration:false}});
-    monitorWindow.sdaPerformance=true;monitorWindow.setMenu(null);monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html'));
+    if(monitorWindow&&!monitorWindow.isDestroyed()){monitorWindow.show();monitorWindow.focus();syncTheme();return;}
+    monitorWindow=new BrowserWindow({width:1160,height:800,title:'SDA 性能监视器',frame:false,backgroundColor:'#0c101c',webPreferences:{preload:path.join(__dirname,'performance-preload.cjs'),contextIsolation:true,nodeIntegration:false}});
+    monitorWindow.sdaPerformance=true;monitorWindow.setMenu(null);
+    // The monitor UI is a second entry of the web app (React + TS), sharing
+    // the app's design system; dev serves it from Vite, prod from the bundle.
+    if(isDev){void monitorWindow.loadURL("http://localhost:5173/performance.html").catch(()=>monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html')));}
+    else{
+      const root=webAssetRoot?.();
+      const entry=root?path.join(root,'performance.html'):null;
+      if(entry)monitorWindow.loadFile(entry).catch(()=>monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html')));
+      else monitorWindow.loadFile(path.join(__dirname,'performance-monitor.html'));
+    }
+    monitorWindow.webContents.on('did-finish-load',syncTheme);
   }
+  // Mirror the main window's theme (kept in nativeTheme.themeSource by
+  // sda:window-theme) so the monitor follows the app instead of its own
+  // hardcoded dark palette.
+  function syncTheme(){if(monitorWindow&&!monitorWindow.isDestroyed())monitorWindow.webContents.send('sda:performance-theme',nativeTheme.shouldUseDarkColors?'dark':'light');}
+  if(nativeTheme&&!nativeThemeEventsAttached){nativeThemeEventsAttached=true;nativeTheme.on('updated',syncTheme);}
   async function activate(){
     if(child){openWindow();return;}
+    starting=true;
     // On macOS the app bundle is read-only; use ~/Documents/SDA/outlogs instead.
     // On other platforms the exe directory is typically writable.
     const root=app.isPackaged?(process.platform==='darwin'?path.join(app.getPath('documents'),'SDA'):path.dirname(app.getPath('exe'))):path.resolve(__dirname,'../..');
     directory=path.join(root,'outlogs',new Date().toISOString().replace(/[:.]/g,'-'));
     try{await fs.promises.mkdir(directory,{recursive:true});await fs.promises.access(directory,fs.constants.W_OK);}catch(error){
       directory=path.join(app.getPath('userData'),'outlogs',path.basename(directory));
-      try{await fs.promises.mkdir(directory,{recursive:true});notify(`程序目录不可写，性能日志自动保存至 ${directory}`);}catch(fallback){notify(`性能日志无法保存：${fallback.message}`);return;}
+      try{await fs.promises.mkdir(directory,{recursive:true});notify(`程序目录不可写，性能日志自动保存至 ${directory}`);}catch(fallback){starting=false;notify(`性能日志无法保存：${fallback.message}`);return;}
     }
     const token=crypto.randomBytes(24).toString('hex');
     child=utilityProcess.fork(path.join(__dirname,'performance-worker.cjs'),[],{serviceName:'SDA Performance Collector',env:{...process.env,SDA_PERF_ROOT:directory,SDA_PERF_TOKEN:token,SDA_PERF_PID:String(process.pid)}});
     child.on('message',message=>{
-      if(message.type==='ready'){endpoint=message.endpoint;active=true;nativeCommand(nativeConfig());for(const win of BrowserWindow.getAllWindows())networkProbe(win);notify(`性能监视已开启，日志自动保存至 ${directory}`);openWindow();
+      if(message.type==='ready'){starting=false;endpoint=message.endpoint;active=true;nativeCommand(nativeConfig());for(const win of BrowserWindow.getAllWindows())networkProbe(win);notify(`性能监视已开启，日志自动保存至 ${directory}`);openWindow();
         require('./performance-simulation.cjs').run(nativeExecutable?.(),['--sda-performance-calibrate']).then(value=>child?.postMessage({type:'calibration',value})).catch(error=>notify(`负载校准不可用：${error.message}`));}
       if(message.type==='snapshot'){snapshot=message.value;sent=0;}
       if(message.type==='exported')notify(`性能日志已导出：${message.path}`);
       if(message.type==='error')notify(`性能日志错误：${message.error}`);
     });
-    child.on('exit',()=>{child=null;endpoint=null;active=false;nativeCommand(nativeConfig());notify('性能采集进程已退出；已有日志保留在 outlogs。');});
+    child.on('exit',()=>{child=null;endpoint=null;active=false;starting=false;nativeCommand(nativeConfig());notify('性能采集进程已退出；已有日志保留在 outlogs。');});
   }
   ipcMain.on('sda:performance-playback',(_event,value)=>{if(active&&child&&value&&typeof value==='object')child.postMessage({type:'playback',value});});
   ipcMain.handle('sda:performance-endpoint',()=>active?endpoint:null);
-  ipcMain.handle('sda:performance-snapshot',()=>({...snapshot,active,directory,dropped}));
+  ipcMain.handle('sda:performance-snapshot',()=>({...snapshot,active,directory,dropped,starting:!child&&!active&&starting}));
   ipcMain.handle('sda:performance-action',async(event,action)=>{
     if(event.sender!==monitorWindow?.webContents)return false;
     if(action==='export'){child?.postMessage({type:'export'});return true;}
+    if(action==='start'){void activate();return true;}
     if(action==='simulate'||action==='verify-codec'){
       if(simulating)return {error:'已有模拟正在运行'};
       simulating=true;
@@ -72,6 +89,7 @@ function createPerformanceMonitor({app,BrowserWindow,ipcMain,utilityProcess,isDe
       }catch(error){return {error:error.message};}finally{simulating=false;}
     }
     if(action==='toggle'){active=!active;child?.postMessage({type:'active',active});nativeCommand(nativeConfig());notify(active?'性能记录已继续':'性能记录已暂停，已有日志已保存');return true;}
+    if(action==='resume'){void activate();return true;}
     return false;
   });
   app.on('before-quit',()=>child?.postMessage({type:'shutdown'}));

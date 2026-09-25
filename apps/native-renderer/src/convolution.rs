@@ -13,6 +13,10 @@ use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 // samples, independently of the convolution partition.
 pub const DEFAULT_PARTITION: usize = 1024;
 
+/// Duration used when a continuously moving object retargets its HRTF. This
+/// bounds phase cancellation between two valid but differently delayed HRIRs.
+pub const DIRECTIONAL_FILTER_TRANSITION_SAMPLES: usize = DEFAULT_PARTITION / 8;
+
 /// Prepared spectral filters for one measured direction. Runtime state lives
 /// in `StereoPartitionedConvolver`; a set of these partitions is therefore
 /// reusable when multiple source directions map to the same HRTF.
@@ -431,6 +435,43 @@ mod tests {
                 assert!((right[i] - expected).abs() < 1e-6);
             }
         }
+    }
+
+    #[test]
+    fn short_directional_transition_avoids_a_block_length_phase_null() {
+        let partition = 64;
+        let initial = [1.0, 0.0, 0.0, 0.0];
+        // At 8 kHz/48 kHz this three-sample delay is 180 degrees from initial.
+        let target = [0.0, 0.0, 0.0, 1.0];
+        let mut convolver = StereoPartitionedConvolver::new(&initial, &initial, partition).unwrap();
+        let target = convolver.prepare_pair(&target, &target);
+        let mut phase = 0.0_f32;
+        let step = std::f32::consts::TAU / 6.0;
+        let mut render = |convolver: &mut StereoPartitionedConvolver| {
+            let input: Vec<_> = (0..partition)
+                .map(|_| {
+                    let sample = phase.sin();
+                    phase += step;
+                    sample
+                })
+                .collect();
+            let mut left = vec![0.0; partition];
+            let mut right = vec![0.0; partition];
+            convolver.process_block(&input, &mut left, &mut right).unwrap();
+            left
+        };
+        render(&mut convolver);
+        render(&mut convolver);
+        convolver.transition_to(target, partition / 8);
+        let moving = render(&mut convolver);
+        let settled = render(&mut convolver);
+        let rms = |samples: &[f32]| {
+            (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+        assert!(
+            rms(&moving) / rms(&settled) > 0.9,
+            "short motion transition still produced a broad phase null"
+        );
     }
 
     fn direct(input: &[f32], ir: &[f32]) -> Vec<f32> {

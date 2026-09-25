@@ -32,4 +32,29 @@ player.stereoBalanceEligible=true;player.measuredLoudnessBlocks=1000;
 player.measuredLoudness={integratedLufs:-12,peakDbfs:-1,blocks:1000};
 player.onWorkerMessage({data:{type:'flushed',epoch:player.decodeEpoch}});
 assert.equal(completedMeasurements,0,'partial seek decode must not overwrite full-song loudness cache');
+
+let releaseOldFrame;
+const oldFrameReleased=new Promise(resolve=>{releaseOldFrame=resolve;});
+let oldFrameStarted;
+const oldFrameStartedPromise=new Promise(resolve=>{oldFrameStarted=resolve;});
+const supersededCalls=[];
+const supersededSink={
+  reset:async sample=>supersededCalls.push(['reset',sample]),
+  setProgramGainDb:async(gain,sample)=>supersededCalls.push(['gain',gain,sample]),
+  setLfeMuted:()=>{},
+};
+const supersededPlayer=new SdaPlayer({}, {outputBackend:'native-sidecar',nativeRendererSink:supersededSink});
+supersededPlayer.pausedState=true;
+void supersededPlayer.nativeFrames.submit(async()=>{
+  supersededCalls.push(['old-frame']);
+  oldFrameStarted();
+  await oldFrameReleased;
+});
+void supersededPlayer.nativeFrames.submit(async()=>supersededCalls.push(['stale-frame']));
+await oldFrameStartedPromise;
+const firstSeek=supersededPlayer.prepareSeek(10);
+const secondSeek=supersededPlayer.prepareSeek(20);
+releaseOldFrame();
+await Promise.all([firstSeek,secondSeek]);
+assert.deepEqual(supersededCalls,[['old-frame'],['reset',960000],['gain',null,960000]],'only the newest seek may run after queued stale frames are invalidated');
 console.log('Player seek: same Worker/output, retained pause/gain and no partial loudness-cache writes passed');

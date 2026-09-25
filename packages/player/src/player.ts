@@ -158,6 +158,8 @@ export interface NativeRendererSink {
   pause(paused: boolean): void | Promise<boolean>;
   /** Selects the master-defined virtual physical speaker layout. */
   setLayout(layout: LayoutId): void | Promise<void>;
+  /** Announces the codec before its PCM batches reach the native sidecar. */
+  setProgramCodec?(codec: string): void | Promise<void>;
   /** Optional native DAC consumption cursor on the codec sample clock. */
   getConsumedSamples?(): number;
   getPrebufferSeconds?(): number;
@@ -321,6 +323,11 @@ export class SdaPlayer {
   private binauralMetadata: BinauralRenderMetadata | null = null;
   /** Visual metadata waits for the same codec sample clock as audio gains. */
   private pendingVisualEvents: ObjectEvent[] = [];
+  /** Most recent spatial event per object id. Native `reset` wipes source
+   * positions, and sparse object streams may not publish a new position for
+   * seconds, so a seek must replay these or every silent object collapses
+   * onto the default [0, 1, 0] placement until its next movement. */
+  private lastObjectEvents = new Map<number, ObjectEvent>();
   private pendingVisualCursor = 0;
   private pendingVisualTargets = new Map<number, ObjectEvent>();
   private visualObjectsSnapshot: VisualObject[] = [];
@@ -1491,6 +1498,10 @@ export class SdaPlayer {
     if (!Number.isFinite(seconds) || seconds < 0) throw new Error("Invalid seek time");
     const epoch=++this.decodeEpoch;
     console.log(`[SDA] player#${this.id} seek ${seconds}s epoch=${epoch}`);
+    // Keep a currently writing codec batch ordered with the sidecar pipe, but
+    // discard every older batch that has not begun. Otherwise reset can sit
+    // behind seconds of obsolete PCM (and an earlier failed ACK) indefinitely.
+    this.nativeFrames.invalidatePending();
     this.seekSeconds = seconds;
     const sample = Math.round(seconds * this.sampleRate);
     this.pendingSeekSample = sample;this.seekBufferedNotified=false;
@@ -1515,6 +1526,19 @@ export class SdaPlayer {
       // Native reset clears programme gain along with queued audio. Seeking
       // within the same song must not temporarily bypass its loudness balance.
       await this.nativeRendererSink?.setProgramGainDb(this.programLoudnessGainDb, sample);
+      // Native reset also wipes every source position. Sparse object streams
+      // may not publish a fresh position for seconds, so replay each object's
+      // last known event at the seek target (ramp 0 = immediate) — otherwise
+      // silent objects sit at the default [0,1,0] placement with wrong
+      // distance/panning until their next movement.
+      if (this.lastObjectEvents.size) {
+        const replay: ObjectEvent[] = [];
+        for (const event of this.lastObjectEvents.values()) {
+          replay.push({ ...event, samplePos: sample, rampDuration: 0 });
+        }
+        replay.sort((a, b) => a.id - b.id);
+        await this.nativeRendererSink?.events(replay);
+      }
     });
     if (epoch===this.decodeEpoch) {
       this.installNativeConsumedClock();this.installNativeObjectActivity();
@@ -1866,6 +1890,9 @@ export class SdaPlayer {
         }
         this.trackCodec = track.codec;
         this.ensureStreamRate(track.sampleRate);
+        void Promise.resolve(this.nativeRendererSink?.setProgramCodec?.(track.codec)).catch(error => {
+          console.warn(`[SDA] player#${this.id} native codec mode update failed:`, error);
+        });
         console.log(
           `[SDA] player#${this.id} 轨道 ${track.container}/${track.codec} ${track.sampleRate}Hz ${track.channels}ch` +
           (track.durationSec ? ` ${track.durationSec.toFixed(3)}s` : ""),
@@ -1946,6 +1973,9 @@ export class SdaPlayer {
       this.trackReported = true;
       this.trackCodec = frame.codec;
       this.ensureStreamRate(frame.sampleRate);
+      void Promise.resolve(this.nativeRendererSink?.setProgramCodec?.(frame.codec)).catch(error => {
+        console.warn(`[SDA] player#${this.id} native codec mode update failed:`, error);
+      });
       this.cb.onTrack?.({
         codec: frame.codec,
         sampleRate: frame.sampleRate,
@@ -2151,6 +2181,7 @@ export class SdaPlayer {
       const events = frame.events as ObjectEvent[];
       renderer?.applyEvents(events);
       this.queueVisualEvents(events);
+      for (const event of events) this.lastObjectEvents.set(event.id, event);
 
       // Enqueue every channel of the decoded frame atomically on the codec's
       // absolute sample clock. Per-source feed messages allowed the worklet to

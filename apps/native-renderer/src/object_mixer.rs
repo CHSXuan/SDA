@@ -28,6 +28,9 @@ pub struct Buffer {
     pub activity: Vec<ObjectActivitySnapshot>,
     pub underruns: u64,
     pub route_updates: u64,
+    /// Accumulated (sum of squares, count) keyed by is_bed, folded into the
+    /// engine's level probe for the bed-vs-object balance diagnostic.
+    pub level_probe: std::collections::HashMap<bool, (f64, u64)>,
 }
 impl Buffer {
     pub fn new() -> Self {
@@ -36,6 +39,7 @@ impl Buffer {
             activity: Vec::new(),
             underruns: 0,
             route_updates: 0,
+            level_probe: std::collections::HashMap::new(),
         }
     }
     fn reset(&mut self, activity: &[ObjectActivitySnapshot]) {
@@ -212,6 +216,9 @@ fn mix_source(
         // the following sample. Advancing here would make every moving
         // object start one step ahead of its scheduled codec sample.
         let raw = source.samples.take(at);
+        if let Some(value) = raw {
+            buffer.level_probe.entry(source.kind == crate::SourceKind::Bed).and_modify(|p| { p.0 += (value as f64) * (value as f64); p.1 += 1; }).or_insert(((value as f64) * (value as f64), 1u64));
+        }
         let target = if raw.is_some() { 1.0 } else { 0.0 };
         if target != source.availability_target {
             // Streams legitimately encode whole silent passages per object.
@@ -253,6 +260,7 @@ fn mix_source(
         let mut sample = raw.unwrap_or(0.0)
             * source.availability
             * source.gain
+            * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
         if source.object_id.is_some() && sample.abs() >= OBJECT_ACTIVITY_THRESHOLD {
             source.activity_until =
@@ -314,17 +322,23 @@ fn mix_source(
                 head: head_pose,
                 diffuse: source.diffuse.max(if ctx.extent.enabled {ctx.extent.diffusion}else{0.0}),
                 horizontal_only: source.horizontal_only,
+                // Square the spread/extent the same way as the general path
+                // (Engine::route): the continuous footprint renders the authored
+                // width literally, which unstabilises vocals authored against the
+                // VBAP snap path where spread only tilts bus gains.
                 width: if ctx.extent.enabled {
-                    source.extent[0].max(ctx.extent.width) * 120.0
+                    let w = source.extent[0].max(ctx.extent.width);
+                    w * w * 120.0
                 } else {
-                    source.spread * 120.0
+                    source.spread * source.spread * 120.0
                 },
                 height: if source.horizontal_only {
                     0.0
                 } else if ctx.extent.enabled {
-                    source.extent[2] * 120.0
+                    let h = source.extent[2];
+                    h * h * 120.0
                 } else {
-                    source.spread * 120.0
+                    source.spread * source.spread * 120.0
                 },
                 depth: if ctx.extent.enabled {
                     source.extent[1]
@@ -340,22 +354,31 @@ fn mix_source(
             );
         }
         if block_index % 128 == 0 {
-            source.near_target = crate::near_field::gains(
-                source.position,
-                head_pose,
-                crate::near_field::Settings {
-                    enabled: ctx.near_active,
-                    ..ctx.near_field
-                },
-            );
+            let near_settings = crate::near_field::Settings {
+                enabled: ctx.near_active || source.distance_m.is_some(),
+                ..ctx.near_field
+            };
+            source.near_target = if ctx.near_active {
+                crate::near_field::gains(source.position, head_pose, near_settings)
+            } else if let Some(position) = Engine::physical_near_position(source, near_settings) {
+                crate::near_field::gains(position, head_pose, near_settings)
+            } else {
+                [1.0; 2]
+            };
         }
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
+        if block_index == 0 { continuous.occlusion_targets = source.occlusion_targets; }
         continuous.frames[block_index].input = input;
         continuous.frames[block_index].near = source.near_target;
         if input != 0.0 {
+            // Near sources sit outside the reverberant field: fade their room
+            // contribution as they close in (mirror of the general path).
+            let norm = if ctx.near_active { source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() }
+                else { source.distance_m.map(|distance| distance / ctx.near_field.metres_per_unit).unwrap_or(1.0) };
+            let proximity_dry = if norm < 1.0 { (0.25 + 0.75 * norm).max(0.25) } else { 1.0 };
             buffer.add_reflections(
-                input,
+                input * proximity_dry,
                 &std::array::from_fn(|bus| source.bus_gains[bus] * levels[bus]),
                 block_index,
             );

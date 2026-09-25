@@ -1,4 +1,4 @@
-import {formatAutoLayout, resolveAutoLayout} from "./auto-layout";
+import {formatAutoLayout, resolveAutoLayout, uses360RaLowerLayer} from "./auto-layout";
 import ObjectRenderingStatus from "./components/ObjectRenderingStatus";
 import {GlassRefraction} from "./components/GlassRefraction";
 import SheetHeading from "./components/SheetHeading";
@@ -184,7 +184,7 @@ function binauralHeadBaseUrl(head: BinauralHead, calibrated = readKu100Calibrati
   return assetUrl(head === "ku100" ? (calibrated ? "hrtf" : "hrtf-raw") : `hrtf-${head}`);
 }
 function nativeHrtfSetName(head: BinauralHead, dense = readDenseBinauralObjects(), calibrated = readKu100Calibration()): string {
-  return head === "ku100" ? `${dense ? "hrtf-dense" : "hrtf"}${calibrated ? "" : "-raw"}` : `hrtf-${head}`;
+  return head === "ku100" ? `${dense ? "hrtf-dense" : "hrtf"}${calibrated ? "" : "-raw"}` : `hrtf-${head}${dense && !head.startsWith("personal-") ? "-dense" : ""}`;
 }
 type StereoRenderMode = "original" | "dry" | "room";
 function readStereoRenderMode(): StereoRenderMode {
@@ -202,8 +202,11 @@ function readDenseBinauralObjects(): boolean {
     return false;
   }
 }
-function denseBinauralBaseUrl(calibrated = readKu100Calibration()): string {
-  return assetUrl(calibrated ? "hrtf-dense" : "hrtf-dense-raw");
+function denseBinauralBaseUrl(calibrated = readKu100Calibration(), head = readBinauralHead()): string {
+  return assetUrl(nativeHrtfSetName(head, true, calibrated));
+}
+function effectiveDenseBinauralObjects(codec: string | undefined, manualDense: boolean, head: BinauralHead): boolean {
+  return !head.startsWith("personal-") && (manualDense || uses360RaLowerLayer(codec));
 }
 
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
@@ -415,10 +418,12 @@ export function App() {
   const [binauralHead, setBinauralHead] = useState<BinauralHead>(readBinauralHead);
   const [ku100Calibration, setKu100Calibration] = useState(readKu100Calibration);
   const [ku100CalibrationBusy, setKu100CalibrationBusy] = useState(false);
-  /** 逐对象精确方向双耳渲染（实验性，仅完整 KU100 资产族）。 */
+  /** 高解析方向集（内置 KU100、D2、H3–H20 使用各自测量）。 */
   const [denseBinauralObjects, setDenseBinauralObjects] = useState<boolean>(
-    () => readBinauralHead() === "ku100" && readDenseBinauralObjects(),
+    () => !readBinauralHead().startsWith("personal-") && readDenseBinauralObjects(),
   );
+  /** The active stream codec is separate from the user's saved Dense preference. */
+  const currentCodecRef = useRef<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("output");
   const [directObjectHrtf, setDirectObjectHrtf] = useState(() => localStorage.getItem("sda-direct-object-hrtf") === "true");
@@ -519,6 +524,7 @@ export function App() {
       let endedHandled = false;
       let nativeSessionReady = false;
       let playbackHeadCentered = false;
+      currentCodecRef.current = undefined;
       const nativeSessionEpoch = nativeSessionEpochRef.current;
       const isNativeSessionCurrent = () => nativeSessionEpochRef.current === nativeSessionEpoch && isCurrent();
       const ownsNativeSession = () => nativeSessionReady && isNativeSessionCurrent();
@@ -660,6 +666,11 @@ export function App() {
               if (!ownsNativeSession()) return;
               await enqueueNative(`setLayout=${layout}`, () => desktop.nativeRendererLayout?.(layout));
             },
+            setProgramCodec: async (codec) => {
+              if (!ownsNativeSession()) return;
+              if (!desktop.nativeRendererProgramCodec) return;
+              await enqueueNative(`setProgramCodec=${codec}`, () => desktop.nativeRendererProgramCodec!(codec));
+            },
             events: async (events) => {
               if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
               await enqueueNative(`objectEvents (${events.length})`, () => desktop.nativeRendererEvents?.(events));
@@ -783,6 +794,19 @@ export function App() {
         },
         onTrack: (t) => {
           if (!isCurrent()) return;
+          currentCodecRef.current = t.codec;
+          const head = readBinauralHead();
+          const effectiveDense = effectiveDenseBinauralObjects(t.codec, readDenseBinauralObjects(), head);
+          // 360RA's three lower speakers sit below ear level. The ordinary set
+          // has no negative-elevation measurements, so use the same subject's
+          // dense measured grid for this stream only. Do not rewrite objects.
+          void Promise.all([
+            enqueueNative(`setHrtf ${effectiveDense ? "dense" : "standard"} for ${t.codec}`,
+              () => desktop.nativeRendererHrtf?.(nativeHrtfSetName(head, effectiveDense), 0.04) ?? false),
+            createdPlayer?.setDenseBinauralObjects(effectiveDense, denseBinauralBaseUrl(readKu100Calibration(), head)),
+          ]).catch((error) => {
+            if (isCurrent()) setErrors((prev) => [...prev, `360RA HRTF 配置失败: ${String(error)}`]);
+          });
           const formatLayout = formatAutoLayout(t.codec);
           const keep360Layout = formatLayout === "360RA-13"
             && (layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2");
@@ -914,7 +938,7 @@ export function App() {
         onSeekBuffered: () => { if (isCurrent()) { seekTargetRef.current = null; setSeeking(false); } },
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
-        denseBinauralObjects: readBinauralHead() === "ku100" && readDenseBinauralObjects(),
+        denseBinauralObjects: !readBinauralHead().startsWith("personal-") && readDenseBinauralObjects(),
         denseBinauralBaseUrl: denseBinauralBaseUrl(),
         outputBackend: "native-sidecar",
         nativeRendererSink: nativeRendererSink!,
@@ -1151,7 +1175,10 @@ export function App() {
       const next = nativeRendererStatus?.running
         ? await desktop.stopNativeRenderer()
         : await desktop.startNativeRenderer();
-      if (next.running) await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.04);
+      if (next.running) {
+        const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
+        await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead, effectiveDense, ku100Calibration), 0.04);
+      }
       if (next.running && desktop.getCinemaSettings && desktop.nativeRendererCinema) {
         const cinema = await desktop.getCinemaSettings();
         if (!await desktop.nativeRendererCinema(cinema.settings, cinema.profileId)) throw new Error("影院设置恢复失败");
@@ -1560,7 +1587,7 @@ export function App() {
       ||!await api?.nativeRendererStereoMode?.(saved.stereo)
       ||!await api?.nativeRendererComparisonGain?.(0))throw new Error("对照设置恢复失败");
     await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(saved.head,saved.calibrated));
-    await playerRef.current?.setDenseBinauralObjects(saved.dense,denseBinauralBaseUrl(saved.calibrated));
+    await playerRef.current?.setDenseBinauralObjects(saved.dense,denseBinauralBaseUrl(saved.calibrated,saved.head));
     localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,saved.head);localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,saved.dense?"1":"0");
     localStorage.setItem(KU100_CALIBRATION_KEY,saved.calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode",saved.stereo);
     setBinauralHead(saved.head);setDenseBinauralObjects(saved.dense);setKu100Calibration(saved.calibrated);setStereoRenderMode(saved.stereo);
@@ -1581,7 +1608,8 @@ export function App() {
     if(roomComparison!==null)await restoreRoomComparison();
     if(!(await api.getNativeRendererStatus?.())?.running)await api.startNativeRenderer?.();
     if(!await api.nativeRendererLayout?.((layoutId==="auto"?detectedLayout??"7.1.4":layoutId) as LayoutId))throw new Error("房间布局设置失败");
-    if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw new Error("HRTF 未就绪");
+    const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
+    if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,effectiveDense,ku100Calibration),.04))throw new Error("HRTF 未就绪");
     const current=await api.getCinemaSettings();
     if(!await api.nativeRendererCinema?.({...current.settings,enabled:true,reflectionMode:"full",...ROOM_LISTENING_LEVELS,speakers:{}},roomId))throw new Error("房间档案未被接受");
     setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));
@@ -1597,7 +1625,7 @@ export function App() {
       if(!await api.nativeRendererHrtf?.(nativeHrtfSetName("ku100",false,calibrated),.04))throw new Error("HRTF 对照切换失败");
       const settings:CinemaSettings={monitor:(await api.getCinemaSettings()).settings.monitor,enabled:true,reflectionMode:stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
       if(!await api.nativeRendererCinema?.(settings,next==="room"?roomId:null)||!await api.nativeRendererComparisonGain?.(gainDb)||!await api.nativeRendererStereoMode?.("room"))throw new Error("房间对照设置失败");
-      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",calibrated));await playerRef.current?.setDenseBinauralObjects(false,denseBinauralBaseUrl(calibrated));
+      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",calibrated));await playerRef.current?.setDenseBinauralObjects(false,denseBinauralBaseUrl(calibrated,"ku100"));
       localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,"ku100");localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,"0");localStorage.setItem(KU100_CALIBRATION_KEY,calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode","room");
       setBinauralHead("ku100");setDenseBinauralObjects(false);setKu100Calibration(calibrated);setStereoRenderMode("room");
       comparisonGain.current=gainDb;setRoomComparison(next);
@@ -1638,7 +1666,8 @@ export function App() {
     if(next&&roomComparison!==null)await restoreRoomComparison();
     if(!(await api?.getNativeRendererStatus?.())?.running) {
       await api?.startNativeRenderer?.();
-      if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw new Error("HRTF 未就绪");
+      const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
+      if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,effectiveDense,ku100Calibration),.04))throw new Error("HRTF 未就绪");
     }
     if(!await api?.nativeRendererHeadphoneProfile?.(next,source))throw new Error("耳机模拟切换失败");
     setHeadphoneSource(source);localStorage.setItem("sda-headphone-simulation-source",source);
@@ -1656,62 +1685,53 @@ export function App() {
     playerRef.current?.setBinauralLowFrequencyDiagnostic(next);
   }, []);
 
-  const changeBinauralHead = useCallback((next: BinauralHead) => {
-    try {
-      localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY, next);
-    } catch {
-      // 持久化失败不影响本次切换。
-    }
-    setBinauralHead(next);
-    // The 61-direction dense object set is KU100-only. Keeping it active with a
-    // complete D2/Hx subject set would recreate a cross-subject HRTF hybrid.
-    if (next !== "ku100") {
-      try { localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, "0"); } catch {}
-      setDenseBinauralObjects(false);
-      void playerRef.current?.setDenseBinauralObjects(false);
-    }
-    void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
-    if (nativeRendererRunningRef.current) void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(next), 0.04);
-  }, []);
+  const changeBinauralHead = async (next: BinauralHead) => {
+    try { await applyPersonalHrtf(next); }
+    catch (error) { setErrors(prev=>[...prev,`HRTF 切换失败: ${String(error)}`]); }
+  };
 
   const [personalHrtfBusy,setPersonalHrtfBusy] = useState(false);
   const applyPersonalHrtfInternal = async (next: string) => {
     if (!(BINAURAL_HEAD_IDS as readonly string[]).includes(next) && !/^personal-[a-f0-9]{64}$/.test(next)) throw new Error("未知 HRTF 档案");
 
     const previous = binauralHead;
+    const nextManualDense = !next.startsWith("personal-") && denseBinauralObjects;
+    const nextDense = effectiveDenseBinauralObjects(currentCodecRef.current, nextManualDense, next);
+    const previousDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, previous);
     const api = window.sdaDesktop;
     if (api) {
       if (!(await api.getNativeRendererStatus?.())?.running) {
         if (!await api.startNativeRenderer?.()) throw new Error("原生渲染器启动失败");
       }
-      if (!await api.nativeRendererHrtf?.(nativeHrtfSetName(next, false), .04)) {
-        if (!await api.nativeRendererHrtf?.(nativeHrtfSetName(previous, denseBinauralObjects), .04)) throw new Error("个人 HRTF 切换失败，原档案恢复也失败，请重试");
+      if (!await api.nativeRendererHrtf?.(nativeHrtfSetName(next, nextDense), .04)) {
+        if (!await api.nativeRendererHrtf?.(nativeHrtfSetName(previous, previousDense), .04)) throw new Error("个人 HRTF 切换失败，原档案恢复也失败，请重试");
         throw new Error("原生渲染器未接受个人 HRTF，已恢复原档案");
       }
     }
     try {
-      await playerRef.current?.setDenseBinauralObjects(false);
+      await playerRef.current?.setDenseBinauralObjects(nextDense,denseBinauralBaseUrl(ku100Calibration,next));
       await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
     } catch (error) {
-      await api?.nativeRendererHrtf?.(nativeHrtfSetName(previous, denseBinauralObjects), .04);
+      await api?.nativeRendererHrtf?.(nativeHrtfSetName(previous, previousDense), .04);
       await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(previous));
-      await playerRef.current?.setDenseBinauralObjects(denseBinauralObjects, denseBinauralBaseUrl());
+      await playerRef.current?.setDenseBinauralObjects(previousDense, denseBinauralBaseUrl());
       throw error;
     }
     setBinauralHead(next);
-    setDenseBinauralObjects(false);
+    setDenseBinauralObjects(nextManualDense);
     localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY, next);
-    localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, "0");
+    localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, nextManualDense ? "1" : "0");
   };
-  const applyPersonalHrtf = async (next: string, parameters?:PhrtfParameters, assessment?:unknown) => {
+  const applyPersonalHrtf = async (next: string, parameters?:PhrtfParameters, assessment?:unknown): Promise<string> => {
     if (personalHrtfBusy) throw new Error("HRTF 正在切换");
     setPersonalHrtfBusy(true);
     try {
-      if(parameters){
+      if(next==="generated"&&(parameters||assessment)){
         if(!window.sdaDesktop?.generatePersonalHrtf)throw new Error("生成与保存 pHRTF 需要新版桌面端");
         next=(await window.sdaDesktop.generatePersonalHrtf(parameters,assessment)).id;
       }
       await applyPersonalHrtfInternal(next);
+      return next;
     }
     finally { setPersonalHrtfBusy(false); }
   };
@@ -1722,48 +1742,58 @@ export function App() {
     setKu100CalibrationBusy(true);
     const desktop = window.sdaDesktop;
     const previous = ku100Calibration;
+    const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, "ku100");
     let nativeChanged = false;
     try {
       const status = await desktop?.getNativeRendererStatus?.();
       if (status?.running) {
-        if (!await desktop?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",denseBinauralObjects,next),0.04)) {
+        if (!await desktop?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",effectiveDense,next),0.04)) {
           throw new Error("原生渲染器未接受 KU100 校准切换");
         }
         nativeChanged = true;
       }
       await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",next));
-      await playerRef.current?.setDenseBinauralObjects(denseBinauralObjects,denseBinauralBaseUrl(next));
+      await playerRef.current?.setDenseBinauralObjects(effectiveDense,denseBinauralBaseUrl(next));
       try { localStorage.setItem(KU100_CALIBRATION_KEY,next ? "1" : "0"); } catch {}
       setKu100Calibration(next);
     } catch (error) {
       try {
-        if(nativeChanged) await desktop?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",denseBinauralObjects,previous),0.04);
+        if(nativeChanged) await desktop?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",effectiveDense,previous),0.04);
         await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",previous));
-        await playerRef.current?.setDenseBinauralObjects(denseBinauralObjects,denseBinauralBaseUrl(previous));
+        await playerRef.current?.setDenseBinauralObjects(effectiveDense,denseBinauralBaseUrl(previous));
       } catch (restoreError) { setErrors(prev=>[...prev,`KU100 恢复失败: ${String(restoreError)}`]); }
       setErrors(prev=>[...prev,`KU100 校准切换失败: ${String(error)}`]);
     } finally { setKu100CalibrationBusy(false); }
   };
   const changeDenseBinauralObjects = useCallback(async (on: boolean) => {
     if (denseBinauralBusy) return;
-    const allowed = binauralHead === "ku100";
+    const allowed = !binauralHead.startsWith("personal-");
     const next = allowed && on;
+    const previous = denseBinauralObjects;
+    const effectiveNext = effectiveDenseBinauralObjects(currentCodecRef.current, next, binauralHead);
+    const effectivePrevious = effectiveDenseBinauralObjects(currentCodecRef.current, previous, binauralHead);
     setDenseBinauralBusy(true);
     try {
       const desktop = window.sdaDesktop;
       const status = await desktop?.getNativeRendererStatus?.();
-      if (status?.running && !await desktop?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead, next), 0.04)) {
+      if (status?.running && !await desktop?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead, effectiveNext, ku100Calibration), 0.04)) {
         throw new Error("原生渲染器未接受高解析 HRTF 设置");
       }
-      await playerRef.current?.setDenseBinauralObjects(next, denseBinauralBaseUrl());
+      await playerRef.current?.setDenseBinauralObjects(effectiveNext, denseBinauralBaseUrl(ku100Calibration,binauralHead));
       try { localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, next ? "1" : "0"); } catch {}
       setDenseBinauralObjects(next);
     } catch (error) {
+      try {
+        const desktop = window.sdaDesktop;
+        if ((await desktop?.getNativeRendererStatus?.())?.running)
+          await desktop?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,effectivePrevious,ku100Calibration),0.04);
+        await playerRef.current?.setDenseBinauralObjects(effectivePrevious,denseBinauralBaseUrl(ku100Calibration,binauralHead));
+      } catch (restoreError) { setErrors(prev=>[...prev,`HRTF 恢复失败: ${String(restoreError)}`]); }
       setErrors((prev) => [...prev, `高解析 HRTF 切换失败: ${String(error)}`]);
     } finally {
       setDenseBinauralBusy(false);
     }
-  }, [binauralHead, denseBinauralBusy]);
+  }, [binauralHead, denseBinauralBusy, denseBinauralObjects, ku100Calibration]);
 
   const resetBinauralEq = useCallback(() => {
     for (const band of ["low", "mid", "high"] as const) localStorage.setItem(`sda-binaural-eq-${band}-db`, "0");
@@ -1973,7 +2003,8 @@ export function App() {
         if(roomComparison!==null)throw Error("主机正在对照试听，请先退出对照");
         const api=window.sdaDesktop,current=await api?.getCinemaSettings?.();
         if(!current)throw Error("主机音频设置不可用");
-        if(!playerRef.current&&!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw Error("HRTF 未就绪");
+        const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
+        if(!playerRef.current&&!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,effectiveDense,ku100Calibration),.04))throw Error("HRTF 未就绪");
         let next=current.settings,nextProfileId=current.profileId;
         const request=command.value as {expected:string;profileId?:string|null;settings:CinemaSettings & import("./vite-env").MonitorSettings};
         if(command.action==="roomSettings"){
@@ -2007,21 +2038,21 @@ export function App() {
         await remoteToolsFetch.current();break;
       }
       case "hrtfTune":{
-        if(binauralHead!=="ku100"||roomComparison!==null||personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy)throw Error("当前不能修改 KU100 设置");
+        if(binauralHead.startsWith("personal-")||roomComparison!==null||personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy)throw Error("当前不能修改 HRTF 设置");
         const request=command.value as {dense:boolean;calibrated:boolean};
         const api=window.sdaDesktop;
-        if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",request.dense,request.calibrated),.04))throw Error("主机未接受 KU100 设置");
+        if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,request.dense,request.calibrated),.04))throw Error("主机未接受 HRTF 设置");
         try{
-          await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",request.calibrated));
+          await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(binauralHead,request.calibrated));
           await playerRef.current?.setDenseBinauralObjects(request.dense,denseBinauralBaseUrl(request.calibrated));
-        }catch(e){await api?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",denseBinauralObjects,ku100Calibration),.04);throw e;}
+        }catch(e){await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04);throw e;}
         setKu100Calibration(request.calibrated);setDenseBinauralObjects(request.dense);
         localStorage.setItem(KU100_CALIBRATION_KEY,request.calibrated?"1":"0");localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,request.dense?"1":"0");break;
       }
       case "hrtfGenerate":{
         if(playing&&!paused)throw Error("请先暂停歌曲，再保存测试结果");
         if(roomComparison!==null)throw Error("请先退出对照试听");
-        const request=command.value as {parameters:PhrtfParameters;assessment:unknown};
+        const request=command.value as {parameters?:PhrtfParameters;assessment:unknown};
         await applyPersonalHrtf("generated",request.parameters,request.assessment);await remoteToolsFetch.current();break;
       }
       case "hrtf":
@@ -2195,7 +2226,7 @@ export function App() {
                 </label>
               </fieldset>
             )}
-            {window.sdaDesktop?.startNativeRenderer&&<><DirectionalHrtfPanel/><SourceExtentPanel/><NearFieldPanel/></>}
+            {window.sdaDesktop?.startNativeRenderer&&<><DirectionalHrtfPanel codec={track?.codec}/><SourceExtentPanel/><NearFieldPanel/></>}
             </div>
             <div className="settings-content" id="settings-content-eq" role="tabpanel" aria-labelledby="settings-tab-eq" hidden={settingsTab !== "eq"}>
             {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}
@@ -2455,14 +2486,12 @@ export function App() {
                 </button>
               ))}
             </div>
-            <label className="settings-switch" title={binauralHead === "ku100"
-              ? "采用 KU100 的 61 向测量 HRTF。原生播放保留当前扬声器布局，同时用于声床和对象的双耳滤波；独立对象渲染由对象 HRTF 开关控制。"
-              : "高解析对象集目前仅有完整 KU100 的 61 向测量。为避免将 KU100 对象 HRTF 混入当前完整 subject HRTF，此模式已关闭。"}>
-              <span>高解析 HRTF（仅 KU100）</span>
+            <label className="settings-switch" title="使用当前耳廓档案自己的 61 向 HRTF，开启和关闭可对照标准方向集。360RA 因含耳下层会在播放期间自动使用该网格；个人生成档案暂无独立高解析测量集。">
+              <span>高解析 HRTF</span>
               <input
                 type="checkbox"
                 role="switch"
-                disabled={personalHrtfBusy || binauralHead !== "ku100" || denseBinauralBusy || ku100CalibrationBusy || nativeRendererBusy || roomComparison!==null}
+                disabled={personalHrtfBusy || binauralHead.startsWith("personal-") || denseBinauralBusy || ku100CalibrationBusy || nativeRendererBusy || roomComparison!==null}
                 checked={denseBinauralObjects}
                 onChange={(event) => changeDenseBinauralObjects(event.target.checked)}
               />

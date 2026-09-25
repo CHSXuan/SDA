@@ -120,6 +120,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   nativeRendererComparisonGain: (gainDb) => ipcRenderer.invoke("sda:comparison-gain",gainDb),
   nativeRendererObjectHrtf: (enabled) => ipcRenderer.invoke("sda:native-renderer-object-hrtf", enabled),
   nativeRendererDirectionalHrtf: (enabled) => ipcRenderer.invoke("sda:native-renderer-directional-hrtf", enabled),
+  nativeRendererProgramCodec: (codec) => ipcRenderer.invoke("sda:native-renderer-program-codec", codec),
   nativeRendererNearField: (settings) => ipcRenderer.invoke("sda:native-renderer-near-field", settings),
   nativeRendererSourceExtent: (settings) => ipcRenderer.invoke("sda:native-renderer-source-extent", settings),
   nativeRendererLayout: (layout) => ipcRenderer.invoke("sda:native-renderer-layout", layout),

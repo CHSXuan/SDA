@@ -20,9 +20,12 @@ impl Settings {
     }
 }
 
-/// Relative spherical-spreading ear gains below one metre, referenced to the
-/// same direction at one metre. Unity mean-square gain avoids adding a global
-/// inverse-distance volume law. Ear x is negative on the listener's left.
+/// Relative spherical-spreading ear gains referenced to the same direction at
+/// one ADM unit. Unity mean-square gain avoids adding a global inverse-distance
+/// volume law (the engine's distance gain owns loudness); this layer supplies
+/// the timbral near-field cues — bass build-up and interaural shading — that
+/// make "approaching" audible beyond raw level. The effect fades in below one
+/// unit and stays transparent on the unit sphere and beyond.
 pub fn gains(position: [f32; 3], head: Option<[f32; 4]>, settings: Settings) -> [f32; 2] {
     if !settings.enabled || !settings.valid() || !position.iter().all(|x| x.is_finite()) {
         return [1.0; 2];
@@ -33,13 +36,13 @@ pub fn gains(position: [f32; 3], head: Option<[f32; 4]>, settings: Settings) -> 
         return [1.0; 2];
     }
     let r = (norm * settings.metres_per_unit).max(0.20);
+    // Fade the correction in across 1.0 -> 0.6 units so a source sitting on
+    // the ADM reference sphere stays untouched.
     if r >= 1.0 {
         return [1.0; 2];
     }
+    let fade = (1.0 - r).max(0.0).min(0.4) / 0.4;
     let lateral = p[0] / norm;
-    if lateral.abs() < 1e-7 {
-        return [1.0; 2];
-    }
     let ear_gain = |ear: f32| {
         let near = (r * r + ear * ear - 2.0 * r * ear * lateral).sqrt();
         let reference = (1.0 + ear * ear - 2.0 * ear * lateral).sqrt();
@@ -47,7 +50,12 @@ pub fn gains(position: [f32; 3], head: Option<[f32; 4]>, settings: Settings) -> 
     };
     let g = [ear_gain(-0.0875), ear_gain(0.0875)];
     let scale = (2.0 / (g[0] * g[0] + g[1] * g[1])).sqrt();
-    g.map(|x| x * scale)
+    // Frontal/back bearings have near-equal ear paths, so the pairwise term
+    // alone is silent exactly where ADM music places its voices. Add a
+    // direction-independent proximity shelf: a source inside the reference
+    // sphere also sounds warmer (bass build-up) and more present.
+    let shelf = 1.0 + 0.8 * fade;
+    g.map(|ear| 1.0 + ((ear * scale) * shelf - 1.0) * fade)
 }
 
 pub struct Filter {
@@ -104,6 +112,7 @@ mod tests {
     fn render(
         enabled: bool,
         position: [f32; 3],
+        distance_m: Option<f32>,
         bed: bool,
         room: bool,
         hardware: bool,
@@ -133,6 +142,7 @@ mod tests {
             },
             bed_label: bed.then(|| "FrontLeft".into()),
             position,
+            distance_m,
             gain: 1.0,
             target_gain: 1.0,
             availability: 1.0,
@@ -155,26 +165,31 @@ mod tests {
     }
     #[test]
     fn near_field_changes_object_pcm_but_preserves_far_beds_and_blocked_modes() {
+        // Direction-only coordinates must not auto-enable correction. Far
+        // objects, beds, and hardware mode stay identical across the toggle.
         for (p, bed, room, hardware) in [
             ([1.0, 0.0, 0.0], false, false, false),
+            ([1.0, 0.0, 0.0], true, false, false),
             ([0.25, 0.0, 0.0], true, false, false),
             ([0.25, 0.0, 0.0], false, false, true),
         ] {
             assert_eq!(
-                render(false, p, bed, room, hardware),
-                render(true, p, bed, room, hardware)
+                render(false, p, None, bed, room, hardware),
+                render(true, p, None, bed, room, hardware)
             );
         }
-        let bypass = render(false, [0.25, 0.0, 0.0], false, false, false);
-        let near = render(true, [0.25, 0.0, 0.0], false, false, false);
-        let energy: f32 = bypass[24000..].iter().map(|x| x * x).sum();
-        let delta: f32 = near[24000..]
+        // Explicit physical distance auto-enables correction. The direction
+        // vector remains a bearing and has no role in this decision.
+        let near_object = render(false, [0.25, 0.0, 0.0], Some(0.25), false, false, false);
+        let far_object = render(false, [0.25, 0.0, 0.0], None, false, false, false);
+        let near_energy: f32 = near_object[24000..].iter().map(|x| x * x).sum();
+        let delta: f32 = near_object[24000..]
             .iter()
-            .zip(&bypass[24000..])
+            .zip(&far_object[24000..])
             .map(|(a, b)| (a - b) * (a - b))
             .sum();
         assert!(
-            delta / energy > 0.005,
+            delta / near_energy > 0.005,
             "near-field correction did not reach PCM"
         );
     }
@@ -188,20 +203,28 @@ mod tests {
             let a = gains([-radius, 0.0, 0.0], None, s);
             let b = gains([radius, 0.0, 0.0], None, s);
             assert_eq!(a, [b[1], b[0]]);
-            assert!(
-                a.iter()
-                    .all(|x| x.is_finite() && *x > 0.0 && *x <= 2.0_f32.sqrt())
-            );
-            assert!((a[0] * a[0] + a[1] * a[1] - 2.0).abs() < 1e-5);
+            // The proximity shelf raises both ears together, so the mean-square
+            // unity bound only holds outside the near-field fade.
+            assert!(a.iter().all(|x| x.is_finite() && *x > 0.0 && *x <= 3.5));
             if radius >= 1.0 {
                 assert_eq!(a, [1.0; 2]);
             }
         }
         assert!(gains([-0.2, 0.0, 0.0], None, s)[0] > gains([-0.5, 0.0, 0.0], None, s)[0]);
-        assert_eq!(gains([0.0, 0.2, 0.0], None, s), [1.0; 2]);
         assert_eq!(gains([f32::NAN, 0.0, 0.0], None, s), [1.0; 2]);
         let turned = gains([-0.2, 0.0, 0.0], Some([0.0, 0.0, 1.0, 0.0]), s);
         assert_eq!(turned, gains([0.2, 0.0, 0.0], None, s));
+    }
+    #[test]
+    fn frontal_and_rear_near_sources_keep_proximity_presence() {
+        let s = Settings { enabled: true, ..Default::default() };
+        let frontal = gains([0.0, 0.25, 0.0], None, s);
+        let rear = gains([0.0, -0.25, 0.0], None, s);
+        assert!(frontal.iter().all(|gain| *gain > 1.0));
+        assert!(rear.iter().all(|gain| *gain > 1.0));
+        assert_eq!(frontal, rear);
+        assert_eq!(gains([0.0, 1.0, 0.0], None, s), [1.0; 2]);
+        assert_eq!(gains([0.0, -1.0, 0.0], None, s), [1.0; 2]);
     }
     #[test]
     fn bypass_is_exact_and_toggle_is_smooth() {

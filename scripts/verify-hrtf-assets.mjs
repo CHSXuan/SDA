@@ -21,6 +21,7 @@ const calibrated = manifest.calibrationVersion >= 1 && manifest.processing?.cali
 const calibrationV2 = calibrated && manifest.calibrationVersion >= 2;
 const calibrationV3 = calibrated && manifest.calibrationVersion >= 3;
 const calibrationV4 = calibrated && manifest.calibrationVersion >= 4;
+const calibrationV5 = calibrated && manifest.calibrationVersion >= 5;
 
 function stereoEnergyDb(samples, length, start = 0, end = length) {
   let energy = 0;
@@ -89,7 +90,7 @@ if (!Array.isArray(manifest.positions) || manifest.positions.length !== expected
 if (calibrated) {
   if (manifest.processing?.peakNormalized !== false) errors.push("校准资产不得峰值归一");
   if (manifest.processing?.runtimeEnergyNormalization !== false) errors.push("校准资产必须禁用运行时IR能量归一");
-  if (!["sda-ku100-room-v1", "sda-ku100-room-v2", "sda-ku100-room-v3", "sda-ku100-room-v4"].includes(manifest.calibration?.algorithm)) {
+  if (!["sda-ku100-room-v1", "sda-ku100-room-v2", "sda-ku100-room-v3", "sda-ku100-room-v4", "sda-ku100-room-v5"].includes(manifest.calibration?.algorithm)) {
     errors.push("校准算法版本无效");
   }
   if (!Number.isFinite(manifest.calibration?.commonArrivalSample)) errors.push("缺共同到达目标");
@@ -142,6 +143,16 @@ if (calibrated) {
     const exclusions = highPass?.excludes;
     if (!Array.isArray(exclusions) || !["dry HRIR", "runtime LFE", "final headphone EQ", "physical multichannel output"].every((item) => exclusions.includes(item))) {
       errors.push("v4 room residual高通排除范围无效");
+    }
+  }
+  if (calibrationV5) {
+    const gate = manifest.calibration?.roomResidualQualityGate;
+    if (manifest.subjectId !== "ku100"
+      || gate?.version !== "sda-ku100-brir-residual-quality-v1"
+      || gate?.scope !== "offline KU100 derived BRIR room residual only"
+      || gate?.rule !== "a wet BRIR source may serve only its canonical virtual direction"
+      || gate?.rejectedAction !== "zero the derived room tail and preserve the calibrated dry KU100 response") {
+      errors.push("v5缺KU100 BRIR residual质量门记录");
     }
   }
 }
@@ -220,7 +231,26 @@ for (const position of manifest.positions ?? []) {
           }
           const decorrelation = processing?.roomTailDecorrelation;
           const variant = ["60/0", "-60/0"].includes(key);
-          if (variant) {
+          const quality = processing?.roomTailQuality;
+          if (calibrationV5) {
+            const shouldReject = variant;
+            if (quality?.version !== manifest.calibration?.roomResidualQualityGate?.version
+              || quality?.status !== (shouldReject ? "rejected" : "accepted")
+              || quality?.weight !== (shouldReject ? 0 : 1)
+              || quality?.dryFallback !== shouldReject
+              || !Number.isInteger(quality?.wetSourceUseCount)
+              || quality.wetSourceUseCount < 1
+              || !Number.isFinite(quality?.wetAngularErrorDegrees)) {
+              errors.push(`${key}/wet: v5 residual质量门provenance无效`);
+            }
+            if (shouldReject) {
+              if (decorrelation?.role !== "rejected-reused-source" || decorrelation?.algorithm !== null) {
+                errors.push(`${key}/wet: v5复用BRIR必须拒绝而非去相关`);
+              }
+            } else if (decorrelation?.role !== "canonical" || decorrelation?.algorithm !== null) {
+              errors.push(`${key}/wet: v5独立或canonical BRIR不得去相关`);
+            }
+          } else if (variant) {
             if (decorrelation?.role !== "variant"
               || decorrelation?.algorithm !== manifest.calibration.roomTailDecorrelation.algorithm
               || decorrelation?.commonLeftRightFilter !== true) {
@@ -330,11 +360,19 @@ for (const position of manifest.positions ?? []) {
           const residualBands = position.processing.wet?.residualBands;
           const bassEnergyDb = roomResidualBandEnergyDb(dry, dryLength, wet, wetLength, 20, 120);
           const midEnergyDb = roomResidualBandEnergyDb(dry, dryLength, wet, wetLength, 250, 4000);
+          const rejected = calibrationV5 && position.processing.wet?.roomTailQuality?.status === "rejected";
           if (!Number.isFinite(residualBands?.baselineV3BassEnergyDb)
-            || !Number.isFinite(residualBands?.bassReductionDb)
-            || !Number.isFinite(residualBands?.baselineV3MidEnergyDb)
-            || !Number.isFinite(residualBands?.midDifferenceDb)) {
+            || !Number.isFinite(residualBands?.baselineV3MidEnergyDb)) {
             errors.push(`${key}/wet: v4缺residual频带基线provenance`);
+          } else if (rejected) {
+            if (bassEnergyDb !== Number.NEGATIVE_INFINITY || midEnergyDb !== Number.NEGATIVE_INFINITY
+              || residualBands.outputBassEnergyDb !== null || residualBands.outputMidEnergyDb !== null
+              || residualBands.bassReductionDb !== null || residualBands.midDifferenceDb !== null) {
+              errors.push(`${key}/wet: v5拒绝的BRIR残差必须完全回退到dry KU100`);
+            }
+          } else if (!Number.isFinite(residualBands?.bassReductionDb)
+            || !Number.isFinite(residualBands?.midDifferenceDb)) {
+            errors.push(`${key}/wet: v4缺residual频带输出provenance`);
           } else {
             if (Math.abs(residualBands.outputBassEnergyDb - bassEnergyDb) > 1e-4
               || Math.abs(residualBands.outputMidEnergyDb - midEnergyDb) > 1e-4) {
@@ -414,7 +452,10 @@ if (calibrated && dryAnalyses.length === expectedDirections.size) {
   if (calibrationV2 && v2Outputs.length === expectedDirections.size) {
     const centroidValues = v2Outputs.map((entry) => entry.centroid);
     const fullHrirValues = v2Outputs.map((entry) => entry.fullHrirEnergyDb);
-    const roomValues = v2Outputs.map((entry) => entry.roomEnergyDb);
+    const roomValues = calibrationV5
+      ? v2Outputs.filter((entry) => manifest.positions.find((position) => `${position.azimuth}/${position.elevation}` === entry.key)
+        ?.processing?.wet?.roomTailQuality?.status !== "rejected").map((entry) => entry.roomEnergyDb)
+      : v2Outputs.map((entry) => entry.roomEnergyDb);
     const centroidSpread = Math.max(...centroidValues) - Math.min(...centroidValues);
     const fullHrirSpread = Math.max(...fullHrirValues) - Math.min(...fullHrirValues);
     const roomSpread = Math.max(...roomValues) - Math.min(...roomValues);
@@ -427,7 +468,9 @@ if (calibrated && dryAnalyses.length === expectedDirections.size) {
       if (Math.abs(entry.fullHrirEnergyDb - manifest.calibration.directReference.targetEnergyDb) > 0.01) {
         errors.push(`${entry.key}/dry: full-HRIR能量偏离目标`);
       }
-      if (Math.abs(entry.roomEnergyDb - manifest.calibration.roomResidualReference.targetEnergyDb) > 0.1) {
+      const rejected = calibrationV5 && manifest.positions.find((position) => `${position.azimuth}/${position.elevation}` === entry.key)
+        ?.processing?.wet?.roomTailQuality?.status === "rejected";
+      if (!rejected && Math.abs(entry.roomEnergyDb - manifest.calibration.roomResidualReference.targetEnergyDb) > 0.1) {
         errors.push(`${entry.key}/wet: room residual能量偏离目标`);
       }
     }

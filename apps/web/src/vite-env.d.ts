@@ -100,6 +100,7 @@ declare global {
     samplePos?: number;
     outputActive?: boolean;
     hrtfReady?: boolean;
+    programCodecSupported?: boolean | null;
   }
 
   interface NativeRendererObjectActivity {
@@ -127,7 +128,7 @@ declare global {
       listPersonalHrtf?: () => Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}[]>;
       renamePersonalHrtf?: (id:string,name:string)=>Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}>;
       personalHrtfArchive?: (action:"copy"|"export",id:string,value:string)=>Promise<{id?:string;path?:string}>;
-      generatePersonalHrtf?: (parameters:import("../../desktop/parametric-hrtf.mjs").PhrtfParameters,assessment?:unknown) => Promise<{id:string;name:string;method:string}>;
+      generatePersonalHrtf?: (parameters:import("../../desktop/parametric-hrtf.mjs").PhrtfParameters|undefined,assessment?:unknown) => Promise<{id:string;name:string;method:string}>;
       importPersonalHrtf?: (sourcePath:string) => Promise<{id:string;name:string;directions:number;method:string;createdAt?:string;createdAtSource?:string}>;
       browseMedia?: {
         (action:"places"):Promise<MediaBrowserPlaces>;
@@ -190,6 +191,7 @@ declare global {
       nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
       nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;
       nativeRendererDirectionalHrtf?: (enabled:boolean) => Promise<boolean>;
+      nativeRendererProgramCodec?: (codec: string) => Promise<boolean>;
       nativeRendererNearField?: (settings: {enabled:boolean;metresPerUnit:number}) => Promise<boolean>;
       nativeRendererSourceExtent?: (settings: {enabled:boolean;width:number;diffusion:number}) => Promise<boolean>;
       nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;

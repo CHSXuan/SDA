@@ -648,6 +648,7 @@ pub fn run(
         protocol: PROTOCOL,
         sample_rate: 48000,
         output_channels: 2,
+        features: &["programCodec"],
     });
     let input_fifo=fifo.clone();let input_t=telemetry.clone();
     thread::spawn(move || {
@@ -1161,6 +1162,7 @@ mod platform {
             protocol: PROTOCOL,
             sample_rate: 48000,
             output_channels: 2,
+            features: &["programCodec"],
         });
         let input_fifo = fifo.clone();
         let input_t = telemetry.clone();

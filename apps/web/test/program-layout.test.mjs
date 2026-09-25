@@ -41,24 +41,40 @@ test("stereo restores automatic or manually selected immersive layout before PCM
 });
 
 // Exercise the actual onTrack transition before metadata/cover handling.
-test("360RA selections survive same-format tracks and reset when leaving the format", () => {
+test("360RA selections survive same-format tracks, use Dense for the lower layer, and reset when leaving", () => {
   const trackStart = source.indexOf("onTrack: (t) => {");
   const transition = source.slice(trackStart + "onTrack: ".length, source.indexOf("          if (coverUrlRef.current)", trackStart)) + "}";
   for (const selected of ["360RA-13", "22.2"]) {
     for (const codec of ["mpegh", "mha1", "mhm1", "eac3", "truehd", "ac4", "iamf", "dts", "flac", "bwf"]) {
       const calls = [];
+      const denseCalls = [];
+      const nativeCalls = [];
       const is360 = ["mpegh", "mha1", "mhm1"].includes(codec);
       const context = {
         isCurrent: () => true,
+        currentCodecRef: {current: undefined},
+        readBinauralHead: () => "ku100",
+        readDenseBinauralObjects: () => false,
+        readKu100Calibration: () => true,
+        effectiveDenseBinauralObjects: (currentCodec, manual, head) => !head.startsWith("personal-") && (manual || ["mpegh", "mha1", "mhm1"].includes(currentCodec)),
+        nativeHrtfSetName: (_head, dense) => dense ? "hrtf-dense" : "hrtf",
+        denseBinauralBaseUrl: () => "/hrtf-dense/",
+        enqueueNative: (label, operation) => { nativeCalls.push(label); return operation(); },
+        desktop: {nativeRendererHrtf: set => { nativeCalls.push(set); return true; }},
         formatAutoLayout: () => is360 ? "360RA-13" : undefined,
         layoutIdRef: {current:selected}, immersiveLayoutRef: {current:selected},
         setLayoutId: value => calls.push(value), setDetectedLayout() {},
-        createdPlayer: {setAutoLayout: () => calls.push("player:auto")},
+        createdPlayer: {
+          setAutoLayout: () => calls.push("player:auto"),
+          setDenseBinauralObjects: dense => denseCalls.push(dense),
+        },
       };
       runInNewContext(`(${transition})`, context)({codec});
       assert.equal(context.layoutIdRef.current, is360 ? selected : "auto", `${selected} -> ${codec}`);
       assert.equal(context.immersiveLayoutRef.current, is360 ? selected : "auto");
       assert.deepEqual(calls, is360 ? [] : ["auto", "player:auto"]);
+      assert.deepEqual(denseCalls, [is360], `${codec} activates only its required HRTF grid`);
+      assert.ok(nativeCalls.includes(is360 ? "hrtf-dense" : "hrtf"), `${codec} selects matching native HRTF`);
     }
   }
 });

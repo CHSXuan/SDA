@@ -35,6 +35,14 @@ while(Get-Process -Id $RootPid -ErrorAction SilentlyContinue){
  $previous=$next
  $cpuTotal=Sum-Available $rows 'cpuPercent'
  $machine=if($null -ne $cpuTotal){$cpuTotal/[Environment]::ProcessorCount}else{$null}
- @{time=$start;processes=@($rows);unavailable=$unavailable;cpuPercent=$cpuTotal;totalMachinePercent=$machine;workingSetBytes=(Sum-Available $rows 'workingSetBytes');readBytesPerSecond=(Sum-Available $rows 'readBytesPerSecond');writeBytesPerSecond=(Sum-Available $rows 'writeBytesPerSecond');includesCollector=$true}|ConvertTo-Json -Depth 5 -Compress
+ # Per-core utilization from the OS perf counter (formatted data = one ready
+ # sample per call). Names are locale-dependent, so match on instance values
+ # instead of '_Total'/'0,1' literal names.
+ $perCore=$null
+ try {
+  $samples=@(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -ErrorAction Stop | Where-Object {$_.Name -ne '_Total'} | Sort-Object Name)
+  if($samples.Count){$perCore=@($samples | ForEach-Object {[double]$_.PercentProcessorTime})}
+ }catch{$perCore=$null}
+ @{time=$start;processes=@($rows);unavailable=$unavailable;cpuPercent=$cpuTotal;totalMachinePercent=$machine;perCoreCpu=$perCore;workingSetBytes=(Sum-Available $rows 'workingSetBytes');readBytesPerSecond=(Sum-Available $rows 'readBytesPerSecond');writeBytesPerSecond=(Sum-Available $rows 'writeBytesPerSecond');includesCollector=$true}|ConvertTo-Json -Depth 5 -Compress
  Start-Sleep -Milliseconds 1000
 }

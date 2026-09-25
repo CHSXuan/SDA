@@ -126,16 +126,27 @@ impl NativeHrtfSet {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        // Dense object grids omit some physical speaker anchors (e.g. +/-45
-        // degrees overhead). Keep the matching standard set for speaker buses.
+        // Dense grids omit some physical speaker anchors (e.g. +/-45 degrees
+        // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
             Some("hrtf-dense") => Some("hrtf"),
             Some("hrtf-dense-raw") => Some("hrtf-raw"),
+            Some(name) if name.ends_with("-dense") && (name.starts_with("hrtf-h") || name == "hrtf-d2-dense") => name.strip_suffix("-dense"),
             _ => None,
         }.map(|name| {
             let parent = root.parent().ok_or("HRTF asset root has no parent")?;
             Self::load_calibrated(&parent.join(name).join("hrtf-set.json")).map(Box::new)
         }).transpose()?;
+        // KU100 is a complete dummy-head measurement set, not an individual
+        // subject profile. Its measured pinna notches remain valid at both the
+        // standard and dense resolutions, but a time-domain mix of adjacent
+        // directions can still cancel a narrow-band moving source. Keep the
+        // guard available for every calibrated KU100 set; it only takes over
+        // after the interpolated response has already collapsed. The original
+        // dense KU100 manifest predates `subjectId`, so retain its established
+        // 61-point fallback until that provenance is added to the asset.
+        let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
+            || (is_dense_ku100 && manifest.subject_id.is_none());
         Ok(Self {
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
@@ -144,7 +155,7 @@ impl NativeHrtfSet {
             subject_id: manifest.subject_id,
             complete_subject,
             positions: manifest.positions,
-            directional_grid: crate::directional::Grid::new(&cache),
+            directional_grid: crate::directional::Grid::new_with_notch_guard(&cache, ku100_notch_guard),
             cache,
             speaker_set,
             prepared: std::collections::HashMap::new(),
@@ -172,6 +183,21 @@ impl NativeHrtfSet {
         Ok(cached)
     }
 
+    /// A dense HRTF grid may omit some layout anchors. Speaker buses must use
+    /// its calibrated measurement where one exists, rather than silently
+    /// substituting the coarser companion set used only for absent anchors.
+    pub fn has_exact_measurement(&self, azimuth: f64, elevation: f64) -> bool {
+        let key = Self::direction_key(azimuth, elevation);
+        self.positions.iter().any(|position| Self::direction_key(position.azimuth, position.elevation) == key)
+    }
+
+    fn speaker_ir(&self, azimuth: f64, elevation: f64) -> Result<StereoIr, String> {
+        if self.has_exact_measurement(azimuth, elevation) {
+            return self.nearest(azimuth, elevation);
+        }
+        self.speaker_set.as_deref().unwrap_or(self).nearest(azimuth, elevation)
+    }
+
     pub fn directional_dry(&self, direction: crate::directional::Direction, layout: crate::vbap::LayoutId,
         gains: [f32;crate::vbap::MAX_BUS_COUNT], amounts: [f32;crate::vbap::MAX_BUS_COUNT]) -> Result<(Vec<f32>,Vec<f32>),String> {
         self.directional_dry_length(direction,layout,gains,amounts,self.speaker_filter_len()+crate::convolution::DEFAULT_PARTITION)
@@ -183,7 +209,7 @@ impl NativeHrtfSet {
         // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
         // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
         // when a 512-tap HRIR also needs four fractional-delay padding samples.
-        base+127+calibration+self.cinema.monitor.max_delay()+480
+        base+127+calibration+self.output_max_delay()+480
     }
     pub fn directional_dry_compact(&self,direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
         gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT])->Result<(Vec<f32>,Vec<f32>),String>{
@@ -229,7 +255,7 @@ impl NativeHrtfSet {
             if gains[bus]<=0.0{continue;}
             let scaled=(pair.0.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect(),
                 pair.1.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect());
-            let calibrated=self.cinema.monitor.filter(speaker.name,self.cinema.calibrate(speaker.name,scaled)?);
+            let calibrated=self.output_filter(speaker.name,layout.as_str(),self.cinema.calibrate(speaker.name,scaled)?);
             // Preserve speaker mute/trim/focus controls after common object-level
             // calibration, without mixing their directional HRIRs into the PCM.
             let weight=gains[bus]*gains[bus]/norm;
@@ -254,15 +280,42 @@ impl NativeHrtfSet {
         self.speaker_prepared.clear();
     }
 
+    fn room_alignment_active(&self, layout: &str) -> bool {
+        self.cinema.enabled && self.room_profile.as_ref().is_some_and(|profile| profile.layout == layout)
+    }
+
+    fn output_filter(&self, name: &str, layout: &str, pair: (Vec<f32>, Vec<f32>)) -> (Vec<f32>, Vec<f32>) {
+        if self.cinema.monitor.enabled {
+            self.cinema.monitor.filter(name, pair)
+        } else if self.room_alignment_active(layout) {
+            self.cinema.monitor.alignment_filter(name, pair)
+        } else {
+            pair
+        }
+    }
+
+    fn output_max_delay(&self) -> usize {
+        if self.cinema.monitor.enabled {
+            self.cinema.monitor.max_delay()
+        } else if self.cinema.enabled && self.room_profile.is_some() {
+            self.cinema.monitor.max_alignment_delay()
+        } else {
+            0
+        }
+    }
+
     pub fn speaker_filter_len(&self) -> usize {
         let base = self.cache.iter().map(|ir| ir.wet.len() / 2).max().unwrap_or(8192)
             .max(self.speaker_set.as_ref().map_or(0, |set| set.speaker_filter_len()));
-        let monitor_delay = self.cinema.monitor.max_delay();
+        let monitor_delay = self.output_max_delay();
         if !self.cinema.enabled { return base + monitor_delay; }
         let room = self.room_profile.as_ref().map_or(0, |p| p.speakers.iter().map(|s| s.room_left.len()).max().unwrap_or(0));
         let delay = self.cinema.speakers.values().map(|s| (s.delay_ms * 48.0).round() as usize).max().unwrap_or(0);
         let tail = if self.cinema.speakers.values().any(|s| s.low_db != 0.0 || s.high_db != 0.0) { 2048 } else { 0 };
-        let length = if self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-")) { base + room } else { base.max(room) };
+        let preserve_direct = self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-"))
+            || self.room_profile.as_ref().is_some_and(|p| p.measurement == "simulated"
+                && p.simulation.as_ref().and_then(|v| v.get("sourceModel")).and_then(|v| v.as_str()) == Some("ideal-omnidirectional"));
+        let length = if preserve_direct { base + room } else { base.max(room) };
         length + delay + tail + monitor_delay
     }
 
@@ -270,8 +323,16 @@ impl NativeHrtfSet {
         let profile = self.room_profile.as_ref().filter(|profile| self.cinema.enabled && profile.layout == layout);
         let pair = if let Some(profile) = profile {
             let speaker = profile.speakers.iter().find(|s| s.name == name).ok_or("room profile missing speaker")?;
-            if self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-")) {
-                let ir = self.nearest(azimuth, elevation)?;
+            // Ideal-source simulations supply room acoustics, not a replacement
+            // listener. Their independent HRIR/distance reference must not change
+            // the selected HRTF's front/rear direct-sound balance.
+            let simulated_room = profile.measurement == "simulated"
+                && profile.simulation.as_ref().and_then(|v| v.get("sourceModel"))
+                    .and_then(|v| v.as_str()) == Some("ideal-omnidirectional");
+            if simulated_room || self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-")) {
+                let ir = if simulated_room { self.speaker_ir(azimuth, elevation)? } else {
+                    self.nearest(azimuth, elevation)?
+                };
                 let n = ir.dry.len() / 2;
                 let dry = (&ir.dry[..n], &ir.dry[n..]);
                 // Keep the accepted personal direct response. The room contributes only
@@ -279,13 +340,21 @@ impl NativeHrtfSet {
                 let peak = |v: &[f32]| v.iter().enumerate().fold((0,0.0_f32), |best,(i,x)| if x.abs()>best.1 {(i,x.abs())}else{best}).0;
                 let onset = peak(dry.0).min(peak(dry.1));
                 let shift = onset as isize - speaker.onset_sample as isize;
+                // One scalar for both ears retains the simulated reflection ILD
+                // and its direct-to-reverberant ratio; never normalize ears alone.
+                let energy = |a: &[f32], b: &[f32]| a.iter().chain(b).map(|v| (*v as f64).powi(2)).sum::<f64>();
+                let residual_gain = if simulated_room {
+                    let reference = energy(&speaker.direct_left, &speaker.direct_right);
+                    if reference <= 1e-20 { return Err("simulated room has no direct reference".into()); }
+                    (energy(dry.0, dry.1) / reference).sqrt() as f32
+                } else { 1.0 };
                 let length = n.max(speaker.room_left.len().saturating_add_signed(shift));
                 let mut left = vec![0.0; length]; let mut right = vec![0.0; length];
                 left[..n].copy_from_slice(dry.0); right[..n].copy_from_slice(dry.1);
                 for (out, room, original) in [(&mut left,&speaker.room_left,&speaker.direct_left),(&mut right,&speaker.room_right,&speaker.direct_right)] {
                     for (i,(r,d)) in room.iter().zip(original).enumerate() {
                         let target = i as isize + shift;
-                        if target >= 0 && (target as usize) < length { out[target as usize] += r-d; }
+                        if target >= 0 && (target as usize) < length { out[target as usize] += (r-d) * residual_gain; }
                     }
                 }
                 self.cinema.mix(dry, (&left,&right), if wet == 0.0 {0.0}else{1.0}, onset)
@@ -294,12 +363,12 @@ impl NativeHrtfSet {
                     if wet == 0.0 { 0.0 } else { 1.0 }, speaker.onset_sample)
             }
         } else {
-            let ir = self.speaker_set.as_deref().unwrap_or(self).nearest(azimuth, elevation)?;
+            let ir = self.speaker_ir(azimuth, elevation)?;
             let d = ir.dry.len() / 2;
             let r = ir.wet.len() / 2;
             self.cinema.mix((&ir.dry[..d], &ir.dry[d..]), (&ir.wet[..r], &ir.wet[r..]), wet, 128)
         };
-        let (mut left, mut right) = self.cinema.monitor.filter(name, self.cinema.calibrate(name, pair)?);
+        let (mut left, mut right) = self.output_filter(name, layout, self.cinema.calibrate(name, pair)?);
         left.resize(self.speaker_filter_len(), 0.0);
         right.resize(self.speaker_filter_len(), 0.0);
         Ok((left, right))
@@ -656,6 +725,126 @@ mod raw_tests {
                 assert!((wet_left[i] - original.wet[i]).abs() < 1e-6);
                 assert!((wet_right[i] - original.wet[14400 + i]).abs() < 1e-6);
             }
+        }
+    }
+
+    #[test]
+    fn ku100_notch_guard_covers_complete_standard_and_dense_measurement_sets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
+        for name in ["hrtf", "hrtf-dense"] {
+            let set = NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
+            assert!(set.directional_grid.ku100_notch_guard_enabled(), "{name}");
+        }
+        let other = NativeHrtfSet::load_calibrated(&root.join("hrtf-h13").join("hrtf-set.json")).unwrap();
+        assert!(!other.directional_grid.ku100_notch_guard_enabled());
+    }
+
+    #[test]
+    fn active_room_keeps_output_alignment_when_monitor_controls_are_bypassed() {
+        let mut response = vec![0.0_f32; 512];
+        response[128] = 1.0;
+        let room = std::sync::Arc::new(crate::cinema::RoomProfile {
+            version: 1,
+            name: "alignment fixture".into(),
+            source: "test".into(),
+            license: "test".into(),
+            measurement: "dummy-head".into(),
+            sample_rate: 48_000,
+            layout: "2.0".into(),
+            simulation: None,
+            speakers: vec![crate::cinema::RoomSpeaker {
+                name: "FrontLeft".into(),
+                azimuth: 30.0,
+                elevation: 0.0,
+                onset_sample: 128,
+                direct_left: response.clone(),
+                direct_right: response.clone(),
+                room_left: response.clone(),
+                room_right: response,
+            }],
+        });
+        let mut settings = crate::cinema::Settings { enabled: true, ..Default::default() };
+        settings.monitor.outputs.insert("FrontLeft".into(), crate::monitor::Output {
+            trim_db: -6.0,
+            delay_ms: 1.0,
+            invert: true,
+            muted: true,
+        });
+        let mut set = NativeHrtfSet::synthetic(1, 512, 512).unwrap();
+        set.configure_cinema(settings.clone(), Some(room.clone()));
+
+        let (left, right) = set.mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0).unwrap();
+        assert!(left[..176].iter().all(|sample| *sample == 0.0));
+        assert!((left[176] - crate::cinema::db(-6.0)).abs() < 1e-6);
+        assert!((right[176] - crate::cinema::db(-6.0)).abs() < 1e-6);
+        assert!(set.speaker_filter_len() >= 560, "room alignment delay must fit in the FIR");
+        assert_eq!(set.output_filter("FrontLeft", "7.1.4", (vec![1.0], vec![1.0])), (vec![1.0], vec![1.0]));
+
+        settings.monitor.enabled = true;
+        set.configure_cinema(settings, Some(room));
+        let (left, right) = set.mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0).unwrap();
+        assert!(left.iter().all(|sample| *sample == 0.0), "monitor mute must still apply when monitoring is enabled");
+        assert!(right.iter().all(|sample| *sample == 0.0));
+    }
+}
+#[cfg(test)]
+mod simulated_room_balance_tests {
+    use super::*;
+    #[test]
+    fn ideal_room_preserves_selected_direct_balance_and_matches_reflection_reference() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf/hrtf-set.json");
+        let base=NativeHrtfSet::load_calibrated(&root).unwrap();
+        for (name,az,scale) in [("FrontLeft",30.0,2.0),("RearLeft",150.0,0.25),("RearRight",-150.0,0.5)] {
+            let ir=base.nearest(az,0.0).unwrap();let n=ir.dry.len()/2;
+            let length=n+2048;
+            let mut dl=vec![0.0;length];let mut dr=dl.clone();
+            for i in 0..n {dl[i]=ir.dry[i]*scale;dr[i]=ir.dry[n+i]*scale;}
+            let peak=|v:&[f32]|v.iter().enumerate().max_by(|a,b|a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+            let onset=peak(&dl).min(peak(&dr));
+            let mut rl=dl.clone();let mut rr=dr.clone();rl[n+1000]=0.01*scale;rr[n+1000]=0.02*scale;
+            let room=std::sync::Arc::new(crate::cinema::RoomProfile{version:1,name:"ideal test".into(),source:"test".into(),license:"test".into(),measurement:"simulated".into(),sample_rate:48000,layout:"7.1.4".into(),simulation:Some(serde_json::json!({"sourceModel":"ideal-omnidirectional"})),speakers:vec![crate::cinema::RoomSpeaker{name:name.into(),azimuth:az as f32,elevation:0.0,onset_sample:onset,direct_left:dl,direct_right:dr,room_left:rl,room_right:rr}]});
+            let mut set=base.clone();set.configure_cinema(crate::cinema::Settings{enabled:true,..Default::default()},Some(room));
+            let direct=set.mixed_speaker(name,"7.1.4",az,0.0,0.0).unwrap();
+            assert_eq!(&direct.0[..n],&ir.dry[..n]);assert_eq!(&direct.1[..n],&ir.dry[n..]);
+            let full=set.mixed_speaker(name,"7.1.4",az,0.0,0.04).unwrap();
+            assert_eq!(&full.0[..n],&ir.dry[..n]);assert_eq!(&full.1[..n],&ir.dry[n..]);
+            assert!((full.0[n+1000]-0.01).abs()<1e-6);assert!((full.1[n+1000]-0.02).abs()<1e-6);
+        }
+    }
+}
+
+#[cfg(test)]
+mod subject_dense_tests {
+    use super::*;
+    #[test]
+    fn dense_subjects_use_exact_speaker_measurements_and_fallback_for_missing_anchors() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
+        for head in std::iter::once("d2".to_string()).chain((3..=20).map(|n|format!("h{n}"))) {
+            let dense=NativeHrtfSet::load_calibrated(&root.join(format!("hrtf-{head}-dense/hrtf-set.json"))).unwrap();
+            assert_eq!(dense.subject_id.as_deref(),Some(head.as_str()));
+            assert_eq!(dense.positions.len(),61);
+            let standard=dense.speaker_set.as_ref().unwrap();
+            assert_eq!(standard.subject_id,dense.subject_id);
+            assert_eq!(standard.positions.len(),17);
+            assert!(dense.cache.iter().all(|ir|ir.dry.iter().chain(&ir.wet).all(|x|x.is_finite())));
+            // 70 degrees is present only in the dense 61-point subject set;
+            // the standard 17-point speaker anchors must fall back to a neighbor.
+            assert_eq!(dense.nearest(70.0,0.0).unwrap().azimuth,70.0);
+            assert_ne!(standard.nearest(70.0,0.0).unwrap().azimuth,70.0);
+
+            for (name,azimuth) in [("FrontLeft",30.0),("Center",0.0),("SurroundLeft",110.0)] {
+                assert!(dense.has_exact_measurement(azimuth,0.0));
+                let ir=dense.nearest(azimuth,0.0).unwrap();
+                let dry=ir.dry.len()/2; let wet=ir.wet.len()/2;
+                let mut expected=dense.cinema.mix((&ir.dry[..dry],&ir.dry[dry..]),(&ir.wet[..wet],&ir.wet[wet..]),0.04,128);
+                expected.0.resize(dense.speaker_filter_len(),0.0);expected.1.resize(dense.speaker_filter_len(),0.0);
+                assert_eq!(dense.mixed_speaker(name,"5.1",azimuth,0.0,0.04).unwrap(),expected,"{head} {name}");
+            }
+
+            assert!(!dense.has_exact_measurement(45.0,45.0));
+            let fallback=dense.mixed_speaker("TopFrontLeft","7.1.4",45.0,45.0,0.04).unwrap();
+            let expected=standard.mixed_speaker("TopFrontLeft","7.1.4",45.0,45.0,0.04).unwrap();
+            assert_eq!(fallback,expected,"{head} absent dense anchor must use standard HRTF");
         }
     }
 }

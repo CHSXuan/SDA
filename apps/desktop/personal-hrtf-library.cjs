@@ -20,7 +20,7 @@ function validate(payload){const m=payload?.manifest;
  if(payload?.format!=='sda-phrtf'||payload.version!==1||!m||!ID.test(m.subjectId)||m.sampleRate!==48000||m.completeSubject!==true
   ||!Array.isArray(m.positions)||m.positions.length<1||m.positions.length>4096||!Array.isArray(payload.files)||payload.files.length>8192)throw new Error('不支持的 pHRTF 档案');
  cleanName(payload.name);
- if(!((m.parametricHrtfVersion===1&&m.processing?.preserveSamples===true)||(m.personalSofaVersion===1&&m.processing?.preserveMeasurements===true)))throw new Error('未知个人 HRTF 处理格式');
+ if(!((m.parametricHrtfVersion===1&&m.processing?.preserveSamples===true)||(m.personalSofaVersion===1&&m.processing?.preserveMeasurements===true)||(m.measuredProxyVersion===1&&m.processing?.preserveSamples===true)))throw new Error('未知个人 HRTF 处理格式');
  const files=new Map();let total=0;
  for(const f of payload.files){if(typeof f.name!=='string'||!ASSET.test(f.name)||files.has(f.name)||typeof f.data!=='string'||f.data.length>174764||f.data.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(f.data))throw new Error('档案资产无效');
   const b=Buffer.from(f.data,'base64');total+=b.length;if(b.toString('base64')!==f.data||b.length<32||b.length%8||b.length>131072||total>64*1024*1024||hash(b)!==f.sha256)throw new Error('响应数据损坏或校验失败');

@@ -119,14 +119,14 @@ function showCoreDialog(){
 let snapshot={};
 function render(){
  const s=snapshot,h=s.hardware||{},n=s.network||{},recent=s.active?[...(s.rows||[]),...(s.nativeRows||[])]:[];
- $('status').textContent=s.active?'后台记录中 · 每秒更新':'记录已暂停';$('toggle').textContent=s.active?'暂停记录':'继续记录';$('path').textContent=`自动保存：${s.directory||'等待目录'}`;
+ $('status').textContent=s.active?'后台记录中 · 每秒更新':s.starting?'正在启动采集进程…':'记录已暂停';$('toggle').textContent=s.active?'暂停记录':'继续记录';$('path').textContent=`自动保存：${s.directory||'等待目录'}`;
  cards($('cards'),[['CPU',highlighted(finite(h.totalMachinePercent)?num(h.totalMachinePercent)+'%':finite(h.cpuPercent)?num(h.cpuPercent)+'%（单核）':'等待采样','cpu'),'包含音频、界面与采集进程 · 点击查看各核心',showCoreDialog],['内存',highlighted(size(h.workingSetBytes),'memory'),'所有 SDA 进程工作集之和'],['网络 接收 / 发送',highlighted(`${size(n.rxBytesPerSecond)} / ${size(n.txBytesPerSecond)}`,'rx','tx'),'每秒传输；完整统计范围见下方说明'],['读取 / 写入',highlighted(`${size(h.readBytesPerSecond)} / ${size(h.writeBytesPerSecond)}`,'read','write'),'每秒文件与设备传输量']]);
  const select=stage=>recent.filter(r=>r.stage===stage),max=stage=>{const rows=select(stage);return rows.length?Math.max(...rows.map(r=>r.maxMs)):null;};
  const decoded=select('decode.output_audio').reduce((a,r)=>a+r.units,0)*1000/(s.intervalMs||1000),gaps=select('output.underrun_frames').reduce((a,r)=>a+r.units,0);
  const hrtf=recent.filter(r=>r.stage.startsWith('hrtf.object.')),slowest=hrtf.length?hrtf.reduce((a,b)=>a.maxMs>b.maxMs?a:b):null;
  cards($('flow'),[['解码产出',highlighted(`${num(decoded)} 秒音频 / 秒`,'decode'),decoded?'提前解码时可超过 1 秒':'本秒无产出；可能暂停、等待或已有缓存'],['对象双耳计算',highlighted(slowest?ms(slowest.maxMs):'尚无对象计算','hrtf'),slowest?`本秒单次最慢：${source(slowest)}`:'开启对象渲染并播放后显示'],['3D 绘制',highlighted(ms(max('3d.cpu_submit')),'3d'),recent.some(r=>r.stage==='3d.gpu_batch_elapsed')?`CPU 单帧最高 · GPU 批次：${ms(max('3d.gpu_batch_elapsed'))}（非单帧）`:`CPU 单帧最高 · GPU：${ms(max('3d.gpu_elapsed'))}`],['房间应用',highlighted(ms(max('room.apply_including_queue')),'room'),'本秒完成的任务，包含排队等待'],['解码到双耳输出',highlighted(ms(max('decode.to_binaural_callback_estimate')),'latency'),'本秒最高估算，不含蓝牙及耳机延迟'],['音频缺口',gaps?highlighted(`${num(gaps/48)} ms`,'gaps'):(s.nativeHeartbeatAgeMs==null?'尚无输出数据':s.nativeHeartbeatAgeMs>3000?'输出数据停止更新':'本秒未记录缺口'),'仅表示原生输出队列是否缺少音频']]);
  const alerts=[];if(s.mainHeartbeatAgeMs>3000)alerts.push('主进程已超过 3 秒未更新');if(s.main?.nativePid&&s.nativeHeartbeatAgeMs>3000)alerts.push('原生音频采样已超过 3 秒未更新');if(h.unavailable&&!Array.isArray(h.unavailable))alerts.push(`系统资源采样暂不可用：${h.unavailable}`);if(s.errors?.length)alerts.push('采集出现异常，详细原因已写入日志');if(s.dropped)alerts.push(`主进程采集丢失 ${s.dropped} 条记录`);if(gaps)alerts.push('本秒出现音频断供，请查看输出与解码耗时');
- $('health').textContent=alerts.length?alerts.join('；'):(s.active?'正在收集性能数据。复现卡顿后点击“导出日志”即可，无需选择保存位置。':'记录已暂停，已有日志仍保留。');$('health').className='notice'+(alerts.length?' warning':'');
+ $('health').textContent=alerts.length?alerts.join('；'):(s.active?'正在收集性能数据。复现卡顿后点击“导出日志”即可，无需选择保存位置。':s.starting?'正在启动采集进程，几秒后开始记录。':'记录未开启。点击“继续记录”开始采集，或在主窗口按 Ctrl+Alt+Shift+D 开启。');$('health').className='notice'+(alerts.length?' warning':'');
  $('waits').textContent=(s.pending||[]).map(p=>`${definition(p.stage)[0]}：已等待 ${num(p.waitingMs/1000,1)} 秒`).join('；');
  const filter=$('filter').value.toLowerCase(),category=$('category').value;
  const rows=($('scope').value==='session'?(s.cumulative||[]):recent).filter(r=>!r.stage.endsWith('.begin')&&!r.stage.endsWith('.heartbeat')).filter(r=>(category==='all'||definition(r.stage)[1]===category)&&`${definition(r.stage)[0]} ${source(r)} ${r.stage} ${r.id}`.toLowerCase().includes(filter));
@@ -138,8 +138,29 @@ $('peak-close').onclick=()=>$('peak-dialog').close();$('peak-dialog').onclick=e=
 $('core-close').onclick=()=>{$('core-dialog').close();coreDialogOpen=false;};
 $('core-dialog').onclick=e=>{if(e.target===$('core-dialog')){$('core-dialog').close();coreDialogOpen=false;}};
 $('core-dialog').addEventListener('close',()=>{coreDialogOpen=false;});
-$('export').onclick=()=>window.performanceMonitor.action('export');$('toggle').onclick=()=>window.performanceMonitor.action('toggle');$('filter').oninput=render;$('scope').onchange=render;$('category').onchange=render;
-async function tick(){try{snapshot=await window.performanceMonitor.snapshot();render();}catch{$('status').textContent='窗口暂未收到更新，后台仍可能在记录';}setTimeout(tick,1000);}tick();
+// Same scroll-scrim behaviour as the app's SheetHeading.
+{
+ const dialog=$('core-dialog'),heading=dialog.querySelector('.dialog-head');
+ dialog.addEventListener('scroll',()=>heading.style.setProperty('--sheet-scroll',String(Math.min(1,Math.max(0,dialog.scrollTop)/32))),{passive:true});
+}
+// Frameless window chrome, mirroring the main window's custom titlebar.
+{
+ const control=window.performanceWindow?.control;
+ if(control){
+  const maxIcon=()=>`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${maximized?'<rect x="4" y="8" width="12" height="12" rx="1"/><path d="M8 4h12v12"/>':'<rect x="5" y="5" width="14" height="14" rx="1"/>'}</svg>`;
+  let maximized=false;
+  const refresh=()=>{$('win-max').innerHTML=maxIcon();};
+  void window.performanceWindow?.maximized?.().then(value=>{maximized=!!value;refresh();}).catch(()=>{});
+  window.addEventListener('resize',()=>{control&&window.performanceWindow?.maximized?.().then(value=>{const next=!!value;if(next!==maximized){maximized=next;refresh();}}).catch(()=>{});},{passive:true});
+  $('win-min').onclick=()=>void control('minimize');
+  $('win-max').onclick=()=>void control('maximize');
+  $('win-close').onclick=()=>void control('close');
+  $('titlebar').ondblclick=()=>void control('maximize');
+  refresh();
+ }
+}
+$('export').onclick=()=>window.performanceMonitor.action('export');$('toggle').onclick=()=>window.performanceMonitor.action(snapshot.active?'toggle':'resume');$('filter').oninput=render;$('scope').onchange=render;$('category').onchange=render;
+async function tick(){try{snapshot=await window.performanceMonitor.snapshot();render();const age=snapshot.time?Math.max(0,Math.round((Date.now()-snapshot.time)/1000)):null;$('status').textContent=snapshot.active?`后台记录中 · 每秒更新${age!=null?` · 快照 ${age} 秒前`:''}`:snapshot.starting?'正在启动采集进程…':'记录已暂停';}catch(error){$('status').textContent=`窗口连接异常：${String(error).slice(0,80)}`;}setTimeout(tick,1000);}tick();
 // Same lens geometry and strength as SheetHeading / GlassRefraction.
 {
  const dialog=$('peak-dialog'),heading=dialog.querySelector('.dialog-head');
