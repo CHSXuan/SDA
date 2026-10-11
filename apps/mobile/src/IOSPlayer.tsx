@@ -44,8 +44,6 @@ function ThemedPlayer(p: PlayerProps) {
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
-  const [librarySize, setLibrarySize] = useState({ viewport: 0, content: 0 });
-  const libraryCanScroll = librarySize.viewport > 0 && librarySize.content > librarySize.viewport + 1;
   const settingsScroll = useRef<ScrollView>(null);
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
@@ -193,9 +191,8 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
         </View>
         <ScrollView style={[s.page, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={s.otherContent}
-          scrollEnabled={libraryCanScroll} bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator={false}
-          onLayout={event => { const viewport = event.nativeEvent.layout.height; setLibrarySize(previous => previous.viewport === viewport ? previous : { ...previous, viewport }); }}
-          onContentSizeChange={(_, content) => setLibrarySize(previous => previous.content === content ? previous : { ...previous, content })}>
+          scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
+          contentInsetAdjustmentBehavior="automatic">
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
           <View style={s.libraryPlaybackModes}>

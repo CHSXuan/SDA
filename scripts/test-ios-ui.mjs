@@ -92,7 +92,7 @@ assert.match(uiKitTabs, /tabBarBlurEffect: "systemDefault"/);
 assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
 assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
 assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
-assert.match(uiKitTabs, /<SafeAreaView edges=\{index === 1 \? \[\] : \["bottom"\]\}/);
+assert.match(uiKitTabs, /<SafeAreaView edges=\{\["bottom"\]\}/);
 assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 
 // Exercise the UI adapter with mocked native components (not a visual/native
@@ -131,6 +131,9 @@ for (const screen of tabHost.props.children[0]) {
   assert.equal(screen.props.ios.standardAppearance.tabBarBackgroundColor, 'transparent');
   assert.deepEqual(screen.props.ios.standardAppearance, screen.props.ios.scrollEdgeAppearance);
   assert.equal(screen.props.ios.standardAppearance.tabBarBlurEffect, 'systemDefault');
+  const safeViewport = screen.props.children[0].props.children[0];
+  assert.deepEqual(safeViewport.props.edges, ["bottom"]);
+  assert.equal(safeViewport.props.style.backgroundColor, "transparent");
 }
 for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1 } });
 assert.deepEqual(selections, [1]);
@@ -217,15 +220,15 @@ for (const available of [true,false]) {
 }
 console.log('Settings adapter checks passed: inline native title, no nested large-title stack, native dismissal, unchanged home');
 
-// Only an overflowing library may scroll; playback and scene are fixed Views.
-const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));
+// Native ScrollView decides overflow including adjusted insets; never disable
+// gestures using a full-screen measurement that ignores the floating accessory.
+const homePages = ui.slice(ui.indexOf('<IOSSystemTabs '), ui.indexOf('</IOSSystemTabs>'));
 assert.equal((homePages.match(/<ScrollView /g) || []).length, 1);
-assert.match(homePages, /scrollEnabled=\{libraryCanScroll\} bounces=\{false\} alwaysBounceVertical=\{false\}/);
-assert.match(ui, /librarySize.content > librarySize.viewport \+ 1/);
-assert.match(homePages, /onContentSizeChange=/);
-assert.match(homePages, /onLayout=/);
+assert.match(homePages, /scrollEnabled bounces=\{false\} alwaysBounceVertical=\{false\}/);
+assert.match(homePages, /contentInsetAdjustmentBehavior="automatic"/);
+assert.doesNotMatch(ui, /libraryCanScroll|setLibrarySize/);
 assert.doesNotMatch(ui, /lockScroll|scrollLocks|playerScroll|sceneScroll/);
-console.log('Home scrolling checks passed: fixed player/scene, overflow-only library without bounce');
+console.log('Home scrolling checks passed: fixed player/scene, inset-aware native library scrolling without measurement lock or bounce');
 
 // Responsive layout uses actual viewport and measured controls, distributing
 // spare height rather than piling it up below the volume row.
