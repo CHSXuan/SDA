@@ -101,6 +101,7 @@ jobs:
           node scripts/test-ios-spatial-enhancement.mjs
           node scripts/test-ios-playback-polling.mjs
           node scripts/test-ios-native-queue.mjs
+          node scripts/test-ios-session-recovery.mjs
           node scripts/test-ios-native-drawable.mjs
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'

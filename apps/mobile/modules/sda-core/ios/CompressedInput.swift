@@ -13,6 +13,9 @@ final class CompressedInput {
  private var retries = 0
  private var resumeTimeValid = true
  private var resumedRange = false
+ // Invalid-cursor recovery must not recreate the same failing ranged cursor.
+ // Restart container iteration and discard already-submitted timestamps.
+ private var sequentialRecovery = false
  private let url: URL
  private let scoped: Bool
  init(url: URL, name: String) throws {
@@ -49,7 +52,8 @@ final class CompressedInput {
  }
  #endif
  // Resume the compressed reader only; the Rust decoder and playback clock stay intact.
- func reopenAfterInterruption() throws {
+ func reopenAfterInterruption(forceSequential: Bool = false) throws {
+  if forceSequential { sequentialRecovery = true }
   guard resumeTimeValid else { throw SdaError.message("音轨缺少恢复时间戳，不能安全重读") }
   reader?.cancelReading()
    let asset = AVURLAsset(url: url)
@@ -77,7 +81,7 @@ final class CompressedInput {
    guard r.canAdd(output) else { throw SdaError.message("无法读取压缩音轨") }
    r.add(output)
    resumedRange = CMTimeCompare(nextTime, .zero) > 0
-   if resumedRange {
+   if resumedRange && !sequentialRecovery {
     let remaining = CMTimeSubtract(track.timeRange.end, nextTime)
     if remaining.isNumeric && CMTimeCompare(remaining, .zero) > 0 {
      r.timeRange = CMTimeRange(start:nextTime,duration:remaining)
@@ -93,6 +97,9 @@ final class CompressedInput {
  static func isRecoverableReaderError(_ error: NSError) -> Bool {
   error.domain == AVFoundationErrorDomain && [-11847, -11880].contains(error.code)
  }
+ static func requiresSequentialRecovery(_ error: NSError) -> Bool {
+  error.domain == AVFoundationErrorDomain && error.code == -11880
+ }
  func next(chunkBytes: Int = 24 * 1024) throws -> Data? {
   if let f = file { let d = try f.read(upToCount: chunkBytes); return d?.isEmpty == false ? d : nil }
   guard let output = trackOutput, let r = reader else { return nil }
@@ -101,7 +108,9 @@ final class CompressedInput {
    if r.status == .failed {
     if let error = r.error as NSError?, error.domain == AVFoundationErrorDomain,
        Self.isRecoverableReaderError(error), resumeTimeValid, retries < 3 {
-     retries += 1; try reopenAfterInterruption(); return try next(chunkBytes:chunkBytes)
+     retries += 1
+     if Self.requiresSequentialRecovery(error) { sequentialRecovery = true }
+     try reopenAfterInterruption(); return try next(chunkBytes:chunkBytes)
     }
     throw r.error ?? SdaError.message("音轨读取失败")
    }

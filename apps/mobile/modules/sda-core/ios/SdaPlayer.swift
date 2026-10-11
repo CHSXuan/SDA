@@ -39,6 +39,22 @@ final class SdaPlayer {
  var duration: Double = 0
  var interruptionWasPlaying = false
  var sessionInterrupted = false
+ var sessionActivationPending = false
+ static func isTemporarySessionActivationError(_ error: NSError) -> Bool {
+  error.domain == NSOSStatusErrorDomain && [560557684, 561017449].contains(error.code)
+ }
+ func activatePlaybackSession() throws -> Bool {
+  do {
+   try AVAudioSession.sharedInstance().setActive(true)
+   sessionActivationPending = false
+   return true
+  } catch {
+   guard Self.isTemporarySessionActivationError(error as NSError) else { throw error }
+   sessionActivationPending = true
+   recordPlaybackEvent("sessionActivationDeferred", detail:String(describing:error))
+   return false
+  }
+ }
  var inBackground = false
  var backgroundTransitions = 0
  var recoveringOutput = false
@@ -143,7 +159,7 @@ final class SdaPlayer {
  }
  func stopNative() {
   generation += 1
-  finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false
+  finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false; sessionActivationPending = false
   systemSpatial?.close(); systemSpatial = nil
   alacActive = false; alacUpmixActive = false
   // Stop callbacks before freeing the C handle. Do not reset on preset changes.
@@ -168,7 +184,7 @@ final class SdaPlayer {
   try session.setCategory(.playback, mode: .default, options: [])
   try session.setPreferredSampleRate(48000)
   try session.setPreferredIOBufferDuration(0.01)
-  try session.setActive(true)
+  let sessionReady = try activatePlaybackSession()
   let s = settings()
   let config = try json(["sampleRate":48000,"outputChannels":2,"layout":layout,
    "directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!])
@@ -190,11 +206,14 @@ final class SdaPlayer {
    }
    engine.attach(node); engine.connect(node, to: engine.mainMixerNode, format: format)
    audio = engine; source = node
-   engine.prepare(); try engine.start()
+   engine.prepare()
+   if sessionReady { try engine.start() }
+   else { isPaused = true; finishPreparation() }
    _ = try command("near", ["enabled":s["nearField"]!,"scale":s["metresPerUnit"]!])
    _ = try command("balance", ["enabled":s["volumeBalanceEnabled"]!])
    _ = try command("volume", ["volume":prefs.object(forKey:"sda.volume") ?? 1.0])
    _ = try command("spatialEnhancement", ["enabled":s["spatialEnhancementEnabled"]!])
+   if !sessionReady { _ = try command("pause", ["paused":true]) }
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
    hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
@@ -203,6 +222,7 @@ final class SdaPlayer {
  func setPaused(_ paused: Bool) throws -> Bool {
   guard hasPlayback, paused || !done else { return false }
   if paused {
+   sessionActivationPending = false
    finishPreparation()
    _ = try command("pause",["paused":true])
    // The worker command is asynchronous. Freeze the Apple consumer as well so
@@ -211,7 +231,11 @@ final class SdaPlayer {
   } else {
    if failure != nil { throw SdaError.message("音频输出发生错误，请重新播放") }
    if systemSpatial?.started == false { beginPreparation(generation) }
-   try AVAudioSession.sharedInstance().setActive(true)
+   guard try activatePlaybackSession() else {
+    _ = try command("pause", ["paused":true])
+    audio?.pause(); isPaused = true; updateNowPlaying()
+    return false
+   }
    _ = try command("pause",["paused":false])
    if audio?.isRunning == false { try audio?.start() }
   }
@@ -272,10 +296,17 @@ final class SdaPlayer {
   if let text = try? json(playbackEvents) { try? Data(text.utf8).write(to:url,options:.atomic) }
  }
  func recoverOutputIfNeeded(_ reason: String) throws {
+  if sessionActivationPending && hasPlayback && !done && !sessionInterrupted {
+   _ = try setPaused(false)
+   return
+  }
   guard hasPlayback, !isPaused, !done, !sessionInterrupted, !recoveringOutput else { return }
   recoveringOutput = true; defer { recoveringOutput = false }
   if let audio, !audio.isRunning {
-   try AVAudioSession.sharedInstance().setActive(true)
+   guard try activatePlaybackSession() else {
+    _ = try command("pause", ["paused":true]); audio.pause(); isPaused = true
+    return
+   }
    try audio.start(); recordPlaybackEvent("engineRestart",detail:reason)
   }
   if let system = systemSpatial { try system.pump() }
@@ -316,8 +347,10 @@ final class SdaPlayer {
    self.locked {
     self.recordPlaybackEvent("interruption",detail:String(describing:note.userInfo ?? [:]))
     if type == .began {
+     let wasPending = self.sessionActivationPending
      self.sessionInterrupted = true; self.interruptionWasPlaying = self.hasPlayback && !self.isPaused
      _ = try? self.setPaused(true)
+     self.interruptionWasPlaying = self.interruptionWasPlaying || wasPending
     } else {
      self.sessionInterrupted = false
      let shouldResume = self.interruptionWasPlaying && AVAudioSession.InterruptionOptions(rawValue:note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0).contains(.shouldResume)
@@ -352,7 +385,10 @@ final class SdaPlayer {
     if (ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo")) {
      let session = AVAudioSession.sharedInstance()
      try session.setCategory(.playback, mode:.default, options:[])
-     try session.setPreferredSampleRate(48000); try session.setActive(true)
+     try session.setPreferredSampleRate(48000)
+     guard try activatePlaybackSession() else {
+      throw SdaError.message("系统音频正被占用，请结束通话或其他音频后再播放")
+     }
      systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:(prefs.object(forKey:"sda.volume") as? NSNumber)?.floatValue ?? 1, alacUpmix:input.isAlac ? alacUpmixActive : nil)
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = input.isAlac ? "ALAC 立体声 → \(alacUpmixActive ? "7.1.4 上混" : "2.0") · 苹果系统输出 · KU100/房间已旁路" : "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
@@ -370,7 +406,9 @@ final class SdaPlayer {
     // Both descriptors must be opened before JS may unlink an extracted MHAS copy.
     let analysisInput: CompressedInput?
     if systemSpatial != nil { analysisInput = try CompressedInput(url:url,name:name) } else { analysisInput = nil }
-    let token = generation; beginPreparation(token); recordPlaybackEvent("play"); updateNowPlaying()
+    let token = generation
+    if !sessionActivationPending { beginPreparation(token) }
+    recordPlaybackEvent("play"); updateNowPlaying()
     feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, analysisInput:analysisInput) }
     return try json(["layout":layout])
    } catch { stopNative(); throw error }
