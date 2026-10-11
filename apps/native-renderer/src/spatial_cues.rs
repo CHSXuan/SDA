@@ -10,7 +10,8 @@ pub fn settings() -> cinema::Settings {
         direct_db: 0.0,
         early_db: 0.0,
         late_db: -40.0,
-        // The profile already fades out at80ms. Avoid a second, shorter taper.
+        // The profile includes the accepted residual taper through 80ms.
+        // Avoid an additional truncation in the cinema mixer.
         early_ms: 90.0,
         ..Default::default()
     }
@@ -25,15 +26,65 @@ pub fn profile(layout: LayoutId) -> Result<Option<Arc<cinema::RoomProfile>>, Str
         // Never apply a 7.1.4 response to a layout containing different speakers.
         _ => return Ok(None),
     };
-    cache.get_or_init(|| {
+    let loaded = cache.get_or_init(|| {
         let mut p: cinema::RoomProfile = serde_json::from_str(data).map_err(|e| e.to_string())?;
         p.validate()?;
         validate_short(&p)?;
         balance_rear_residuals(&mut p);
         shape_residual_spectrum(&mut p, RESIDUAL_HIGH_GAIN);
+        taper_residual_tail(&mut p, 20.0);
         validate_short(&p)?;
         Ok(Arc::new(p))
-    }).clone().map(Some)
+    }).clone()?;
+    Ok(Some(loaded))
+}
+
+// Accepted three-song residual policy: keep the earliest 20ms intact and
+// gently reduce the tail through 80ms. Applied once to bundled profiles only,
+// not user rooms. No measured direct response, source gain or delay changes.
+fn taper_residual_tail(p: &mut cinema::RoomProfile, start_ms: f64) {
+    let start = start_ms * 48.0;
+    let end = 80.0 * 48.0;
+    let floor = 10.0_f64.powf(-6.0 / 20.0);
+    for s in &mut p.speakers {
+        for (dry, room) in [(&s.direct_left, &mut s.room_left),
+                            (&s.direct_right, &mut s.room_right)] {
+            for (i, (&d, r)) in dry.iter().zip(room).enumerate() {
+                let age = i.saturating_sub(s.onset_sample) as f64;
+                if age <= start { continue; }
+                let t = ((age - start) / (end - start)).clamp(0.0, 1.0);
+                let gain = 1.0 - (1.0-floor) * t*t*(3.0-2.0*t);
+                *r = (f64::from(d) + (f64::from(*r)-f64::from(d))*gain) as f32;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tail_tests {
+    use super::*;
+    #[test]
+    fn tail_taper_preserves_direct_early_support_and_never_adds_energy() {
+        for data in [include_str!("../assets/spatial-cues/height714.json"),
+                     include_str!("../assets/spatial-cues/height360.json")] {
+            let original: cinema::RoomProfile=serde_json::from_str(data).unwrap();
+            let mut p=original.clone();
+            taper_residual_tail(&mut p,20.0);
+            validate_short(&p).unwrap();
+            for (before, after) in original.speakers.iter().zip(&p.speakers) {
+                assert_eq!(before.direct_left,after.direct_left);
+                assert_eq!(before.direct_right,after.direct_right);
+                for (dry,old,new) in [(&before.direct_left,&before.room_left,&after.room_left),
+                                      (&before.direct_right,&before.room_right,&after.room_right)] {
+                    for (i,((&d,&a),&b)) in dry.iter().zip(old).zip(new).enumerate() {
+                        if i<=before.onset_sample+960 { assert_eq!(a,b); }
+                        assert!((b-d).abs()<=(a-d).abs()+1e-7);
+                        if a==d { assert_eq!(b,d); }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Only bundled derived spatial cues use this calibration. User room profiles
@@ -471,6 +522,7 @@ mod residual_profile_integration_tests {
             balance_rear_residuals(&mut expected);
             let before = expected.clone();
             shape_residual_spectrum(&mut expected, RESIDUAL_HIGH_GAIN);
+            taper_residual_tail(&mut expected, 20.0);
             let actual = profile(layout).unwrap().unwrap();
             assert_eq!(format!("{:?}", expected), format!("{:?}", actual));
             assert!(before.speakers.iter().zip(&actual.speakers).any(|(a,b)| a.room_left != b.room_left));

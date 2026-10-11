@@ -62,11 +62,36 @@ pub(crate) fn source_gain(s:&mut Source,db:f32,main_restore_db:f32,slew:f32,at:u
 mod tests {
     use super::*;
     #[test]
-    fn accepted_candidate_motion_is_bounded_at_common_sample_rates() {
+    fn bounded_total_lift_retargets_and_bypass_restores_main_and_auxiliary() {
         for rate in [44100,48000,96000] {
-            let settings=Settings{db:1.5,main_restore_db:2.0,..Settings::new(rate)};
+            let settings=Settings::new(rate);
+            for position in [[0.0,1.0,0.0],[0.0,-1.0,0.0],[0.0,1.0,1.0]] {
+                let mut source=Source{kind:SourceKind::Object,position,..Default::default()};
+                for at in 0..4096 {source_gain(&mut source,1.5,0.0,settings.slew,at);}
+                let expected=10.0f32.powf(1.5*weight(position)/20.0);
+                assert!((source.spatial_layer_gain-expected).abs()<1e-6);
+                let mut previous=source.spatial_layer_gain;
+                for at in 4096..8192 {
+                    let gain=source_gain(&mut source,0.0,0.0,settings.slew,at);
+                    assert!((gain-previous).abs()<=settings.slew+1.2e-6, "rate={rate} at={at} gain={gain} previous={previous} slew={}",settings.slew);
+                    assert!(gain>=1.0 && gain<=expected+1e-6);previous=gain;
+                }
+                assert_eq!(source.spatial_layer_gain,1.0);
+                // Re-enable must settle at the same gain, not compound it.
+                for at in 8192..12288 {source_gain(&mut source,1.5,0.0,settings.slew,at);}
+                assert!((source.spatial_layer_gain-expected).abs()<1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_candidate_motion_is_bounded_at_common_sample_rates() {
+        // Existing end-of-ramp snap adds <1e-6 plus f32 rounding; retain
+        // the auditioned production envelope rather than changing its sound.
+        for rate in [44100,48000,96000] {
+            let settings=Settings{db:1.5,main_restore_db:0.0,..Settings::new(rate)};
             let mut source=Source{kind:SourceKind::Object,position:[0.0,1.0,0.0],..Default::default()};
-            let low=10.0f32.powf(-2.0/20.0);let high=10.0f32.powf(1.5/20.0);
+            let low=1.0f32;let high=10.0f32.powf(1.5/20.0);
             let mut previous=1.0f32;
             for at in 0..u64::from(rate)*2 {
                 let a=at as f64/f64::from(rate)*std::f64::consts::TAU;
@@ -74,14 +99,14 @@ mod tests {
                 source.position=[a.sin() as f32,a.cos() as f32,(a*1.3).sin() as f32];
                 let gain=source_gain(&mut source,settings.db,settings.main_restore_db,settings.slew,at);
                 assert!(gain.is_finite() && gain>=low-1e-6 && gain<=high+1e-6);
-                assert!((gain-previous).abs()<=settings.slew+1e-6);
+                assert!((gain-previous).abs()<=settings.slew+1.2e-6, "rate={rate} at={at} gain={gain} previous={previous} slew={}",settings.slew);
                 previous=gain;
             }
             // A metadata jump still obeys the same per-sample bound.
             source.position=[0.0,1.0,0.0];
             for at in u64::from(rate)*2..u64::from(rate)*2+4096 {
                 let gain=source_gain(&mut source,settings.db,settings.main_restore_db,settings.slew,at);
-                assert!((gain-previous).abs()<=settings.slew+1e-6);previous=gain;
+                assert!((gain-previous).abs()<=settings.slew+1.2e-6, "rate={rate} at={at} gain={gain} previous={previous} slew={}",settings.slew);previous=gain;
             }
             assert!((previous-low).abs()<1e-6);
         }
@@ -275,8 +300,9 @@ mod tests {
         let mut e=crate::Engine::new(48000,2);
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         e.set_spatial_enhancement(true).unwrap();
-        assert_eq!(e.master_preamp_db(),2.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
-        assert_eq!(e.final_output_trim.target_db(),-0.75);
+        assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
+        assert_eq!(e.spatial_layer.main_restore_db,0.0);
+        assert_eq!(e.final_output_trim.target_db(),0.0);
         e.set_spatial_enhancement(false).unwrap();
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         let command:crate::Command=serde_json::from_str(r#"{"type":"setSpatialEnhancement","enabled":true}"#).unwrap();

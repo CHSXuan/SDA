@@ -1671,12 +1671,12 @@ impl Engine {
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
     /// Atomic listener preset for the accepted general enhancement recipe.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
-        self.set_master_preamp_db(if enabled { 2.0 } else { 0.0 })?;
+        self.set_master_preamp_db(0.0)?;
         self.set_spatial_layer_gain_db(if enabled { 1.5 } else { 0.0 })?;
-        self.final_output_trim.set(if enabled { -0.75 } else { 0.0 }, self.output_sample_rate, !self.output_active)?;
-        // Cancel the automatic master lift on the main layer; preserve original
-        // main level rather than applying a vocal/song-specific cut.
-        self.spatial_layer.main_restore_db = if enabled { 2.0 } else { 0.0 };
+        self.final_output_trim.set(0.0, self.output_sample_rate, !self.output_active)?;
+        // No master makeup or paired attenuation: total auxiliary lift is
+        // bounded at +1.5dB; horizontal main and LFE remain at baseline.
+        self.spatial_layer.main_restore_db = 0.0;
         Ok(())
     }
 
