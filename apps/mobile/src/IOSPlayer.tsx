@@ -8,7 +8,7 @@ import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
 import { hasNativeIOSChrome, IOSAction, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
-import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
+import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings } from "./IOSNativeSettings";
 import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
@@ -157,7 +157,9 @@ function ThemedPlayer(p: PlayerProps) {
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       <View style={s.header}>
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? pc.muted : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
-        {Platform.OS === "ios" && <Pressable accessibilityRole="switch"
+        {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
+          disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
+          onPress={() => p.setHeadTracking(!p.headTrackingEnabled)} /> : <Pressable accessibilityRole="switch"
           accessibilityLabel="AirPods 头部追踪" accessibilityHint={p.headTrackingStatus}
           accessibilityState={{ checked: p.headTrackingEnabled, disabled: p.busy || p.systemSpatial360RAActive }}
           disabled={p.busy || p.systemSpatial360RAActive}
@@ -166,7 +168,7 @@ function ThemedPlayer(p: PlayerProps) {
             opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
           <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"}
             fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
-        </Pressable>}
+        </Pressable>)}
         {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
       </View>
       {/* Status belongs above the native tabs, never below their full-screen

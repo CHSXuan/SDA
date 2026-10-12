@@ -3339,8 +3339,13 @@ pub fn spawn_render_worker(
                 // reserve absorbs scheduler/remote-video bursts without changing
                 // source clocks, filters or the DAC-driven presentation clock.
                 let buffer_scale = realtime::render_buffer_scale(synchronized, engine.is_high_density_adm());
+                // Rendered audio cannot react to a newer pose. Keep only a small
+                // iOS tracking reserve; decoded PCM coverage remains unchanged.
+                let tracking = realtime::low_latency_tracking(cfg!(target_os = "ios"), engine.head_pose.is_some(), synchronized);
                 let target = if synchronized {
                     remote_sync::buffer_frames()
+                } else if tracking {
+                    realtime::TRACKING_TARGET_FRAMES
                 } else {
                     STEREO_FIFO_TARGET_FRAMES * buffer_scale
                 };
@@ -3413,7 +3418,8 @@ pub fn spawn_render_worker(
                 // Enabling at a thin watermark made the callback catch up to the
                 // renderer during the start burst, and every catch-up dropped to
                 // zeros and refilled as an audible level step.
-                if fifo.available_read() >= STEREO_FIFO_START_FRAMES * buffer_scale
+                let start_frames = if tracking { realtime::TRACKING_START_FRAMES } else { STEREO_FIFO_START_FRAMES * buffer_scale };
+                if fifo.available_read() >= start_frames
                     || (fifo.available_read() > 0
                         && engine.pcm_coverage.available(engine.sample_pos, 1) == 0)
                 {

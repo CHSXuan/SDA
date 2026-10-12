@@ -28,7 +28,7 @@ final class SdaPlayer {
  var playbackYaw: Double = 0
  lazy var headphoneMotion = CMHeadphoneMotionManager()
  let motionQueue: OperationQueue = {
-  let queue = OperationQueue(); queue.name = "sda.ios.head-motion"; queue.maxConcurrentOperationCount = 1
+  let queue = OperationQueue(); queue.name = "sda.ios.head-motion"; queue.maxConcurrentOperationCount = 1; queue.qualityOfService = .userInteractive
   return queue
  }()
  var motionSession = 0

@@ -29,6 +29,19 @@ export function IOSSettingsButton({ onPress }: { onPress(): void }) {
   return <Host style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
 }
 
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onPress }: {
+  enabled: boolean; disabled: boolean; accent: string; onPress(): void;
+}) {
+  if (!swiftUI || !hasView("Button")) return null;
+  const { Host, Button } = swiftUI;
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const label = enabled ? "关闭头部追踪" : "开启头部追踪";
+  return <Host style={{ width: 44, height: 44, marginRight: 8 }}><Button label={label}
+    systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"} onPress={onPress}
+    modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
+      accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]} /></Host>;
+}
+
 // A single native navigation stack stays mounted over the existing player.
 // Its controlled path changes only presentation, never the audio engine.
 export function IOSSettingsNavigation({ children, settings, onSettingsChange, title, player, accent, theme, immersive = false }: {
