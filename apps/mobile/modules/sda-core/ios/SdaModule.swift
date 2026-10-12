@@ -45,6 +45,13 @@ public final class SdaModule: Module {
   Function("resetHeadPose") { player.locked { player.recenterHeadTracking() } }
   Function("setHeadTracking") { (enabled: Bool) in player.locked { player.setHeadTracking(enabled) } }
   Function("headTrackingStatus") { player.locked { player.headTrackingDetail } }
+  Function("headTrackingRawPose") { try player.locked { try player.json(player.motionRawPose as Any? ?? NSNull()) } }
+  Function("setTrackedHeadPose") { (session: Int, x: Double, y: Double, z: Double, w: Double) in try player.locked {
+   guard session == player.motionSession, !player.inBackground,
+     player.prefs.bool(forKey:"sda.headTracking"), player.motionRawPose != nil,
+     player.handle != nil, player.systemSpatial == nil else { return }
+   _ = try player.command("pose",["x":x,"y":y,"z":z,"w":w])
+  } }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
   Function("setSpatialEnhancement") { (enabled: Bool) in try player.locked { try player.saveSpatialEnhancement(enabled) } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
