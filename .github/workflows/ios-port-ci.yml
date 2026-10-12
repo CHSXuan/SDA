@@ -111,7 +111,7 @@ jobs:
       - name: Host callback tests
         if: steps.sdk.outputs.available == 'true'
         run: |
-          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib realtime::tests
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked headphone_orientation:: -- --test-threads=1
           node scripts/prepare-ac4.mjs
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail

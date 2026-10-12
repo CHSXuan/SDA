@@ -22,6 +22,7 @@ impl AudioOutput for PullOutput {
     }
 }
 struct Host {
+    orientation: Mutex<crate::headphone_orientation::HeadOrientation>,
     alac: Mutex<crate::alac_pcm::AlacPcm>,
     engine: Mutex<MobileEngine>,
     output: Arc<PullOutput>,
@@ -79,6 +80,7 @@ pub unsafe extern "C" fn sda_ios_create(
                 std::thread::sleep(Duration::from_millis(1));
             }
             Ok(Host {
+                orientation: Mutex::new(Default::default()),
                 alac: Mutex::new(Default::default()),
                 engine: Mutex::new(engine),
                 output,
@@ -119,6 +121,15 @@ pub unsafe extern "C" fn sda_ios_command(
             a[k].as_bool().ok_or_else(|| format!("missing {k}"))
         };
         match unsafe { text(op)? } {
+            "trackingProviderReset" => {
+                *host.orientation.lock().map_err(|_| "orientation poisoned")? = Default::default();
+                return Ok(Value::Null);
+            }
+            "trackingProvider" => {
+                let pose = host.orientation.lock().map_err(|_| "orientation poisoned")?
+                    .process_quaternion([number("x")? as f64, number("y")? as f64, number("z")? as f64, number("w")? as f64]);
+                return Ok(pose.map(|q| json!([q.x,q.y,q.z,q.w])).unwrap_or(Value::Null));
+            }
             "status" => {
                 let mut status = serde_json::to_value(e.playback_status()).map_err(|e| e.to_string())?;
                 status["sourceCodec"] = json!(e.codec_name());

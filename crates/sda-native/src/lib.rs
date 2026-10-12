@@ -29,6 +29,12 @@
 mod frame_router;
 #[cfg(feature = "ios-host")]
 pub mod ios;
+#[cfg(feature = "ios-host")]
+#[path = "../../../apps/head-tracking-helper/src/protocol.rs"]
+mod protocol;
+#[cfg(feature = "ios-host")]
+#[path = "../../../apps/head-tracking-helper/src/orientation.rs"]
+mod headphone_orientation;
 pub mod mpegh;
 pub mod balance;
 mod alac_pcm;

@@ -305,26 +305,23 @@ mod dominant_measurement_tests {
 
 fn equivalent_direction(a: Direction, b: Direction) -> bool {
     if a.diffuse != b.diffuse
-        || ((a.diffuse > 0.0 || a.width > 0.0 || a.height > 0.0 || a.depth > 0.0) && a.head != b.head)
         || a.horizontal_only != b.horizontal_only
+        || a.head != b.head
         || a.width != b.width
         || a.height != b.height
         || a.depth != b.depth
     {
         return false;
     }
-    // Compare the audible direction, not raw sensor components. Quaternion
-    // noise (and q/-q) must not continuously crossfade stationary filters.
-    let a_position = spatial::head_relative_adm(a.position, a.head);
-    let b_position = spatial::head_relative_adm(b.position, b.head);
     let length = |position: [f32; 3]| position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
-    let (a_length, b_length) = (length(a_position), length(b_position));
+    let (a_length, b_length) = (length(a.position), length(b.position));
     if a_length <= f32::EPSILON || b_length <= f32::EPSILON {
-        return a_position == b_position;
+        return a.position == b.position;
     }
-    let dot = a_position
+    let dot = a
+        .position
         .iter()
-        .zip(b_position)
+        .zip(b.position)
         .map(|(a, b)| a * b)
         .sum::<f32>()
         / (a_length * b_length);
@@ -1378,17 +1375,6 @@ impl Grid {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn head_pose_noise_preserves_stationary_direction() {
-        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
-            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
-        assert!(equivalent_direction(base, Direction { head: Some([0.0, 0.0, 0.0, 1.0]), ..base }));
-        assert!(equivalent_direction(base, Direction { head: Some([0.0, 0.0, 0.0, -1.0]), ..base }));
-        let yaw = |degrees: f32| { let half = degrees.to_radians() / 2.0; Some([0.0, 0.0, half.sin(), half.cos()]) };
-        assert!(equivalent_direction(base, Direction { head: yaw(0.1), ..base }));
-        assert!(!equivalent_direction(base, Direction { head: yaw(3.0), ..base }));
-        assert!(!equivalent_direction(base, Direction { head: yaw(-3.0), ..base }));
-    }
     use super::*;
 
     #[test]

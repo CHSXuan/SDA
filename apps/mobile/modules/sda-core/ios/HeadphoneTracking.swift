@@ -32,6 +32,7 @@ extension SdaPlayer {
   var lastTimestamp: TimeInterval = 0
   motionRawPose = nil; motionLastSample = startedAt
   motionReferenceAfter = startedAt
+  _ = try? command("trackingProviderReset")
   applyNeutralHeadPose()
   headTrackingDetail = "等待兼容耳机"
   headphoneMotion.startDeviceMotionUpdates(to:motionQueue) { [weak self] motion, error in
@@ -47,7 +48,7 @@ extension SdaPlayer {
     }
     guard motion.timestamp >= self.motionReferenceAfter,
           ProcessInfo.processInfo.systemUptime - motion.timestamp <= 1,
-          motion.timestamp - lastTimestamp >= 1.0 / 60.0 else { return }
+          motion.timestamp - lastTimestamp >= 1.0 / 30.0 else { return }
     lastTimestamp = motion.timestamp
     let q = motion.attitude.quaternion
     let raw = simd_quatd(ix:q.x, iy:q.y, iz:q.z, r:q.w)
@@ -57,9 +58,11 @@ extension SdaPlayer {
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
     // Provider only: the exact desktop HeadTrackingSession processes this
     // raw quaternion on the foreground JS side before it reaches the renderer.
+    guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
+      "y":current.imag.y,"z":current.imag.z,"w":current.real]),
+      let orientation = filtered as? [Double] else { return }
     self.motionSequence += 1
-    self.motionRawPose = ["session":session,"sequence":self.motionSequence,
-      "orientation":[current.imag.x,current.imag.y,current.imag.z,current.real]]
+    self.motionRawPose = ["session":session,"sequence":self.motionSequence,"orientation":orientation]
     self.headTrackingDetail = "追踪中"
    }
   }
@@ -71,6 +74,10 @@ extension SdaPlayer {
     guard self.motionSession == session,
           ProcessInfo.processInfo.systemUptime - self.motionLastSample > 1 else { return }
     self.motionRawPose = nil; self.playbackYaw = 0
+    if self.motionLastSample > 0 {
+     _ = try? self.command("trackingProviderReset")
+     self.motionLastSample = 0
+    }
      self.applyNeutralHeadPose()
     self.headTrackingDetail = "等待兼容耳机"
    }
@@ -87,15 +94,13 @@ extension SdaPlayer {
  func recenterHeadTracking() {
   motionRawPose = nil; playbackYaw = 0
   motionReferenceAfter = ProcessInfo.processInfo.systemUptime
+  if handle != nil { _ = try? command("trackingProviderReset") }
   applyNeutralHeadPose()
  }
 
  func applyNeutralHeadPose() {
-  // Identity retains the low-latency route even while tracking is disabled.
-  // Clearing pose would refill a long rendered reserve with the old direction.
   if handle != nil {
    _ = try? command("resetPose")
-   _ = try? command("pose", ["x":0.0,"y":0.0,"z":0.0,"w":1.0])
   }
  }
 }

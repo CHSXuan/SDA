@@ -70,29 +70,12 @@ pub(super) fn render_buffer_scale(synchronized: bool, dense: bool) -> usize {
     buffer_scale_for_platform(cfg!(target_os = "ios"), synchronized, dense)
 }
 
-pub(super) const TRACKING_TARGET_FRAMES: usize = 4_096;
-pub(super) const TRACKING_START_FRAMES: usize = 2_048;
-
-pub(super) fn low_latency_tracking(ios: bool, pose_active: bool, synchronized: bool) -> bool {
-    ios && pose_active && !synchronized
-}
-
 fn buffer_scale_for_platform(ios: bool, synchronized: bool, dense: bool) -> usize {
     if synchronized { 1 } else if ios { 4 } else if dense { 2 } else { 1 }
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn tracking_reserve_is_scoped_to_local_ios_pose() {
-        use super::*;
-        assert!(low_latency_tracking(true, true, false));
-        assert!(!low_latency_tracking(true, false, false));
-        assert!(!low_latency_tracking(false, true, false));
-        assert!(!low_latency_tracking(true, true, true));
-        assert!(TRACKING_START_FRAMES < TRACKING_TARGET_FRAMES);
-        assert!(TRACKING_TARGET_FRAMES <= 4_800);
-    }
     #[test]
     fn ios_reserve_handles_other_app_bursts_without_changing_remote_sync() {
         use super::buffer_scale_for_platform as scale;

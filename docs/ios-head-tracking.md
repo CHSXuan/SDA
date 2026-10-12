@@ -5,8 +5,15 @@ button immediately left of Settings. Its preference is persisted. Settings
 contains a recenter action. Tracking starts when the SDA/KU100 engine is ready;
 Apple system spatial audio remains system-controlled and is not overridden.
 
-CMHeadphoneMotionManager delivers a normalized raw quaternion, session ID and
-sequence. Foreground JS samples the latest provider value every 20 ms, timestamps
+CMHeadphoneMotionManager delivers a normalized quaternion to a new input adapter
+in the existing Windows helper's `orientation.rs`. iOS compiles that exact source
+file and calls its existing `filter_orientation` for median, discontinuity gates,
+stationary lock and dead zone. The adapter replaces AACP packet parsing, bud
+selection, count unwrap and count-domain gyro bias estimation: Core Motion does
+not expose those raw packet fields. It uses the same ten-sample stable calibration
+window and provides at most 30 samples/second, matching the Windows packet cadence.
+The filtered provider quaternion is exposed with a session ID and sequence.
+Foreground JS samples the latest provider value every 20 ms, timestamps
 new samples with performance.now(), and feeds the exact desktop
 `apps/web/src/head-tracking-session.ts` implementation. This uses the desktop
 yaw-only policy, three-frame median, fixed-forward anchor, smoothingMs=220,
@@ -27,6 +34,11 @@ off/on, provider-session changes and recenter all discard the JS session state.
 Native code rejects processed poses from older sessions or while no fresh raw
 sample is available. JS scheduling under load can still add latency; the desktop
 220 ms smoothing is deliberately retained for behavioral parity.
+
+The earlier iOS-only rendered FIFO reduction and shared HRTF deadband edits have
+been removed. The renderer's original policy is retained. Consequently this
+change does not promise a low-latency end-to-end audio result or physical-device
+parity without listening tests.
 
 ## Build and Verification
 

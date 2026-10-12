@@ -13,6 +13,10 @@ assert.match(tracking, /motionReferenceAfter = ProcessInfo.processInfo.systemUpt
 assert.match(tracking, /func applyNeutralHeadPose/);
 assert.doesNotMatch(tracking, /motionReference!|motionAcceptedPose|acos\(/);
 assert.match(tracking, /self.motionRawPose = /);
+assert.match(tracking, /self.command\("trackingProvider"/);
+const native = read('crates/sda-native/src/lib.rs');
+assert.match(native, /apps\/head-tracking-helper\/src\/orientation.rs/);
+assert.match(read('crates/sda-native/src/ios.rs'), /\.process_quaternion/);
 assert.match(module, /session == player.motionSession, !player.inBackground/);
 assert.match(module, /Function\("setTrackedHeadPose"\)/);
 const app = read('apps/mobile/App.tsx');
