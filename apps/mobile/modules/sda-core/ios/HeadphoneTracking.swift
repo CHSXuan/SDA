@@ -6,7 +6,7 @@ import simd
 extension SdaPlayer {
  func stopHeadTracking() {
   motionSession += 1
-  headphoneMotion.stopDeviceMotionUpdates()
+  if motionWatchdog != nil { headphoneMotion.stopDeviceMotionUpdates() }
   motionWatchdog?.cancel(); motionWatchdog = nil
   motionReference = nil; motionLastSample = 0; playbackYaw = 0
   if handle != nil { _ = try? command("resetPose") }

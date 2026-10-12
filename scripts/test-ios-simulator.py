@@ -73,7 +73,11 @@ try:
  launch=run('xcrun','simctl','launch','--stdout='+str(out/'scene.stdout'),'--stderr='+str(out/'scene.stderr'),udid,'app.sda.mobile')
  deadline=time.monotonic()+60
  while not sceneReport.is_file() and time.monotonic()<deadline:time.sleep(1)
- if not sceneReport.is_file():raise RuntimeError('Cold-start 7.1.4 scene did not report a rendered frame')
+ if not sceneReport.is_file():
+  run('xcrun','simctl','io',udid,'screenshot',str(out/'scene-failure.png'),check=False)
+  diagnostic=container/'Documents/sda-ci-chrome.json'
+  if diagnostic.is_file():(out/'scene-failure-chrome.json').write_bytes(diagnostic.read_bytes())
+  raise RuntimeError('Cold-start 7.1.4 scene did not report a rendered frame; inspect scene-failure.png and scene-failure-chrome.json')
  scene=json.loads(sceneReport.read_text())
  (out/'scene-smoke.json').write_text(json.dumps(scene,indent=2))
  if scene.get('ok') is not True or scene.get('layout')!='7.1.4' or scene.get('calls',0)<=0 or scene.get('triangles',0)<=0:
