@@ -5,11 +5,13 @@ import simd
 // All state and renderer commands are serialized by SdaPlayer.lock.
 extension SdaPlayer {
  func stopHeadTracking() {
+  let wasTracking = motionWatchdog != nil
   motionSession += 1
   if motionWatchdog != nil { headphoneMotion.stopDeviceMotionUpdates() }
   motionWatchdog?.cancel(); motionWatchdog = nil
   motionReference = nil; motionLastSample = 0; playbackYaw = 0
-  if handle != nil { _ = try? command("resetPose") }
+  motionReferenceAfter = ProcessInfo.processInfo.systemUptime
+  if wasTracking { applyNeutralHeadPose() }
   headTrackingDetail = inBackground ? "后台已归零" : "未启用"
  }
 
@@ -29,6 +31,8 @@ extension SdaPlayer {
   let startedAt = ProcessInfo.processInfo.systemUptime
   var lastTimestamp: TimeInterval = 0
   motionReference = nil; motionLastSample = startedAt
+  motionReferenceAfter = startedAt
+  applyNeutralHeadPose()
   headTrackingDetail = "等待兼容耳机"
   headphoneMotion.startDeviceMotionUpdates(to:motionQueue) { [weak self] motion, error in
    guard let self else { return }
@@ -37,11 +41,11 @@ extension SdaPlayer {
           self.prefs.bool(forKey:"sda.headTracking"), self.handle != nil else { return }
     guard error == nil, let motion else {
      self.motionReference = nil; self.playbackYaw = 0
-     _ = try? self.command("resetPose")
+     self.applyNeutralHeadPose()
      self.headTrackingDetail = error?.localizedDescription ?? "等待兼容耳机"
      return
     }
-    guard motion.timestamp >= startedAt,
+    guard motion.timestamp >= self.motionReferenceAfter,
           ProcessInfo.processInfo.systemUptime - motion.timestamp <= 1,
           motion.timestamp - lastTimestamp >= 1.0 / 60.0 else { return }
     lastTimestamp = motion.timestamp
@@ -69,7 +73,7 @@ extension SdaPlayer {
     guard self.motionSession == session,
           ProcessInfo.processInfo.systemUptime - self.motionLastSample > 1 else { return }
     self.motionReference = nil; self.playbackYaw = 0
-    _ = try? self.command("resetPose")
+     self.applyNeutralHeadPose()
     self.headTrackingDetail = "等待兼容耳机"
    }
   }
@@ -84,6 +88,16 @@ extension SdaPlayer {
 
  func recenterHeadTracking() {
   motionReference = nil; playbackYaw = 0
-  if handle != nil { _ = try? command("resetPose") }
+  motionReferenceAfter = ProcessInfo.processInfo.systemUptime
+  applyNeutralHeadPose()
+ }
+
+ func applyNeutralHeadPose() {
+  // Identity retains the low-latency route even while tracking is disabled.
+  // Clearing pose would refill a long rendered reserve with the old direction.
+  if handle != nil {
+   _ = try? command("resetPose")
+   _ = try? command("pose", ["x":0.0,"y":0.0,"z":0.0,"w":1.0])
+  }
  }
 }
