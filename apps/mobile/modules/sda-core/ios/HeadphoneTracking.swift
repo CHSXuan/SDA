@@ -14,13 +14,14 @@ extension SdaPlayer {
   if motionWatchdog != nil { headphoneMotion.stopDeviceMotionUpdates() }
   motionWatchdog?.cancel(); motionWatchdog = nil
   motionLastSample = 0; playbackYaw = 0
+  motionWarmSamples.removeAll()
   motionReferenceAfter = ProcessInfo.processInfo.systemUptime
   if wasTracking { applyNeutralHeadPose() }
   headTrackingDetail = inBackground ? "后台已归零" : "未启用"
  }
 
  func startHeadTracking() {
-  guard prefs.bool(forKey:"sda.headTracking"), allowsHeadTrackingNow, handle != nil, systemSpatial == nil else {
+  guard prefs.bool(forKey:"sda.headTracking"), allowsHeadTrackingNow, systemSpatial == nil else {
    if prefs.bool(forKey:"sda.headTracking") && systemSpatial != nil { headTrackingDetail = "系统输出由 Apple 控制" }
    return
   }
@@ -37,14 +38,15 @@ extension SdaPlayer {
   motionLastSample = startedAt
   motionRetryAfter = startedAt + 3
   motionReferenceAfter = startedAt
-  _ = try? command("trackingProviderReset")
+  if handle != nil { _ = try? command("trackingProviderReset") }
   applyNeutralHeadPose()
+  if handle != nil { _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0]) }
   headTrackingDetail = "等待兼容耳机"
   headphoneMotion.startDeviceMotionUpdates(to:motionQueue) { [weak self] motion, error in
    guard let self else { return }
    self.locked {
     guard self.motionSession == session, self.allowsHeadTrackingNow,
-          self.prefs.bool(forKey:"sda.headTracking"), self.handle != nil else { return }
+          self.prefs.bool(forKey:"sda.headTracking") else { return }
     guard error == nil, let motion else {
      self.playbackYaw = 0
      self.applyNeutralHeadPose()
@@ -68,6 +70,9 @@ extension SdaPlayer {
       "background":self.inBackground]
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
     self.motionRetryCount = 0
+    self.motionWarmSamples.append((time:motion.timestamp,pose:[current.imag.x,current.imag.y,current.imag.z,current.real]))
+    if self.motionWarmSamples.count > 12 { self.motionWarmSamples.removeFirst() }
+    guard self.handle != nil, self.systemSpatial == nil else { return }
     // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
       "y":current.imag.y,"z":current.imag.z,"w":current.real]),
@@ -116,6 +121,20 @@ extension SdaPlayer {
   prefs.set(enabled,forKey:"sda.headTracking")
   stopHeadTracking()
   if enabled { startHeadTracking() }
+ }
+
+ func prepareHeadTrackingForPlayback() {
+  guard prefs.bool(forKey:"sda.headTracking"), handle != nil else { return }
+  _ = try? command("trackingProviderReset")
+  // Enter tracked rendering before PCM is queued, not after calibration.
+  // Identity is neutral; this only selects the short rendered-audio reserve.
+  _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0])
+  let now=ProcessInfo.processInfo.systemUptime
+  for sample in motionWarmSamples where now-sample.time <= 0.5 {
+   let q=sample.pose
+   _ = try? command("trackingProvider",["x":q[0],"y":q[1],"z":q[2],"w":q[3]])
+  }
+  startHeadTracking()
  }
 
  func recenterHeadTracking() {

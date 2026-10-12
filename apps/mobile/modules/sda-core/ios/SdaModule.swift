@@ -18,6 +18,7 @@ public final class SdaModule: Module {
   OnCreate {
    try? player.configureDiagnostics(false,player.prefs.string(forKey:"sda.diagnostics.lan") ?? "",player.prefs.string(forKey:"sda.diagnostics.tail") ?? "",player.prefs.string(forKey:"sda.diagnostics.token") ?? "")
    player.installSystemControls()
+   player.locked { player.startHeadTracking() }
    if let mode = ProcessInfo.processInfo.environment["SDA_IOS_BACKGROUND_SMOKE"] {
     DispatchQueue.global(qos:.userInitiated).async { [weak player] in player?.runCIBackgroundSmoke(mode) }
    } else if ProcessInfo.processInfo.environment["SDA_IOS_SMOKE"] == "1" {

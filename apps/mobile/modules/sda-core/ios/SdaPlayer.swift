@@ -38,6 +38,7 @@ final class SdaPlayer {
  var motionBackgroundCallbackCount = 0
  var motionRetryAfter: TimeInterval = 0
  var motionRetryCount = 0
+ var motionWarmSamples: [(time:TimeInterval, pose:[Double])] = []
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"
  var generation = 0
@@ -176,8 +177,8 @@ final class SdaPlayer {
   guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("KU100 测量资源缺失") }
   return path.path
  }
- func stopNative() {
-  stopHeadTracking()
+ func stopNative(keepMotion: Bool = false) {
+  if !keepMotion { stopHeadTracking() }
   generation += 1
   finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false; sessionActivationPending = false
   systemSpatial?.close(); systemSpatial = nil
@@ -213,6 +214,7 @@ final class SdaPlayer {
    _ = try decodeReply(error); throw SdaError.message("引擎初始化失败")
   }
   handle = h
+  prepareHeadTrackingForPlayback()
   do {
    // Bundled kernels already contain the approved -6 dB cues.
    if spatialCueDb() != -6 { try saveSpatialCueDb(spatialCueDb()) }
@@ -409,7 +411,7 @@ final class SdaPlayer {
  }
  func play(_ uri: String, _ name: String, _ yaw: Double, _ hash: String) throws -> String {
   try locked {
-   stopNative(); failure = nil
+   stopNative(keepMotion:!inBackground && prefs.bool(forKey:"sda.headTracking")); failure = nil
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    let ext = (name as NSString).pathExtension.lowercased()
    let input = try CompressedInput(url:url,name:name)
@@ -418,6 +420,7 @@ final class SdaPlayer {
    layout = input.isAlac ? (alacUpmixActive ? "7.1.4" : "2.0") : (ext == "mhas" ? "360RA-13" : "7.1.4")
    do {
     if (ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo")) {
+     stopHeadTracking()
      let session = AVAudioSession.sharedInstance()
      try session.setCategory(.playback, mode:.default, options:[])
      try session.setPreferredSampleRate(48000)
@@ -434,7 +437,7 @@ final class SdaPlayer {
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     // Apply persisted balance after the new route/source is fully selected.
     _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
-    _ = try command("yaw",["degrees":playbackYaw])
+    if !prefs.bool(forKey:"sda.headTracking") { _ = try command("yaw",["degrees":playbackYaw]) }
     startHeadTracking()
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
     let loudnessKey = (systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness.")) + hash
