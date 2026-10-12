@@ -56,11 +56,17 @@ extension SdaPlayer {
     let current = simd_normalize(raw)
     // AirPods and macOS use the same right-forward-up quaternion convention.
     if self.motionReference == nil { self.motionReference = current }
-    let relative = simd_normalize(self.motionReference!.inverse * current)
+    var relative = simd_normalize(self.motionReference!.inverse * current)
+    self.motionLastSample = ProcessInfo.processInfo.systemUptime
+    let angle = 2 * acos(min(1, abs(relative.real)))
+    if angle < 0.5 * .pi / 180 { relative = simd_quatd(ix:0, iy:0, iz:0, r:1) }
+    let change = 2 * acos(min(1, abs(simd_dot(relative.vector, self.motionAcceptedPose.vector))))
+    guard change >= 0.25 * .pi / 180 else { self.headTrackingDetail = "追踪中"; return }
     do {
      _ = try self.command("pose", ["x":relative.imag.x, "y":relative.imag.y,
                                   "z":relative.imag.z, "w":relative.real])
      self.motionLastSample = ProcessInfo.processInfo.systemUptime
+     self.motionAcceptedPose = relative
      self.headTrackingDetail = "追踪中"
     } catch { self.headTrackingDetail = String(describing:error) }
    }
@@ -93,6 +99,7 @@ extension SdaPlayer {
  }
 
  func applyNeutralHeadPose() {
+  motionAcceptedPose = simd_quatd(ix:0, iy:0, iz:0, r:1)
   // Identity retains the low-latency route even while tracking is disabled.
   // Clearing pose would refill a long rendered reserve with the old direction.
   if handle != nil {

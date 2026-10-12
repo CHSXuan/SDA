@@ -34,6 +34,7 @@ final class SdaPlayer {
  var motionSession = 0
  var motionReference: simd_quatd?
  var motionReferenceAfter: TimeInterval = 0
+ var motionAcceptedPose = simd_quatd(ix:0, iy:0, iz:0, r:1)
  var motionLastSample: TimeInterval = 0
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"
