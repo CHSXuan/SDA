@@ -43,6 +43,8 @@ interface SdaEngineModule extends MpeghMp4Host {
   objects(): string;
   setHeadYaw(degrees: number): void;
   resetHeadPose(): void;
+  setHeadTracking?(enabled: boolean): void;
+  headTrackingStatus?(): string;
   feedError(): string | null;
   feedDone(): boolean;
   setVolume(volume: number): void;
@@ -62,6 +64,8 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  headTrackingEnabled: boolean;
+  headTrackingStatus: string;
   alacStereoUpmix: boolean; systemSpatialStereo: boolean;
   sourceCodec: string; alacUpmixActive: boolean; outputChannels: number;
   spatialCueDb: number;
@@ -107,6 +111,7 @@ interface State {
 
 export default class App extends React.Component<Record<string, never>, State> {
   state: State = {
+    headTrackingEnabled: false, headTrackingStatus: "未启用",
     alacStereoUpmix: false, systemSpatialStereo: false, sourceCodec: "", alacUpmixActive: false, outputChannels: 2,
     spatialCueDb: -6, spatialCueBusy: false,
     systemSpatial360RA: false, systemSpatial360RAActive: false,
@@ -174,6 +179,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
+        headTrackingEnabled: settings.headTrackingEnabled === true,
         alacStereoUpmix: settings.alacStereoUpmix === true, systemSpatialStereo: settings.systemSpatialStereo === true,
         spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
@@ -186,6 +192,17 @@ export default class App extends React.Component<Record<string, never>, State> {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  private setHeadTracking = (enabled: boolean) => {
+    if (Platform.OS !== "ios") return;
+    try {
+      const engine = this.getEngine();
+      if (!engine.setHeadTracking) throw new Error("请更新 iOS 原生模块以启用头部追踪");
+      engine.setHeadTracking(enabled);
+      this.setState({ headTrackingEnabled: enabled, headYaw: 0,
+        headTrackingStatus: engine.headTrackingStatus?.() ?? "", error: null });
+    } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
+  };
 
   private setSystemSpatial360RA = (enabled: boolean) => {
     if (Platform.OS !== "ios") return;
@@ -401,6 +418,11 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private pollStatus() {
     try {
+    if (Platform.OS === "ios" && this.foreground) {
+      const detail = this.engine?.headTrackingStatus?.();
+      if (detail !== undefined && detail !== this.state.headTrackingStatus) this.setState({ headTrackingStatus: detail });
+    }
+
       const engine = this.engine;
       if (!engine || !this.state.playing || this.state.busy || this.changingTrack) return;
       const feedError = engine.feedError();
@@ -524,7 +546,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   render() {
-    return <RemotePlayer {...this.state} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
+    return <RemotePlayer {...this.state} setHeadTracking={this.setHeadTracking} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
       resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;

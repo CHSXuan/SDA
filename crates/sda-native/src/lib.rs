@@ -751,6 +751,18 @@ impl MobileEngine {
         )).map_err(|_| "command queue full".into())
     }
 
+    pub fn set_head_orientation(&self, orientation: [f32; 4]) -> EngineResult<()> {
+        let norm = orientation.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if !orientation.iter().all(|v| v.is_finite()) || !norm.is_finite() || norm < 1e-6 {
+            return Err("head orientation must be a finite nonzero quaternion".into());
+        }
+        let orientation = orientation.map(|v| v / norm);
+        let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
+        pipeline.commands.push(render_command::RenderCommand::Command(
+            Command::HeadPose { orientation },
+        )).map_err(|_| "command queue full".into())
+    }
+
     pub fn reset_head_pose(&self) -> EngineResult<()> {
         let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
         pipeline.commands.push(render_command::RenderCommand::Command(Command::ClearHeadPose))
@@ -1452,6 +1464,16 @@ mod tests {
         assert!(engine.set_head_yaw_degrees(f32::NAN).is_err());
         assert!(engine.set_head_yaw_degrees(181.0).is_err());
         assert!(engine.set_head_yaw_degrees(-181.0).is_err());
+    }
+
+    #[test]
+    fn head_orientation_rejects_invalid_quaternions() {
+        let engine = MobileEngine::new(EngineConfig::default(), None).unwrap();
+        for q in [[0.0; 4], [f32::NAN, 0.0, 0.0, 1.0],
+                  [0.0, f32::INFINITY, 0.0, 1.0], [f32::MAX; 4]] {
+            assert!(engine.set_head_orientation(q).unwrap_err().contains("quaternion"));
+        }
+        assert_eq!(engine.set_head_orientation([0.0, 0.0, 0.0, 2.0]).unwrap_err(), "engine not started");
     }
 
     #[test]

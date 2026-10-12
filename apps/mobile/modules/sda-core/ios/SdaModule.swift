@@ -42,7 +42,9 @@ public final class SdaModule: Module {
   Function("resume") { try player.locked { try player.setPaused(false) } }
   Function("stop") { player.locked { player.stopNative(); return true } }
   Function("setHeadYaw") { (degrees: Double) in try player.locked { _ = try player.command("yaw",["degrees":degrees]); player.playbackYaw=degrees } }
-  Function("resetHeadPose") { try player.locked { _ = try player.command("resetPose"); player.playbackYaw=0 } }
+  Function("resetHeadPose") { player.locked { player.recenterHeadTracking() } }
+  Function("setHeadTracking") { (enabled: Bool) in player.locked { player.setHeadTracking(enabled) } }
+  Function("headTrackingStatus") { player.locked { player.headTrackingDetail } }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
   Function("setSpatialEnhancement") { (enabled: Bool) in try player.locked { try player.saveSpatialEnhancement(enabled) } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }

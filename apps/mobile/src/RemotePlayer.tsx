@@ -12,6 +12,8 @@ export interface TrackMetadata {
 }
 export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
 export interface PlayerProps {
+  headTrackingEnabled: boolean; headTrackingStatus: string;
+  setHeadTracking(enabled: boolean): void;
   alacStereoUpmix: boolean; systemSpatialStereo: boolean; sourceCodec: string; alacUpmixActive: boolean; outputChannels: number;
   setAlacStereoUpmix(enabled: boolean): void; setSystemSpatialStereo(enabled: boolean): void;
   spatialCueDb: number; spatialCueBusy: boolean; setSpatialCueDb(db: number): void;
