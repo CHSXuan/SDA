@@ -40,7 +40,7 @@ extension SdaPlayer {
   motionReferenceAfter = startedAt
   if handle != nil { _ = try? command("trackingProviderReset") }
   applyNeutralHeadPose()
-  if handle != nil { _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0]) }
+  if handle != nil { _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0]); motionNeutralApplied = false }
   headTrackingDetail = "等待兼容耳机"
   headphoneMotion.startDeviceMotionUpdates(to:motionQueue) { [weak self] motion, error in
    guard let self else { return }
@@ -78,6 +78,7 @@ extension SdaPlayer {
       "y":current.imag.y,"z":current.imag.z,"w":current.real]),
       filtered is [Double] else { return }
     self.diagnosticMotion["filtered"] = filtered
+    self.motionNeutralApplied = false
     self.headTrackingDetail = "追踪中"
    }
   }
@@ -126,6 +127,7 @@ extension SdaPlayer {
  func prepareHeadTrackingForPlayback() {
   guard prefs.bool(forKey:"sda.headTracking"), handle != nil else { return }
   _ = try? command("trackingProviderReset")
+  motionNeutralApplied = false
   // Enter tracked rendering before PCM is queued, not after calibration.
   // Identity is neutral; this only selects the short rendered-audio reserve.
   _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0])
@@ -145,8 +147,9 @@ extension SdaPlayer {
  }
 
  func applyNeutralHeadPose() {
-  if handle != nil {
-   _ = try? command("resetPose")
+  if handle != nil && !motionNeutralApplied {
+   do { _ = try command("resetPose"); motionNeutralApplied = true }
+   catch { headTrackingDetail = "姿态归零失败" }
   }
  }
 }

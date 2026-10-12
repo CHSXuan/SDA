@@ -39,6 +39,7 @@ final class SdaPlayer {
  var motionRetryAfter: TimeInterval = 0
  var motionRetryCount = 0
  var motionWarmSamples: [(time:TimeInterval, pose:[Double])] = []
+ var motionNeutralApplied = false
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"
  var generation = 0

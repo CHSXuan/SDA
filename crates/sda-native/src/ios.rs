@@ -22,10 +22,14 @@ impl AudioOutput for PullOutput {
     }
 }
 struct Host {
+    last_tracking_pose: Mutex<Option<[f32;4]>>,
     orientation: Mutex<crate::headphone_orientation::HeadOrientation>,
     alac: Mutex<crate::alac_pcm::AlacPcm>,
     engine: Mutex<MobileEngine>,
     output: Arc<PullOutput>,
+}
+fn tracking_pose_changed(previous: Option<[f32;4]>, current: [f32;4]) -> bool {
+    previous.is_none_or(|old| old != current && old != current.map(|v| -v))
 }
 fn reply(result: EngineResult<Value>) -> *mut c_char {
     let value = match result {
@@ -80,6 +84,7 @@ pub unsafe extern "C" fn sda_ios_create(
                 std::thread::sleep(Duration::from_millis(1));
             }
             Ok(Host {
+                last_tracking_pose: Mutex::new(None),
                 orientation: Mutex::new(Default::default()),
                 alac: Mutex::new(Default::default()),
                 engine: Mutex::new(engine),
@@ -122,6 +127,7 @@ pub unsafe extern "C" fn sda_ios_command(
         };
         match unsafe { text(op)? } {
             "trackingProviderReset" => {
+                *host.last_tracking_pose.lock().map_err(|_| "pose cache poisoned")? = None;
                 *host.orientation.lock().map_err(|_| "orientation poisoned")? = Default::default();
                 return Ok(Value::Null);
             }
@@ -133,7 +139,12 @@ pub unsafe extern "C" fn sda_ios_command(
                     // output directly; no JS polling or second filter stage.
                     let norm = (q.z * q.z + q.w * q.w).sqrt();
                     if norm > 1e-9 {
-                        e.set_head_orientation([0.0, 0.0, (q.z / norm) as f32, (q.w / norm) as f32])?;
+                        let orientation = [0.0, 0.0, (q.z / norm) as f32, (q.w / norm) as f32];
+                        let mut last = host.last_tracking_pose.lock().map_err(|_| "pose cache poisoned")?;
+                        if tracking_pose_changed(*last, orientation) {
+                            e.set_head_orientation(orientation)?;
+                            *last = Some(orientation);
+                        }
                     }
                 }
                 return Ok(pose.map(|q| json!([q.x,q.y,q.z,q.w])).unwrap_or(Value::Null));
@@ -156,7 +167,10 @@ pub unsafe extern "C" fn sda_ios_command(
             "loudness" => return Ok(json!(e.complete_loudness_json())),
             "yaw" => e.set_head_yaw_degrees(number("degrees")?)?,
             "pose" => e.set_head_orientation([number("x")?, number("y")?, number("z")?, number("w")?])?,
-            "resetPose" => e.reset_head_pose()?,
+            "resetPose" => {
+                e.reset_head_pose()?;
+                *host.last_tracking_pose.lock().map_err(|_| "pose cache poisoned")? = None;
+            }
             "near" => e.set_near_field(boolean("enabled")?, number("scale")?)?,
             "room" => e.set_room(str_arg("path")?)?,
             "rendering" => e.set_object_rendering(boolean("direct")?, boolean("directional")?)?,
@@ -251,6 +265,14 @@ pub unsafe extern "C" fn sda_ios_close(p: *mut std::ffi::c_void) {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tracking_pose_updates_skip_stationary_and_equivalent_quaternions() {
+        let zero = [0.0, 0.0, 0.0, 1.0];
+        assert!(super::tracking_pose_changed(None, zero));
+        assert!(!super::tracking_pose_changed(Some(zero), zero));
+        assert!(!super::tracking_pose_changed(Some(zero), [0.0, 0.0, 0.0, -1.0]));
+        assert!(super::tracking_pose_changed(Some(zero), [0.0, 0.0, 0.1, 0.995]));
+    }
     use super::*;
     #[test]
     fn callback_preserves_stereo_pause_flush_and_clock() {
