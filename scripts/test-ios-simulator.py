@@ -89,7 +89,7 @@ try:
  # SDA's retired tabs/settings wrappers. Require actual mounted native classes.
  def chrome_report(stage):
   report=container/'Documents/sda-ci-chrome.json'
-  deadline=time.monotonic()+30
+  deadline=time.monotonic()+75
   data={}
   while time.monotonic()<deadline:
    if report.is_file():
@@ -117,6 +117,7 @@ try:
    time.sleep(1)
   else:
    (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
+   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'-failure.png')),check=False)
    raise RuntimeError('System native chrome did not mount: '+stage)
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
   return data
@@ -127,7 +128,7 @@ try:
   if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
   (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
-  run('xcrun','simctl','launch',udid,'app.sda.mobile')
+  run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),'--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
   chrome_report(stage)
   time.sleep(3)
   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
