@@ -46,6 +46,8 @@ public final class SdaModule: Module {
   Function("resetHeadPose") { player.locked { player.recenterHeadTracking() } }
   Function("setHeadTracking") { (enabled: Bool) in player.locked { player.setHeadTracking(enabled) } }
   Function("headTrackingStatus") { player.locked { player.headTrackingDetail } }
+  Function("setBackgroundTrackingExperiment") { (enabled:Bool) in player.locked { player.setBackgroundTrackingExperiment(enabled) } }
+  Function("backgroundTrackingExperiment") { player.prefs.bool(forKey:"sda.headTrackingBackgroundExperiment") }
   Function("configureDiagnostics") { (enabled:Bool,lan:String,tail:String,token:String) in try player.locked { try player.configureDiagnostics(enabled,lan,tail,token) } }
   Function("diagnosticsStatus") { player.diagnostics.status }
   Function("diagnosticsSettings") { try player.locked { try player.json(["lan":player.prefs.string(forKey:"sda.diagnostics.lan") ?? "","tail":player.prefs.string(forKey:"sda.diagnostics.tail") ?? "","token":player.prefs.string(forKey:"sda.diagnostics.token") ?? ""]) } }

@@ -34,6 +34,8 @@ final class SdaPlayer {
  var motionSession = 0
  var motionReferenceAfter: TimeInterval = 0
  var motionLastSample: TimeInterval = 0
+ var motionCallbackCount = 0
+ var motionBackgroundCallbackCount = 0
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"
  var generation = 0
@@ -255,7 +257,9 @@ final class SdaPlayer {
    _ = try command("pause",["paused":false])
    if audio?.isRunning == false { try audio?.start() }
   }
-  isPaused = paused; updateNowPlaying(); return true
+  isPaused = paused
+  if !allowsHeadTrackingNow { stopHeadTracking() } else { startHeadTracking() }
+  updateNowPlaying(); return true
  }
  func updateNowPlaying() {
   guard hasPlayback else { return }
@@ -333,7 +337,7 @@ final class SdaPlayer {
     guard let self else { return }; self.locked {
      self.inBackground = notification == UIApplication.didEnterBackgroundNotification
      if self.inBackground { self.backgroundTransitions += 1 }
-     if self.inBackground { self.stopHeadTracking() } else { self.startHeadTracking() }
+     if !self.allowsHeadTrackingNow { self.stopHeadTracking() } else { self.startHeadTracking() }
      self.recordPlaybackEvent(self.inBackground ? "background" : "foreground")
      do { try self.recoverOutputIfNeeded("lifecycle") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
      self.updateNowPlaying()

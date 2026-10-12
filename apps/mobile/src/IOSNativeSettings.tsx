@@ -182,6 +182,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
 
 function RemoteDiagnosticsSettings() {
   const engine = (globalThis as any).expo?.modules?.SdaEngine;
+  const [backgroundTracking, setBackgroundTracking] = useState(() => engine?.backgroundTrackingExperiment?.() === true);
   const [values, setValues] = useState(() => {
     try { return { enabled: false, ...JSON.parse(engine?.diagnosticsSettings?.() ?? "{}") }; }
     catch { return { enabled: false, lan: "", tail: "", token: "" }; }
@@ -199,6 +200,13 @@ function RemoteDiagnosticsSettings() {
   };
   const edit = (key: string, label: string) => Alert.prompt(label, key === "token" ? "至少 16 位，与接收端一致" : "例如 http://192.168.1.10:8765/diagnostics", text => save({ ...values, [key]: text.trim() }), key === "token" ? "secure-text" : "plain-text", values[key] || "");
   return <Section title="远程诊断" footer={<Text>{status}</Text>}>
+    <Toggle label="后台头追实验" isOn={backgroundTracking} onIsOnChange={enabled => {
+      try {
+        if (!engine?.setBackgroundTrackingExperiment) throw new Error("请更新原生模块");
+        engine.setBackgroundTrackingExperiment(enabled); setBackgroundTracking(enabled);
+      } catch (error) { Alert.alert("后台头追实验", error instanceof Error ? error.message : String(error)); }
+    }} />
+    <Text>仅在 SDA/KU100 音频持续播放时尝试；暂停或断流时归零。关闭后恢复进入后台立即归零。</Text>
     <Toggle label="发送诊断数据" isOn={values.enabled} onIsOnChange={enabled => save({ ...values, enabled })} />
     <Button label={"局域网地址 · " + (values.lan || "未设置")} onPress={() => edit("lan", "局域网接收地址")} />
     <Button label={"Tailscale 地址 · " + (values.tail || "未设置")} onPress={() => edit("tail", "Tailscale 接收地址")} />

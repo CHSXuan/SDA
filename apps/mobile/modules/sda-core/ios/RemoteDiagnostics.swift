@@ -86,6 +86,7 @@ extension SdaPlayer {
      "playing":self.hasPlayback && !self.done,"paused":self.isPaused,"background":self.inBackground,
      "generation":self.generation,"route":self.systemSpatial == nil ? "KU100" : "Apple",
      "tracking":self.headTrackingDetail,"motion":self.diagnosticMotion,
+     "backgroundTrackingExperiment":self.prefs.bool(forKey:"sda.headTrackingBackgroundExperiment"),
      "error":self.failure == nil ? "" : "playback-error",
      "events":self.playbackEvents.suffix(16).map { ["time":$0["time"] ?? 0,"event":$0["event"] ?? "","generation":$0["generation"] ?? 0] }]
    }

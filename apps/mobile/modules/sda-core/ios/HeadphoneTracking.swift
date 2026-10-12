@@ -4,6 +4,10 @@ import simd
 
 // All state and renderer commands are serialized by SdaPlayer.lock.
 extension SdaPlayer {
+ var allowsHeadTrackingNow: Bool {
+  !inBackground || (prefs.bool(forKey:"sda.headTrackingBackgroundExperiment") &&
+    handle != nil && systemSpatial == nil && !isPaused && !done && !sessionInterrupted && audio?.isRunning == true)
+ }
  func stopHeadTracking() {
   let wasTracking = motionWatchdog != nil
   motionSession += 1
@@ -16,7 +20,7 @@ extension SdaPlayer {
  }
 
  func startHeadTracking() {
-  guard prefs.bool(forKey:"sda.headTracking"), !inBackground, handle != nil, systemSpatial == nil else {
+  guard prefs.bool(forKey:"sda.headTracking"), allowsHeadTrackingNow, handle != nil, systemSpatial == nil else {
    if prefs.bool(forKey:"sda.headTracking") && systemSpatial != nil { headTrackingDetail = "系统输出由 Apple 控制" }
    return
   }
@@ -38,7 +42,7 @@ extension SdaPlayer {
   headphoneMotion.startDeviceMotionUpdates(to:motionQueue) { [weak self] motion, error in
    guard let self else { return }
    self.locked {
-    guard self.motionSession == session, !self.inBackground,
+    guard self.motionSession == session, self.allowsHeadTrackingNow,
           self.prefs.bool(forKey:"sda.headTracking"), self.handle != nil else { return }
     guard error == nil, let motion else {
      self.playbackYaw = 0
@@ -55,8 +59,12 @@ extension SdaPlayer {
     guard raw.vector.x.isFinite, raw.vector.y.isFinite, raw.vector.z.isFinite,
           raw.vector.w.isFinite, simd_length(raw.vector) > 0.000001 else { return }
     let current = simd_normalize(raw)
+    self.motionCallbackCount += 1
+    if self.inBackground { self.motionBackgroundCallbackCount += 1 }
     self.diagnosticMotion = ["sampleTime":motion.timestamp,"receivedTime":ProcessInfo.processInfo.systemUptime,
-      "raw":[current.imag.x,current.imag.y,current.imag.z,current.real]]
+      "raw":[current.imag.x,current.imag.y,current.imag.z,current.real],
+      "callbacks":self.motionCallbackCount,"backgroundCallbacks":self.motionBackgroundCallbackCount,
+      "background":self.inBackground]
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
     // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
@@ -71,6 +79,8 @@ extension SdaPlayer {
   timer.setEventHandler { [weak self] in
    guard let self else { return }
    self.locked {
+    guard self.motionSession == session else { return }
+    if !self.allowsHeadTrackingNow { self.stopHeadTracking(); return }
     guard self.motionSession == session,
           ProcessInfo.processInfo.systemUptime - self.motionLastSample > 1 else { return }
     self.playbackYaw = 0
@@ -89,6 +99,11 @@ extension SdaPlayer {
   prefs.set(enabled,forKey:"sda.headTracking")
   stopHeadTracking()
   if enabled { startHeadTracking() }
+ }
+
+ func setBackgroundTrackingExperiment(_ enabled: Bool) {
+  prefs.set(enabled,forKey:"sda.headTrackingBackgroundExperiment")
+  if !allowsHeadTrackingNow { stopHeadTracking() } else { startHeadTracking() }
  }
 
  func recenterHeadTracking() {
