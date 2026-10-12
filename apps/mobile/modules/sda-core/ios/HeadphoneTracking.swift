@@ -55,11 +55,14 @@ extension SdaPlayer {
     guard raw.vector.x.isFinite, raw.vector.y.isFinite, raw.vector.z.isFinite,
           raw.vector.w.isFinite, simd_length(raw.vector) > 0.000001 else { return }
     let current = simd_normalize(raw)
+    self.diagnosticMotion = ["sampleTime":motion.timestamp,"receivedTime":ProcessInfo.processInfo.systemUptime,
+      "raw":[current.imag.x,current.imag.y,current.imag.z,current.real]]
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
     // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
       "y":current.imag.y,"z":current.imag.z,"w":current.real]),
       filtered is [Double] else { return }
+    self.diagnosticMotion["filtered"] = filtered
     self.headTrackingDetail = "追踪中"
    }
   }

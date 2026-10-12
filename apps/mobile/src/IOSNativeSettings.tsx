@@ -1,5 +1,5 @@
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Alert, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, useWindowDimensions } from "react-native";
 import { swiftUI } from "./IOSSystemTabs";
 import type { PlayerProps } from "./RemotePlayer";
@@ -176,5 +176,33 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       <Text>{p.systemSpatial360RAActive && p.outputChannels === 12 ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道"}</Text>
       <Button label="关于 SDA" systemImage="info.circle" onPress={() => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器")} />
     </Section>
+    <RemoteDiagnosticsSettings />
   </Form>;
+}
+
+function RemoteDiagnosticsSettings() {
+  const engine = (globalThis as any).expo?.modules?.SdaEngine;
+  const [values, setValues] = useState(() => {
+    try { return { enabled: false, ...JSON.parse(engine?.diagnosticsSettings?.() ?? "{}") }; }
+    catch { return { enabled: false, lan: "", tail: "", token: "" }; }
+  });
+  const [status, setStatus] = useState("已关闭");
+  useEffect(() => { const timer = setInterval(() => setStatus(engine?.diagnosticsStatus?.() ?? "原生模块未更新"), 1000); return () => clearInterval(timer); }, [engine]);
+  if (!swiftUI) return null;
+  const { Section, Toggle, Button, Text } = swiftUI;
+  const save = (next: typeof values) => {
+    try {
+      if (!engine?.configureDiagnostics) throw new Error("请更新原生模块");
+      engine.configureDiagnostics(next.enabled, next.lan || "", next.tail || "", next.token || "");
+      setValues(next);
+    } catch (error) { Alert.alert("远程诊断", error instanceof Error ? error.message : String(error)); }
+  };
+  const edit = (key: string, label: string) => Alert.prompt(label, key === "token" ? "至少 16 位，与接收端一致" : "例如 http://192.168.1.10:8765/diagnostics", text => save({ ...values, [key]: text.trim() }), key === "token" ? "secure-text" : "plain-text", values[key] || "");
+  return <Section title="远程诊断" footer={<Text>{status}</Text>}>
+    <Toggle label="发送诊断数据" isOn={values.enabled} onIsOnChange={enabled => save({ ...values, enabled })} />
+    <Button label={"局域网地址 · " + (values.lan || "未设置")} onPress={() => edit("lan", "局域网接收地址")} />
+    <Button label={"Tailscale 地址 · " + (values.tail || "未设置")} onPress={() => edit("tail", "Tailscale 接收地址")} />
+    <Button label="访问令牌" onPress={() => edit("token", "访问令牌")} />
+    <Text>发送播放状态、头部姿态和错误标记；不发送音频、歌曲名或文件路径。局域网失败后尝试 Tailscale。每次启动需重新开启。</Text>
+  </Section>;
 }

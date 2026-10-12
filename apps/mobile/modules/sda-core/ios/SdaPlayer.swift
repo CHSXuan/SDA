@@ -74,6 +74,8 @@ final class SdaPlayer {
  var preparationSerial = 0
  var playbackEvents: [[String:Any]] = []
  let prefs = UserDefaults.standard
+ let diagnostics = RemoteDiagnostics()
+ var diagnosticMotion: [String:Any] = [:]
  func locked<T>(_ work: () throws -> T) rethrows -> T { lock.lock(); defer { lock.unlock() }; return try work() }
  func json(_ value: Any) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]), as: UTF8.self) }
  func decodeReply(_ p: UnsafeMutablePointer<CChar>?) throws -> Any {
