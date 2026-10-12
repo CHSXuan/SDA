@@ -338,6 +338,10 @@ final class SdaPlayer {
   startHeadTracking()
  }
  func installSystemControls() {
+  observers.append(NotificationCenter.default.addObserver(forName:ProcessInfo.thermalStateDidChangeNotification,object:nil,queue:nil) { [weak self] _ in
+   guard let self else { return }
+   self.locked { self.recordPlaybackEvent("thermalStateChanged",detail:String(ProcessInfo.processInfo.thermalState.rawValue)) }
+  })
   observers.append(NotificationCenter.default.addObserver(forName:UIScreen.capturedDidChangeNotification,object:nil,queue:nil) { [weak self] _ in
    guard let self else { return }
    self.locked {

@@ -912,6 +912,14 @@ pub struct RuntimeTelemetry {
 }
 
 impl RuntimeTelemetry {
+    pub fn callback_missing_frames(&self) -> u64 {
+        self.callback_fifo_underrun_frames.load(Ordering::Relaxed)
+    }
+    pub fn render_timing(&self) -> (u64, u64, u64) {
+        (self.render_block_count.load(Ordering::Relaxed),
+         self.render_block_total_micros.load(Ordering::Relaxed),
+         self.render_block_max_micros.load(Ordering::Relaxed))
+    }
     fn publish_rendering_state(&self, engine: &Engine) {
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
         self.direct_object_hrtf.store(engine.direct_objects, Ordering::Release);

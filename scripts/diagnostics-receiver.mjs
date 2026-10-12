@@ -27,7 +27,7 @@ const server = http.createServer((req, res) => {
       if (body.schema !== 1 || !Number.isFinite(body.time)) { res.writeHead(400).end(); return; }
       // Whitelist diagnostic fields; never persist arbitrary sender payloads.
       const record = { receivedAt: Date.now(), schema: 1, time: body.time };
-      for (const key of ['playback', 'playing', 'paused', 'background', 'backgroundTrackingEnabled', 'generation', 'route', 'tracking', 'motion', 'error', 'events']) record[key] = body[key];
+      for (const key of ['playback', 'playing', 'paused', 'background', 'thermalState', 'engineRunning', 'backgroundTrackingEnabled', 'generation', 'route', 'tracking', 'motion', 'error', 'events']) record[key] = body[key];
       appendFileSync(path.join(directory, new Date().toISOString().slice(0, 10) + '.jsonl'), JSON.stringify(record) + '\n');
       res.writeHead(204).end();
     } catch { res.writeHead(400).end(); }

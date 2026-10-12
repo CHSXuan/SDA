@@ -152,6 +152,13 @@ pub unsafe extern "C" fn sda_ios_command(
             "status" => {
                 let mut status = serde_json::to_value(e.playback_status()).map_err(|e| e.to_string())?;
                 status["sourceCodec"] = json!(e.codec_name());
+                if let Some((_, telemetry)) = host.output.state.get() {
+                    let (blocks, total, maximum) = telemetry.render_timing();
+                    status["callbackMissingFrames"] = json!(telemetry.callback_missing_frames());
+                    status["renderBlocks"] = json!(blocks);
+                    status["renderTotalMicros"] = json!(total);
+                    status["renderMaxMicros"] = json!(maximum);
+                }
                 return Ok(status)
             }
             "objects" => {

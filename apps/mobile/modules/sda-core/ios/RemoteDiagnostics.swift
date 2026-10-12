@@ -79,12 +79,14 @@ extension SdaPlayer {
    return self.locked {
     let status=(self.hasPlayback ? (try? self.command("status")) as? [String:Any] : nil) ?? [:]
     var playback:[String:Any]=[:]
-    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns"] {
+    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros"] {
      playback[key]=status[key]
     }
     return ["schema":1,"time":Date().timeIntervalSince1970,"playback":playback,
      "playing":self.hasPlayback && !self.done,"paused":self.isPaused,"background":self.inBackground,
      "generation":self.generation,"route":self.systemSpatial == nil ? "KU100" : "Apple",
+     "thermalState":ProcessInfo.processInfo.thermalState.rawValue,
+     "engineRunning":self.audio?.isRunning ?? false,
      "tracking":self.headTrackingDetail,"motion":self.diagnosticMotion,
      "backgroundTrackingEnabled":self.prefs.bool(forKey:"sda.headTracking"),
      "error":self.failure == nil ? "" : "playback-error",
