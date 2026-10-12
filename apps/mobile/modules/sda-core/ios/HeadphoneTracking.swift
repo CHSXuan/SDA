@@ -5,7 +5,7 @@ import simd
 // All state and renderer commands are serialized by SdaPlayer.lock.
 extension SdaPlayer {
  var allowsHeadTrackingNow: Bool {
-  !inBackground || (prefs.bool(forKey:"sda.headTrackingBackgroundExperiment") &&
+  !inBackground || (prefs.bool(forKey:"sda.headTracking") &&
     handle != nil && systemSpatial == nil && !isPaused && !done && !sessionInterrupted && audio?.isRunning == true)
  }
  func stopHeadTracking() {
@@ -99,11 +99,6 @@ extension SdaPlayer {
   prefs.set(enabled,forKey:"sda.headTracking")
   stopHeadTracking()
   if enabled { startHeadTracking() }
- }
-
- func setBackgroundTrackingExperiment(_ enabled: Bool) {
-  prefs.set(enabled,forKey:"sda.headTrackingBackgroundExperiment")
-  if !allowsHeadTrackingNow { stopHeadTracking() } else { startHeadTracking() }
  }
 
  func recenterHeadTracking() {

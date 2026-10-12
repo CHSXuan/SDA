@@ -29,17 +29,28 @@ export function IOSSettingsButton({ onPress }: { onPress(): void }) {
   return <Host style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
 }
 
-export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onPress }: {
-  enabled: boolean; disabled: boolean; accent: string; onPress(): void;
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect }: {
+  enabled: boolean; disabled: boolean; accent: string; onSelect(enabled: boolean): void;
 }) {
   if (!swiftUI || !hasView("Button")) return null;
-  const { Host, Button } = swiftUI;
-  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const label = enabled ? "关闭头部追踪" : "开启头部追踪";
-  return <Host style={{ width: 44, height: 44, marginRight: 8 }}><Button label={label}
-    systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"} onPress={onPress}
+  const { Host, Menu, Picker, Text } = swiftUI;
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const label = enabled ? "空间音频 · 头部追踪" : "空间音频 · 固定";
+  if (!hasView("MenuView")) return <Host style={{ width: 44, height: 44, marginRight: 8 }}>
+    <swiftUI.Button label={label} systemImage="person.crop.circle" onPress={() => Alert.alert("空间音频", "", [
+      { text: "固定", onPress: () => onSelect(false) }, { text: "头部追踪", onPress: () => onSelect(true) }, { text: "取消", style: "cancel" },
+    ])} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), disabled(isDisabled)]} />
+  </Host>;
+  return <Host style={{ width: 44, height: 44, marginRight: 8 }}><Menu label={label}
+    systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"}
     modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
-      accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]} /></Host>;
+      accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]}>
+    <Picker label="空间音频" selection={enabled ? "tracking" : "fixed"}
+      onSelectionChange={(value: string) => onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
+      <Text modifiers={[tag("fixed")]}>固定</Text>
+      <Text modifiers={[tag("tracking")]}>头部追踪</Text>
+    </Picker>
+  </Menu></Host>;
 }
 
 // A single native navigation stack stays mounted over the existing player.
@@ -182,7 +193,6 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
 
 function RemoteDiagnosticsSettings() {
   const engine = (globalThis as any).expo?.modules?.SdaEngine;
-  const [backgroundTracking, setBackgroundTracking] = useState(() => engine?.backgroundTrackingExperiment?.() === true);
   const [values, setValues] = useState(() => {
     try { return { enabled: false, ...JSON.parse(engine?.diagnosticsSettings?.() ?? "{}") }; }
     catch { return { enabled: false, lan: "", tail: "", token: "" }; }
@@ -200,13 +210,6 @@ function RemoteDiagnosticsSettings() {
   };
   const edit = (key: string, label: string) => Alert.prompt(label, key === "token" ? "至少 16 位，与接收端一致" : "例如 http://192.168.1.10:8765/diagnostics", text => save({ ...values, [key]: text.trim() }), key === "token" ? "secure-text" : "plain-text", values[key] || "");
   return <Section title="远程诊断" footer={<Text>{status}</Text>}>
-    <Toggle label="后台头追实验" isOn={backgroundTracking} onIsOnChange={enabled => {
-      try {
-        if (!engine?.setBackgroundTrackingExperiment) throw new Error("请更新原生模块");
-        engine.setBackgroundTrackingExperiment(enabled); setBackgroundTracking(enabled);
-      } catch (error) { Alert.alert("后台头追实验", error instanceof Error ? error.message : String(error)); }
-    }} />
-    <Text>仅在 SDA/KU100 音频持续播放时尝试；暂停或断流时归零。关闭后恢复进入后台立即归零。</Text>
     <Toggle label="发送诊断数据" isOn={values.enabled} onIsOnChange={enabled => save({ ...values, enabled })} />
     <Button label={"局域网地址 · " + (values.lan || "未设置")} onPress={() => edit("lan", "局域网接收地址")} />
     <Button label={"Tailscale 地址 · " + (values.tail || "未设置")} onPress={() => edit("tail", "Tailscale 接收地址")} />

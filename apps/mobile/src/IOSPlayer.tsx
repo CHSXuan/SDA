@@ -159,7 +159,7 @@ function ThemedPlayer(p: PlayerProps) {
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? pc.muted : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
         {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
-          onPress={() => p.setHeadTracking(!p.headTrackingEnabled)} /> : <Pressable accessibilityRole="switch"
+          onSelect={p.setHeadTracking} /> : <Pressable accessibilityRole="switch"
           accessibilityLabel="AirPods 头部追踪" accessibilityHint={p.headTrackingStatus}
           accessibilityState={{ checked: p.headTrackingEnabled, disabled: p.busy || p.systemSpatial360RAActive }}
           disabled={p.busy || p.systemSpatial360RAActive}

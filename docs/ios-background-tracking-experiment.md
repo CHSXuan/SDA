@@ -1,5 +1,14 @@
 # Background Head Tracking Experiment
 
+## Current Behavior
+
+The user confirmed background tracking works on their device. The separate
+experimental toggle has been removed. The header's native SwiftUI Menu now offers
+Fixed and Head Tracking with a selected checkmark. Head Tracking permits motion
+updates during running KU100 background playback; Fixed stops sampling and resets
+pose. Pause/interruption/stale-data safeguards remain. The following procedure
+documents the earlier experiment, not the current settings layout.
+
 Settings / Remote Diagnostics contains an opt-in Background Tracking Experiment
 toggle, off by default. It does not add PiP, silent audio, location services or
 any new background entitlement. Enable the main head-tracking control as well.
