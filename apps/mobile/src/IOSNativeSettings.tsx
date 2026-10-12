@@ -193,26 +193,20 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
 
 function RemoteDiagnosticsSettings() {
   const engine = (globalThis as any).expo?.modules?.SdaEngine;
-  const [values, setValues] = useState(() => {
-    try { return { enabled: false, ...JSON.parse(engine?.diagnosticsSettings?.() ?? "{}") }; }
-    catch { return { enabled: false, lan: "", tail: "" }; }
-  });
+  const [enabled, setEnabled] = useState(() => engine?.diagnosticsEnabled?.() === true);
   const [status, setStatus] = useState("已关闭");
   useEffect(() => { const timer = setInterval(() => setStatus(engine?.diagnosticsStatus?.() ?? "原生模块未更新"), 1000); return () => clearInterval(timer); }, [engine]);
   if (!swiftUI) return null;
-  const { Section, Toggle, Button, Text } = swiftUI;
-  const save = (next: typeof values) => {
+  const { Section, Toggle, Text } = swiftUI;
+  const save = (next: boolean) => {
     try {
       if (!engine?.configureDiagnostics) throw new Error("请更新原生模块");
-      engine.configureDiagnostics(next.enabled, next.lan || "", next.tail || "", "");
-      setValues(next);
+      engine.configureDiagnostics(next);
+      setEnabled(next);
     } catch (error) { Alert.alert("远程诊断", error instanceof Error ? error.message : String(error)); }
   };
-  const edit = (key: string, label: string) => Alert.prompt(label, "例如 192.168.1.10:8765 或 100.90.80.70:8765", text => save({ ...values, [key]: text.trim() }), "plain-text", values[key] || "");
   return <Section title="远程诊断" footer={<Text>{status}</Text>}>
-    <Toggle label="发送诊断数据" isOn={values.enabled} onIsOnChange={enabled => save({ ...values, enabled })} />
-    <Button label={"局域网地址 · " + (values.lan || "未设置")} onPress={() => edit("lan", "局域网接收地址")} />
-    <Button label={"Tailscale 地址 · " + (values.tail || "未设置")} onPress={() => edit("tail", "Tailscale 接收地址")} />
-    <Text>发送播放状态、头部姿态和错误标记；不发送音频、歌曲名或文件路径。局域网失败后尝试 Tailscale。每次启动需重新开启。</Text>
+    <Toggle label="远程诊断服务" isOn={enabled} onIsOnChange={save} />
+    <Text>开启后，同网络设备可读取播放状态、姿态和性能数据。不提供音频、歌曲名或文件路径；每次启动默认关闭。</Text>
   </Section>;
 }

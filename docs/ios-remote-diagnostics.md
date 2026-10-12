@@ -1,54 +1,31 @@
-# Remote iOS Diagnostics
+# iPhone Diagnostic HTTP Server
 
-## Current Keyless Configuration
+Enable Remote Diagnostic Service in Settings. No phone-side address, key,
+pairing or discovery is required. The phone listens on TCP port 8765.
 
-Enter only IP:port in the LAN and/or Tailscale address fields and enable sending.
-For example, 192.168.1.10:8765 or 100.90.80.70:8765. HTTP and /diagnostics are
-added automatically. No access key, discovery or pairing is required. The
-receiver rejects public-IP peers and accepts private IPv4/loopback only. This
-is a network boundary, not device authentication: any permitted peer can submit
-logs. Use Tailscale ACLs and firewall rules to restrict access; do not publish
-the port on the internet. LAN HTTP remains unencrypted.
+From the computer, open either:
 
-The token-based instructions below describe the previous version and no longer
-apply; the receiver no longer prints or requires a token.
-
-Start the receiver on the computer:
-
-```sh
-node scripts/diagnostics-receiver.mjs
+```text
+http://PHONE_LAN_IP:8765/diagnostics
+http://PHONE_TAILSCALE_IP:8765/diagnostics
 ```
 
-It listens on port 8765 on all interfaces and prints a random access token.
-Optional environment variables: SDA_DIAGNOSTICS_TOKEN, SDA_DIAGNOSTICS_PORT,
-SDA_DIAGNOSTICS_BIND and SDA_DIAGNOSTICS_DIR. Logs are daily JSONL files under
-artifacts/ios-remote-diagnostics by default. Stop the process to stop receiving.
+The root path also returns the snapshot. GET is read-only. Unknown paths return
+404; other methods return 405. Responses contain playback counters, head pose,
+thermal state, render timing and recent event names, not audio/song names/paths.
+The old computer receiver and outgoing phone uploader have been removed.
 
-In iOS Settings / Remote Diagnostics configure both addresses, for example:
+The service is off at every app launch. Disabling cancels the listener and
+existing connections. Up to four clients and 8 KiB headers are allowed; connections
+close after one response or a five-second deadline. Snapshots are read on a
+utility queue, never generated in the audio callback. No CORS access is granted.
 
-- LAN: http://192.168.1.10:8765/diagnostics
-- Tailscale: http://100.90.80.70:8765/diagnostics
+There is no authentication or TLS: any reachable device can read the diagnostic
+snapshot while enabled. Use trusted Wi-Fi or Tailscale ACLs and do not forward
+the port to the public internet. Tailscale IP reachability depends on the iOS
+VPN extension/routing and must be checked on the actual phone, not assumed.
 
-Enter the receiver's token and enable sending. The LAN endpoint is tried first;
-failure falls back to Tailscale. Only private IPv4 addresses, localhost and
-Tailscale DNS names are accepted. IPv6 is not yet supported. HTTP is plaintext:
-prefer Tailscale on untrusted networks; do not expose the receiver to the public
-internet. A firewall rule may be required for the selected port. No firewall
-changes are made automatically.
-
-One snapshot per second contains whitelisted playback counters, pause/background
-state, anonymous playback generation, render path, raw/filtered head quaternion,
-sensor timestamps, error flags and recent event names. No audio, cover image,
-song name, full path or arbitrary error text is uploaded. An outstanding request
-blocks additional uploads; failed snapshots are dropped rather than queued.
-Redirects are rejected. Sending is native, not part of the JS pose pipeline.
-
-Sending is off after every app launch and must be explicitly enabled. Endpoint
-and token settings are stored locally in application preferences. Disable
-sending to cancel the active request. In-flight data already received cannot be
-retracted. Background delivery is best effort under iOS audio execution rules,
-not an independent keep-alive mechanism.
-
-The app permits HTTP via ATS for these endpoints; native destination validation
-restricts this diagnostic sender. No receiver is automatically launched by the
-application or the CI workflow.
+Background audio may keep the app executing; iOS suspension stops the server
+from responding. No silent audio, PiP, location or background assertion is added
+to keep this server alive. Real foreground, background-playback and locked-screen
+HTTP tests remain necessary. Source-contract CI is not a socket integration test.

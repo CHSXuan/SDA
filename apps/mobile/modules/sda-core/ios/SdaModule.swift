@@ -16,7 +16,7 @@ public final class SdaModule: Module {
    try data.write(to:directory.appendingPathComponent("sda-ci-scene.json"),options:.atomic)
   }
   OnCreate {
-   try? player.configureDiagnostics(false,player.prefs.string(forKey:"sda.diagnostics.lan") ?? "",player.prefs.string(forKey:"sda.diagnostics.tail") ?? "",player.prefs.string(forKey:"sda.diagnostics.token") ?? "")
+   player.configureDiagnostics(false)
    player.installSystemControls()
    player.locked { player.startHeadTracking() }
    if let mode = ProcessInfo.processInfo.environment["SDA_IOS_BACKGROUND_SMOKE"] {
@@ -25,7 +25,7 @@ public final class SdaModule: Module {
     DispatchQueue.global(qos:.userInitiated).async { [weak player] in player?.runCISmoke() }
    }
   }
-  OnDestroy { player.locked { player.diagnostics.configure(enabled:false,urls:[],token:"") { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
+  OnDestroy { player.locked { player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
   Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }
   Function("setStereoSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatialStereo"); return true } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
@@ -47,9 +47,9 @@ public final class SdaModule: Module {
   Function("resetHeadPose") { player.locked { player.recenterHeadTracking() } }
   Function("setHeadTracking") { (enabled: Bool) in player.locked { player.setHeadTracking(enabled) } }
   Function("headTrackingStatus") { player.locked { player.headTrackingDetail } }
-  Function("configureDiagnostics") { (enabled:Bool,lan:String,tail:String,token:String) in try player.locked { try player.configureDiagnostics(enabled,lan,tail,token) } }
+  Function("configureDiagnostics") { (enabled:Bool) in player.locked { player.configureDiagnostics(enabled) } }
   Function("diagnosticsStatus") { player.diagnostics.status }
-  Function("diagnosticsSettings") { try player.locked { try player.json(["lan":player.prefs.string(forKey:"sda.diagnostics.lan") ?? "","tail":player.prefs.string(forKey:"sda.diagnostics.tail") ?? "","token":player.prefs.string(forKey:"sda.diagnostics.token") ?? ""]) } }
+  Function("diagnosticsEnabled") { player.prefs.bool(forKey:"sda.diagnostics.enabled") }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
   Function("setSpatialEnhancement") { (enabled: Bool) in try player.locked { try player.saveSpatialEnhancement(enabled) } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }

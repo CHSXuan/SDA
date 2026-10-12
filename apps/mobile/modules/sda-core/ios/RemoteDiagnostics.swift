@@ -1,93 +1,86 @@
 import Foundation
+import Network
 
-final class RemoteDiagnostics: NSObject, URLSessionTaskDelegate {
+// Opt-in read-only server; never uploads or accepts playback commands.
+final class RemoteDiagnostics {
  private let queue = DispatchQueue(label:"sda.diagnostics",qos:.utility)
- private lazy var session: URLSession = {
-  let config = URLSessionConfiguration.ephemeral
-  config.timeoutIntervalForRequest = 3; config.timeoutIntervalForResource = 4
-  config.urlCache = nil; config.httpShouldSetCookies = false
-  return URLSession(configuration:config,delegate:self,delegateQueue:nil)
- }()
- private var timer: DispatchSourceTimer?
- private var task: URLSessionDataTask?
+ private var listener: NWListener?
+ private var clients: [UUID:NWConnection] = [:]
  private var epoch = 0
  private let statusLock = NSLock()
  private var detail = "已关闭"
- func urlSession(_ session:URLSession,task:URLSessionTask,willPerformHTTPRedirection response:HTTPURLResponse,newRequest request:URLRequest,completionHandler:@escaping (URLRequest?) -> Void) {
-  completionHandler(nil)
- }
  var status: String { statusLock.lock(); defer { statusLock.unlock() }; return detail }
  private func setStatus(_ text:String) { statusLock.lock(); detail=text; statusLock.unlock() }
- static func endpoint(_ text:String) throws -> URL? {
-  if text.isEmpty { return nil }
-  let address=text.contains("://") ? text : "http://"+text
-  guard let url=URL(string:address), ["http","https"].contains(url.scheme ?? ""),
-    let host=url.host, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-    host == "localhost" ||
-    host.hasSuffix(".ts.net") || {
-     let parts=host.split(separator:".").compactMap { Int($0) }
-     guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else { return false }
-     return parts[0] == 10 || (parts[0] == 192 && parts[1] == 168) ||
-       (parts[0] == 172 && (16...31).contains(parts[1])) ||
-       (parts[0] == 100 && (64...127).contains(parts[1]))
-    }() else { throw SdaError.message("请填写局域网或 Tailscale HTTP/HTTPS 地址") }
-  if url.path.isEmpty || url.path == "/" { return url.appendingPathComponent("diagnostics") }
-  return url
- }
- func configure(enabled:Bool, urls:[URL], token:String, snapshot:@escaping () -> [String:Any]) {
+ func configure(enabled:Bool,snapshot:@escaping () -> [String:Any]) {
   queue.async {
    self.epoch += 1; let epoch=self.epoch
-   self.timer?.cancel(); self.timer=nil; self.task?.cancel(); self.task=nil
+   self.listener?.cancel(); self.listener=nil
+   for client in self.clients.values { client.cancel() }; self.clients.removeAll()
    guard enabled else { self.setStatus("已关闭"); return }
-   self.setStatus("等待发送")
-   let timer=DispatchSource.makeTimerSource(queue:self.queue)
-   timer.schedule(deadline:.now(),repeating:1)
-   timer.setEventHandler { [weak self] in
-    guard let self, self.task == nil, self.epoch == epoch,
-      let body=try? JSONSerialization.data(withJSONObject:snapshot()) else { return }
-    self.send(body,urls:urls,index:0,token:token,epoch:epoch)
-   }
-   self.timer=timer; timer.resume()
+   do {
+    let listener=try NWListener(using:.tcp,on:8765)
+    self.listener=listener; self.setStatus("正在启动")
+    listener.stateUpdateHandler = { [weak self] state in
+     guard let self, self.epoch == epoch else { return }
+     switch state {
+     case .ready: self.setStatus("服务已开启 · 端口 8765 · /diagnostics")
+     case .failed: self.setStatus("监听失败 · 请关闭后重新开启"); listener.cancel()
+     default: break
+     }
+    }
+    listener.newConnectionHandler = { [weak self] connection in
+     guard let self, self.epoch == epoch, self.clients.count < 4 else { connection.cancel(); return }
+     let id=UUID(); self.clients[id]=connection
+     connection.stateUpdateHandler = { [weak self] state in
+      if case .failed = state { self?.close(id) }
+      if case .cancelled = state { self?.clients.removeValue(forKey:id) }
+     }
+     connection.start(queue:self.queue)
+     self.receive(connection,id:id,epoch:epoch,data:Data(),snapshot:snapshot)
+     self.queue.asyncAfter(deadline:.now()+5) { [weak self] in self?.close(id) }
+    }
+    listener.start(queue:self.queue)
+   } catch { self.setStatus("监听失败") }
   }
  }
- private func send(_ body:Data,urls:[URL],index:Int,token:String,epoch:Int) {
-  guard epoch == self.epoch, index < urls.count else { return }
-  var request=URLRequest(url:urls[index]); request.httpMethod="POST"; request.httpBody=body
-  request.setValue("application/json",forHTTPHeaderField:"Content-Type")
-  task=session.dataTask(with:request) { [weak self] _, response, error in
-   guard let self else { return }
-   self.queue.async {
-    guard self.epoch == epoch else { return }; self.task=nil
-    if error == nil, let http=response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-     self.setStatus("已发送 · "+(urls[index].host ?? ""))
-    } else if index+1 < urls.count { self.send(body,urls:urls,index:index+1,token:token,epoch:epoch) }
-    else { self.setStatus("发送失败 · 请检查地址、令牌和网络") }
+ private func close(_ id:UUID) { clients.removeValue(forKey:id)?.cancel() }
+ private func receive(_ connection:NWConnection,id:UUID,epoch:Int,data:Data,snapshot:@escaping () -> [String:Any]) {
+  connection.receive(minimumIncompleteLength:1,maximumLength:4096) { [weak self] bytes, _, complete, error in
+   guard let self, self.epoch == epoch, self.clients[id] != nil else { return }
+   var data=data; if let bytes { data.append(bytes) }
+   guard error == nil, data.count <= 8192 else { self.close(id); return }
+   guard data.range(of:Data("\r\n\r\n".utf8)) != nil else {
+    if complete { self.close(id) } else { self.receive(connection,id:id,epoch:epoch,data:data,snapshot:snapshot) }
+    return
    }
+   let parts=String(decoding:data,as:UTF8.self).components(separatedBy:"\r\n")[0].split(separator:" ")
+   var code="400 Bad Request"; var body=Data("{}".utf8)
+   if parts.count == 3 {
+    if parts[0] != "GET" { code="405 Method Not Allowed" }
+    else if parts[1] != "/diagnostics" && parts[1] != "/" { code="404 Not Found" }
+    else if let json=try? JSONSerialization.data(withJSONObject:snapshot()) { code="200 OK"; body=json }
+    else { code="500 Internal Server Error" }
+   }
+   var response=Data("HTTP/1.1 \(code)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+   response.append(body)
+   connection.send(content:response,completion:.contentProcessed { [weak self] _ in self?.close(id) })
   }
-  task?.resume()
  }
 }
 
 extension SdaPlayer {
- func configureDiagnostics(_ enabled:Bool,_ lan:String,_ tail:String,_ token:String) throws {
-  let urls=try [lan,tail].compactMap { try RemoteDiagnostics.endpoint($0) }
-  guard !enabled || !urls.isEmpty else { throw SdaError.message("请填写接收端 IP 和端口") }
+ func configureDiagnostics(_ enabled:Bool) {
   prefs.set(enabled,forKey:"sda.diagnostics.enabled")
-  prefs.set(lan,forKey:"sda.diagnostics.lan"); prefs.set(tail,forKey:"sda.diagnostics.tail")
-  prefs.removeObject(forKey:"sda.diagnostics.token")
-  diagnostics.configure(enabled:enabled,urls:urls,token:token) { [weak self] in
+  diagnostics.configure(enabled:enabled) { [weak self] in
    guard let self else { return [:] }
    return self.locked {
     let status=(self.hasPlayback ? (try? self.command("status")) as? [String:Any] : nil) ?? [:]
     var playback:[String:Any]=[:]
-    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros"] {
-     playback[key]=status[key]
-    }
+    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros"] { playback[key]=status[key] }
     return ["schema":1,"time":Date().timeIntervalSince1970,"playback":playback,
      "playing":self.hasPlayback && !self.done,"paused":self.isPaused,"background":self.inBackground,
      "generation":self.generation,"route":self.systemSpatial == nil ? "KU100" : "Apple",
-     "thermalState":ProcessInfo.processInfo.thermalState.rawValue,
-     "engineRunning":self.audio?.isRunning ?? false,
+     "thermalState":ProcessInfo.processInfo.thermalState.rawValue,"engineRunning":self.audio?.isRunning ?? false,
      "tracking":self.headTrackingDetail,"motion":self.diagnosticMotion,
      "backgroundTrackingEnabled":self.prefs.bool(forKey:"sda.headTracking"),
      "error":self.failure == nil ? "" : "playback-error",

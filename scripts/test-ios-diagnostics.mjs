@@ -1,22 +1,20 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-const child = spawn(process.execPath, ['scripts/diagnostics-receiver.mjs'], {
-  env: { ...process.env, SDA_DIAGNOSTICS_PORT: '18765', SDA_DIAGNOSTICS_BIND: '127.0.0.1', SDA_DIAGNOSTICS_DIR: 'tmp/diagnostics-test' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-try {
-  await new Promise((resolve, reject) => {
-    child.once('error', reject); child.once('exit', code => reject(new Error('Receiver exited: ' + code)));
-    child.stdout.once('data', resolve);
-  });
-  const url = 'http://127.0.0.1:18765/diagnostics';
-  assert.equal((await fetch(url, { method: 'POST', body: '{}' })).status, 400);
-  assert.equal((await fetch(url, { method: 'POST', body: JSON.stringify({ schema: 1, time: 123, route: 'KU100' }) })).status, 204);
-  const source = readFileSync('apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift', 'utf8');
-  assert.match(source, /task == nil/);
-  assert.match(source, /self.task\?\.cancel/);
-  assert.match(source, /index\+1 < urls.count/);
-  assert.doesNotMatch(source, /forHTTPHeaderField:"Authorization"/);
-  console.log('Keyless private-network receiver, payload validation and native backpressure contracts passed.');
-} finally { child.kill(); }
+const read = path => readFileSync(path, 'utf8');
+const source = read('apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift');
+assert.match(source, /NWListener\(using:\.tcp,on:8765\)/);
+assert.match(source, /clients.count < 4/);
+assert.match(source, /data.count <= 8192/);
+assert.match(source, /parts\[0\] != "GET"/);
+assert.match(source, /405 Method Not Allowed/);
+assert.match(source, /Cache-Control: no-store/);
+assert.match(source, /self.listener\?\.cancel/);
+assert.match(source, /client.cancel\(\)/);
+assert.doesNotMatch(source, /URLSession|httpMethod|Authorization/);
+const ui = read('apps/mobile/src/IOSNativeSettings.tsx');
+const settings = ui.slice(ui.indexOf('function RemoteDiagnosticsSettings'));
+assert.match(settings, /engine.configureDiagnostics\(next\)/);
+assert.doesNotMatch(settings, /Alert.prompt|访问令牌|接收地址|values.lan|values.tail/);
+assert.match(read('apps/mobile/modules/sda-core/ios/SdaModule.swift'), /player.configureDiagnostics\(false\)/);
+assert.ok(!JSON.parse(read('apps/mobile/app.json')).expo.ios.infoPlist.NSAppTransportSecurity);
+console.log('Native read-only diagnostics server source contracts passed; iPhone HTTP reachability requires device testing.');
