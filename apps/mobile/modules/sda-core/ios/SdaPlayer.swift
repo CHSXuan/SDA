@@ -36,6 +36,8 @@ final class SdaPlayer {
  var motionLastSample: TimeInterval = 0
  var motionCallbackCount = 0
  var motionBackgroundCallbackCount = 0
+ var motionRetryAfter: TimeInterval = 0
+ var motionRetryCount = 0
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"
  var generation = 0
@@ -330,16 +332,26 @@ final class SdaPlayer {
    try audio.start(); recordPlaybackEvent("engineRestart",detail:reason)
   }
   if let system = systemSpatial { try system.pump() }
+  startHeadTracking()
  }
  func installSystemControls() {
+  observers.append(NotificationCenter.default.addObserver(forName:UIScreen.capturedDidChangeNotification,object:nil,queue:nil) { [weak self] _ in
+   guard let self else { return }
+   self.locked {
+    self.recordPlaybackEvent("screenCaptureChanged")
+    self.stopHeadTracking()
+    do { try self.recoverOutputIfNeeded("screenCapture") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
+    self.startHeadTracking()
+   }
+  })
   for notification in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
    observers.append(NotificationCenter.default.addObserver(forName: notification, object:nil, queue:nil) { [weak self] _ in
     guard let self else { return }; self.locked {
      self.inBackground = notification == UIApplication.didEnterBackgroundNotification
      if self.inBackground { self.backgroundTransitions += 1 }
-     if !self.allowsHeadTrackingNow { self.stopHeadTracking() } else { self.startHeadTracking() }
      self.recordPlaybackEvent(self.inBackground ? "background" : "foreground")
      do { try self.recoverOutputIfNeeded("lifecycle") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
+     if !self.allowsHeadTrackingNow { self.stopHeadTracking() } else { self.startHeadTracking() }
      self.updateNowPlaying()
     }
    })
@@ -384,9 +396,10 @@ final class SdaPlayer {
    guard let self else { return }
    self.locked {
     self.recordPlaybackEvent("routeChange",detail:String(describing:note.userInfo ?? [:]))
-    self.stopHeadTracking(); self.startHeadTracking()
+    self.stopHeadTracking()
     if (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { _ = try? self.setPaused(true) }
     else { do { try self.recoverOutputIfNeeded("routeChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
+    self.startHeadTracking()
    }
   })
   observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object:nil, queue:nil) { [weak self] _ in

@@ -35,6 +35,7 @@ extension SdaPlayer {
   let startedAt = ProcessInfo.processInfo.systemUptime
   var lastTimestamp: TimeInterval = 0
   motionLastSample = startedAt
+  motionRetryAfter = startedAt + 3
   motionReferenceAfter = startedAt
   _ = try? command("trackingProviderReset")
   applyNeutralHeadPose()
@@ -66,6 +67,7 @@ extension SdaPlayer {
       "callbacks":self.motionCallbackCount,"backgroundCallbacks":self.motionBackgroundCallbackCount,
       "background":self.inBackground]
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
+    self.motionRetryCount = 0
     // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
       "y":current.imag.y,"z":current.imag.z,"w":current.real]),
@@ -80,7 +82,11 @@ extension SdaPlayer {
    guard let self else { return }
    self.locked {
     guard self.motionSession == session else { return }
-    if !self.allowsHeadTrackingNow { self.stopHeadTracking(); return }
+    if !self.allowsHeadTrackingNow {
+     // Keep the watchdog alive through a transient output reconfiguration.
+     // Explicit pause/stop lifecycle actions still cancel the subscription.
+     self.applyNeutralHeadPose(); return
+    }
     guard self.motionSession == session,
           ProcessInfo.processInfo.systemUptime - self.motionLastSample > 1 else { return }
     self.playbackYaw = 0
@@ -90,6 +96,17 @@ extension SdaPlayer {
     }
      self.applyNeutralHeadPose()
     self.headTrackingDetail = "等待兼容耳机"
+    let now = ProcessInfo.processInfo.systemUptime
+    if now >= self.motionRetryAfter {
+     // Core Motion may remain marked active after capture/session reconfiguration
+     // even though no fresh samples arrive. Replace that subscription explicitly.
+     self.motionRetryCount = min(self.motionRetryCount + 1, 5)
+     let delay = min(30.0, pow(2.0, Double(self.motionRetryCount)))
+     self.recordPlaybackEvent("headTrackingRestart")
+     self.stopHeadTracking()
+     self.startHeadTracking()
+     self.motionRetryAfter = now + delay
+    }
    }
   }
   motionWatchdog = timer; timer.resume()
