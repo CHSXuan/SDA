@@ -1,5 +1,18 @@
 # Remote iOS Diagnostics
 
+## Current Keyless Configuration
+
+Enter only IP:port in the LAN and/or Tailscale address fields and enable sending.
+For example, 192.168.1.10:8765 or 100.90.80.70:8765. HTTP and /diagnostics are
+added automatically. No access key, discovery or pairing is required. The
+receiver rejects public-IP peers and accepts private IPv4/loopback only. This
+is a network boundary, not device authentication: any permitted peer can submit
+logs. Use Tailscale ACLs and firewall rules to restrict access; do not publish
+the port on the internet. LAN HTTP remains unencrypted.
+
+The token-based instructions below describe the previous version and no longer
+apply; the receiver no longer prints or requires a token.
+
 Start the receiver on the computer:
 
 ```sh

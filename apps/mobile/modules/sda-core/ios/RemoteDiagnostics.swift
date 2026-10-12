@@ -20,7 +20,8 @@ final class RemoteDiagnostics: NSObject, URLSessionTaskDelegate {
  private func setStatus(_ text:String) { statusLock.lock(); detail=text; statusLock.unlock() }
  static func endpoint(_ text:String) throws -> URL? {
   if text.isEmpty { return nil }
-  guard let url=URL(string:text), ["http","https"].contains(url.scheme ?? ""),
+  let address=text.contains("://") ? text : "http://"+text
+  guard let url=URL(string:address), ["http","https"].contains(url.scheme ?? ""),
     let host=url.host, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
     host == "localhost" ||
     host.hasSuffix(".ts.net") || {
@@ -30,6 +31,7 @@ final class RemoteDiagnostics: NSObject, URLSessionTaskDelegate {
        (parts[0] == 172 && (16...31).contains(parts[1])) ||
        (parts[0] == 100 && (64...127).contains(parts[1]))
     }() else { throw SdaError.message("请填写局域网或 Tailscale HTTP/HTTPS 地址") }
+  if url.path.isEmpty || url.path == "/" { return url.appendingPathComponent("diagnostics") }
   return url
  }
  func configure(enabled:Bool, urls:[URL], token:String, snapshot:@escaping () -> [String:Any]) {
@@ -52,7 +54,6 @@ final class RemoteDiagnostics: NSObject, URLSessionTaskDelegate {
   guard epoch == self.epoch, index < urls.count else { return }
   var request=URLRequest(url:urls[index]); request.httpMethod="POST"; request.httpBody=body
   request.setValue("application/json",forHTTPHeaderField:"Content-Type")
-  request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
   task=session.dataTask(with:request) { [weak self] _, response, error in
    guard let self else { return }
    self.queue.async {
@@ -70,10 +71,10 @@ final class RemoteDiagnostics: NSObject, URLSessionTaskDelegate {
 extension SdaPlayer {
  func configureDiagnostics(_ enabled:Bool,_ lan:String,_ tail:String,_ token:String) throws {
   let urls=try [lan,tail].compactMap { try RemoteDiagnostics.endpoint($0) }
-  guard !enabled || (!urls.isEmpty && token.count >= 16) else { throw SdaError.message("请填写接收地址和至少 16 位访问令牌") }
+  guard !enabled || !urls.isEmpty else { throw SdaError.message("请填写接收端 IP 和端口") }
   prefs.set(enabled,forKey:"sda.diagnostics.enabled")
   prefs.set(lan,forKey:"sda.diagnostics.lan"); prefs.set(tail,forKey:"sda.diagnostics.tail")
-  prefs.set(token,forKey:"sda.diagnostics.token")
+  prefs.removeObject(forKey:"sda.diagnostics.token")
   diagnostics.configure(enabled:enabled,urls:urls,token:token) { [weak self] in
    guard let self else { return [:] }
    return self.locked {

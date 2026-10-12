@@ -1,18 +1,19 @@
 import http from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
-const token = process.env.SDA_DIAGNOSTICS_TOKEN || randomBytes(24).toString('hex');
-if (token.length < 16) throw new Error('Token must contain at least 16 characters');
 const port = Number(process.env.SDA_DIAGNOSTICS_PORT || 8765);
 const directory = path.resolve(process.env.SDA_DIAGNOSTICS_DIR || 'artifacts/ios-remote-diagnostics');
 mkdirSync(directory, { recursive: true });
-const authorized = value => {
-  const a = Buffer.from(value || ''); const b = Buffer.from('Bearer ' + token);
-  return a.length === b.length && timingSafeEqual(a, b);
+const privatePeer = address => {
+  const ip = (address || '').replace(/^::ffff:/, '');
+  if (ip === '::1') return true;
+  const parts = ip.split('.');
+  if (parts.length !== 4 || parts.some(p => !/^\d+$/.test(p) || Number(p) > 255)) return false;
+  const [a, b] = parts.map(Number);
+  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 100 && b >= 64 && b <= 127);
 };
 const server = http.createServer((req, res) => {
-  if (!authorized(req.headers.authorization)) { res.writeHead(401).end(); return; }
+  if (!privatePeer(req.socket.remoteAddress)) { res.writeHead(403).end(); return; }
   if (req.method !== 'POST' || req.url !== '/diagnostics') { res.writeHead(404).end(); return; }
   let size = 0; const chunks = [];
   req.on('data', chunk => {
@@ -36,6 +37,6 @@ const server = http.createServer((req, res) => {
 server.requestTimeout = 5000;
 server.listen(port, process.env.SDA_DIAGNOSTICS_BIND || '0.0.0.0', () => {
   console.log(`Diagnostics receiver listening on port ${port}, path /diagnostics`);
-  console.log(`Access token: ${token}`);
+  console.log('No key required; accepts private LAN/Tailscale IPv4 and loopback peers only.');
   console.log(`Logs: ${directory}`);
 });

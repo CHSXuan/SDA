@@ -195,7 +195,7 @@ function RemoteDiagnosticsSettings() {
   const engine = (globalThis as any).expo?.modules?.SdaEngine;
   const [values, setValues] = useState(() => {
     try { return { enabled: false, ...JSON.parse(engine?.diagnosticsSettings?.() ?? "{}") }; }
-    catch { return { enabled: false, lan: "", tail: "", token: "" }; }
+    catch { return { enabled: false, lan: "", tail: "" }; }
   });
   const [status, setStatus] = useState("已关闭");
   useEffect(() => { const timer = setInterval(() => setStatus(engine?.diagnosticsStatus?.() ?? "原生模块未更新"), 1000); return () => clearInterval(timer); }, [engine]);
@@ -204,16 +204,15 @@ function RemoteDiagnosticsSettings() {
   const save = (next: typeof values) => {
     try {
       if (!engine?.configureDiagnostics) throw new Error("请更新原生模块");
-      engine.configureDiagnostics(next.enabled, next.lan || "", next.tail || "", next.token || "");
+      engine.configureDiagnostics(next.enabled, next.lan || "", next.tail || "", "");
       setValues(next);
     } catch (error) { Alert.alert("远程诊断", error instanceof Error ? error.message : String(error)); }
   };
-  const edit = (key: string, label: string) => Alert.prompt(label, key === "token" ? "至少 16 位，与接收端一致" : "例如 http://192.168.1.10:8765/diagnostics", text => save({ ...values, [key]: text.trim() }), key === "token" ? "secure-text" : "plain-text", values[key] || "");
+  const edit = (key: string, label: string) => Alert.prompt(label, "例如 192.168.1.10:8765 或 100.90.80.70:8765", text => save({ ...values, [key]: text.trim() }), "plain-text", values[key] || "");
   return <Section title="远程诊断" footer={<Text>{status}</Text>}>
     <Toggle label="发送诊断数据" isOn={values.enabled} onIsOnChange={enabled => save({ ...values, enabled })} />
     <Button label={"局域网地址 · " + (values.lan || "未设置")} onPress={() => edit("lan", "局域网接收地址")} />
     <Button label={"Tailscale 地址 · " + (values.tail || "未设置")} onPress={() => edit("tail", "Tailscale 接收地址")} />
-    <Button label="访问令牌" onPress={() => edit("token", "访问令牌")} />
     <Text>发送播放状态、头部姿态和错误标记；不发送音频、歌曲名或文件路径。局域网失败后尝试 Tailscale。每次启动需重新开启。</Text>
   </Section>;
 }
