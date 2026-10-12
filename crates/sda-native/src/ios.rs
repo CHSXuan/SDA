@@ -128,6 +128,14 @@ pub unsafe extern "C" fn sda_ios_command(
             "trackingProvider" => {
                 let pose = host.orientation.lock().map_err(|_| "orientation poisoned")?
                     .process_quaternion([number("x")? as f64, number("y")? as f64, number("z")? as f64, number("w")? as f64]);
+                if let Some(q) = pose {
+                    // Desktop rendering is yaw-only. Apply the shared helper
+                    // output directly; no JS polling or second filter stage.
+                    let norm = (q.z * q.z + q.w * q.w).sqrt();
+                    if norm > 1e-9 {
+                        e.set_head_orientation([0.0, 0.0, (q.z / norm) as f32, (q.w / norm) as f32])?;
+                    }
+                }
                 return Ok(pose.map(|q| json!([q.x,q.y,q.z,q.w])).unwrap_or(Value::Null));
             }
             "status" => {

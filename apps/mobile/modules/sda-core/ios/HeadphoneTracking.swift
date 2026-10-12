@@ -9,7 +9,7 @@ extension SdaPlayer {
   motionSession += 1
   if motionWatchdog != nil { headphoneMotion.stopDeviceMotionUpdates() }
   motionWatchdog?.cancel(); motionWatchdog = nil
-  motionRawPose = nil; motionLastSample = 0; playbackYaw = 0
+  motionLastSample = 0; playbackYaw = 0
   motionReferenceAfter = ProcessInfo.processInfo.systemUptime
   if wasTracking { applyNeutralHeadPose() }
   headTrackingDetail = inBackground ? "后台已归零" : "未启用"
@@ -30,7 +30,7 @@ extension SdaPlayer {
   let session = motionSession
   let startedAt = ProcessInfo.processInfo.systemUptime
   var lastTimestamp: TimeInterval = 0
-  motionRawPose = nil; motionLastSample = startedAt
+  motionLastSample = startedAt
   motionReferenceAfter = startedAt
   _ = try? command("trackingProviderReset")
   applyNeutralHeadPose()
@@ -41,7 +41,7 @@ extension SdaPlayer {
     guard self.motionSession == session, !self.inBackground,
           self.prefs.bool(forKey:"sda.headTracking"), self.handle != nil else { return }
     guard error == nil, let motion else {
-     self.motionRawPose = nil; self.playbackYaw = 0
+     self.playbackYaw = 0
      self.applyNeutralHeadPose()
      self.headTrackingDetail = error?.localizedDescription ?? "等待兼容耳机"
      return
@@ -56,13 +56,10 @@ extension SdaPlayer {
           raw.vector.w.isFinite, simd_length(raw.vector) > 0.000001 else { return }
     let current = simd_normalize(raw)
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
-    // Provider only: the exact desktop HeadTrackingSession processes this
-    // raw quaternion on the foreground JS side before it reaches the renderer.
+    // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
       "y":current.imag.y,"z":current.imag.z,"w":current.real]),
-      let orientation = filtered as? [Double] else { return }
-    self.motionSequence += 1
-    self.motionRawPose = ["session":session,"sequence":self.motionSequence,"orientation":orientation]
+      filtered is [Double] else { return }
     self.headTrackingDetail = "追踪中"
    }
   }
@@ -73,7 +70,7 @@ extension SdaPlayer {
    self.locked {
     guard self.motionSession == session,
           ProcessInfo.processInfo.systemUptime - self.motionLastSample > 1 else { return }
-    self.motionRawPose = nil; self.playbackYaw = 0
+    self.playbackYaw = 0
     if self.motionLastSample > 0 {
      _ = try? self.command("trackingProviderReset")
      self.motionLastSample = 0
@@ -92,7 +89,7 @@ extension SdaPlayer {
  }
 
  func recenterHeadTracking() {
-  motionRawPose = nil; playbackYaw = 0
+  playbackYaw = 0
   motionReferenceAfter = ProcessInfo.processInfo.systemUptime
   if handle != nil { _ = try? command("trackingProviderReset") }
   applyNeutralHeadPose()

@@ -1,5 +1,19 @@
 # iOS AirPods Head Tracking
 
+## Current Native Data Path
+
+Core Motion callbacks now directly call the Rust `trackingProvider` command.
+Rust applies the shared Windows helper attitude filter and sends its normalized
+yaw quaternion directly to the KU100 renderer command queue. No pose enters JS:
+the 20 ms JS timer, raw-pose export and processed-pose setter have been removed.
+JS controls only the UI preference and reads diagnostic status. Native lifecycle
+and timeout handling still reset the pose without JS participation.
+
+The desktop TypeScript HeadTrackingSession is no longer in the iOS data path.
+Its second-stage smoothing/anchor processing is not currently ported to Rust;
+do not describe this version as complete desktop end-to-end behavior parity.
+The sections below describe prior integration history, not the current path.
+
 The shared header on Playback, Library and Space contains an opt-in tracking
 button immediately left of Settings. Its preference is persisted. Settings
 contains a recenter action. Tracking starts when the SDA/KU100 engine is ready;

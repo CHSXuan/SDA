@@ -1,5 +1,4 @@
 import React from "react";
-import { HeadTrackingSession } from "../web/src/head-tracking-session";
 import { Platform, Linking, AppState, type NativeEventSubscription } from "react-native";
 import renderingPresets from "./rendering-presets.json";
 import { prepare360RaMp4, type MpeghMp4Host } from "./src/mpeghMp4";
@@ -46,8 +45,6 @@ interface SdaEngineModule extends MpeghMp4Host {
   resetHeadPose(): void;
   setHeadTracking?(enabled: boolean): void;
   headTrackingStatus?(): string;
-  headTrackingRawPose?(): string;
-  setTrackedHeadPose?(session: number, x: number, y: number, z: number, w: number): void;
   feedError(): string | null;
   feedDone(): boolean;
   setVolume(volume: number): void;
@@ -154,40 +151,6 @@ export default class App extends React.Component<Record<string, never>, State> {
   private engine?: SdaEngineModule;
   private changingTrack = false;
   private poller?: ReturnType<typeof setInterval>;
-  private trackingTimer?: ReturnType<typeof setInterval>;
-  private trackingSession = new HeadTrackingSession({ yawMode: "yaw", sensitivity: 1,
-    smoothingMs: 220, deadZoneDegrees: 2.5, maxDegreesPerSecond: 480 });
-  private providerSession = -1;
-  private providerSequence = -1;
-
-  private resetTrackingSession() {
-    this.trackingSession.beginPlayback();
-    this.providerSession = -1; this.providerSequence = -1;
-  }
-
-  private updateTracking = () => {
-    if (Platform.OS !== "ios" || !this.foreground || !this.state.headTrackingEnabled) return;
-    try {
-      const engine = this.engine;
-      if (!engine?.headTrackingRawPose || !engine.setTrackedHeadPose) return;
-      const raw = JSON.parse(engine.headTrackingRawPose()) as {
-        session: number; sequence: number; orientation: [number, number, number, number];
-      } | null;
-      if (!raw) { if (this.providerSession !== -1) this.resetTrackingSession(); return; }
-      if (raw.session !== this.providerSession) {
-        this.resetTrackingSession(); this.providerSession = raw.session;
-      }
-      if (raw.sequence !== this.providerSequence) {
-        this.providerSequence = raw.sequence;
-        this.trackingSession.update({ orientation: raw.orientation, timestampMs: performance.now() });
-      }
-      const pose = this.trackingSession.sample();
-      if (pose) engine.setTrackedHeadPose(raw.session, ...pose.orientation);
-    } catch (error) {
-      this.resetTrackingSession();
-      this.setState({ error: error instanceof Error ? error.message : String(error) });
-    }
-  };
 
   private foreground = AppState.currentState !== "background" && AppState.currentState !== "inactive";
 
@@ -199,17 +162,12 @@ export default class App extends React.Component<Record<string, never>, State> {
   }
 
   componentDidMount() {
-    if (Platform.OS === "ios") {
-      this.resetTrackingSession();
-      this.trackingTimer = setInterval(this.updateTracking, 20);
-    }
     const showPlayback = () => this.setState(previous => ({ playbackPageRequest: previous.playbackPageRequest + 1 }));
     this.lifecycleSubscriptions.push(Linking.addEventListener("url", ({ url }) => {
       if (/^(sda|app\.sda\.mobile):\/\/now-playing(?:[/?#]|$)/.test(url)) showPlayback();
     }));
     this.lifecycleSubscriptions.push(AppState.addEventListener("change", state => {
       this.foreground = state === "active";
-      this.resetTrackingSession();
       if (this.poller) this.restartStatusPolling();
       if (state === "active" && (this.state.playing || this.state.ended)) { showPlayback(); this.pollStatus(); }
     }));
@@ -241,7 +199,6 @@ export default class App extends React.Component<Record<string, never>, State> {
       const engine = this.getEngine();
       if (!engine.setHeadTracking) throw new Error("请更新 iOS 原生模块以启用头部追踪");
       engine.setHeadTracking(enabled);
-      this.resetTrackingSession();
       this.setState({ headTrackingEnabled: enabled, headYaw: 0,
         headTrackingStatus: engine.headTrackingStatus?.() ?? "", error: null });
     } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
@@ -343,7 +300,6 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   componentWillUnmount() {
-    if (this.trackingTimer) clearInterval(this.trackingTimer);
     for (const subscription of this.lifecycleSubscriptions) subscription.remove();
     this.lifecycleSubscriptions = [];
     if (this.poller) clearInterval(this.poller);
@@ -544,7 +500,6 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private resetYaw = () => {
-    this.resetTrackingSession();
     try {
       if (this.state.playing && !this.state.ended) this.getEngine().resetHeadPose();
       this.setState({ headYaw: 0 });

@@ -33,8 +33,6 @@ final class SdaPlayer {
  }()
  var motionSession = 0
  var motionReferenceAfter: TimeInterval = 0
- var motionRawPose: [String:Any]?
- var motionSequence = 0
  var motionLastSample: TimeInterval = 0
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"

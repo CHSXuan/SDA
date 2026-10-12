@@ -22,10 +22,10 @@ function makeApp(platform = 'ios') {
 }
 const ios = makeApp();
 const hasTimer = (fixture, delay) => [...fixture.timers.values()].some(timer => timer.delay === delay);
-assert.ok(hasTimer(ios,125)); assert.ok(hasTimer(ios,20));
+assert.ok(hasTimer(ios,125)); assert.equal(hasTimer(ios,20),false);
 ios.app.pollStatus(); assert.ok(ios.calls.includes('objects'));
 ios.listeners.change('background');
-assert.equal(ios.timers.size,2); assert.ok(hasTimer(ios,1000));
+assert.equal(ios.timers.size,1); assert.ok(hasTimer(ios,1000));
 ios.calls.length=0; const writes=ios.writes();
 ios.app.pollStatus(); assert.deepEqual(ios.calls,['error','done']); assert.equal(ios.writes(),writes);
 ios.setDone(true); ios.app.pollStatus(); assert.equal(ios.next(),1); assert.equal(ios.app.state.ended,true);
