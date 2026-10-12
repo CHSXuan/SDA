@@ -3342,7 +3342,8 @@ pub fn spawn_render_worker(
                 // Keep decoded PCM ahead, but do not bake old head orientation
                 // into more than a short reserve of final KU100 stereo audio.
                 let (local_target, start_frames) = realtime::render_reserve(
-                    cfg!(target_os = "ios"), engine.head_pose.is_some(), synchronized, buffer_scale);
+                    cfg!(target_os = "ios"), engine.head_pose.is_some(), synchronized,
+                    (STEREO_FIFO_TARGET_FRAMES * buffer_scale, STEREO_FIFO_START_FRAMES * buffer_scale));
                 let target = if synchronized {
                     remote_sync::buffer_frames()
                 } else {
