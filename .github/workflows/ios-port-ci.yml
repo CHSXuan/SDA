@@ -121,6 +121,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib realtime::tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
       - name: Verify integrated depth, elevation and harmony regressions
         if: steps.sdk.outputs.available == 'true'

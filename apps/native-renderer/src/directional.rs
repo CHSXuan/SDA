@@ -1375,6 +1375,26 @@ impl Grid {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn head_turn_selects_ku100_filter_before_stereo_convolution() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let irs: Vec<_> = [-60.0, -30.0, 0.0, 30.0, 60.0].iter()
+            .map(|&az| set.nearest(az, 0.0).unwrap()).collect();
+        let grid = Grid::new(&irs);
+        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let half = 30.0_f32.to_radians() / 2.0;
+        let pose = [0.0, 0.0, half.sin(), half.cos()];
+        let tracked = grid.direct_footprint(&irs, Direction { head: Some(pose), ..base });
+        let relative = spatial::head_relative_adm(base.position, Some(pose));
+        let expected = grid.direct_footprint(&irs, Direction { position: relative, ..base });
+        for (actual, expected) in tracked.0.iter().chain(&tracked.1).zip(expected.0.iter().chain(&expected.1)) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        assert_ne!(tracked, grid.direct_footprint(&irs, base));
+    }
     use super::*;
 
     #[test]

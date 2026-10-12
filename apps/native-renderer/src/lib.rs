@@ -3339,10 +3339,14 @@ pub fn spawn_render_worker(
                 // reserve absorbs scheduler/remote-video bursts without changing
                 // source clocks, filters or the DAC-driven presentation clock.
                 let buffer_scale = realtime::render_buffer_scale(synchronized, engine.is_high_density_adm());
+                // Keep decoded PCM ahead, but do not bake old head orientation
+                // into more than a short reserve of final KU100 stereo audio.
+                let (local_target, start_frames) = realtime::render_reserve(
+                    cfg!(target_os = "ios"), engine.head_pose.is_some(), synchronized, buffer_scale);
                 let target = if synchronized {
                     remote_sync::buffer_frames()
                 } else {
-                    STEREO_FIFO_TARGET_FRAMES * buffer_scale
+                    local_target
                 };
                 if fifo.available_read() >= target - 512
                     || fifo.available_write() < convolution::DEFAULT_PARTITION
@@ -3413,7 +3417,7 @@ pub fn spawn_render_worker(
                 // Enabling at a thin watermark made the callback catch up to the
                 // renderer during the start burst, and every catch-up dropped to
                 // zeros and refilled as an audible level step.
-                if fifo.available_read() >= STEREO_FIFO_START_FRAMES * buffer_scale
+                if fifo.available_read() >= start_frames
                     || (fifo.available_read() > 0
                         && engine.pcm_coverage.available(engine.sample_pos, 1) == 0)
                 {
