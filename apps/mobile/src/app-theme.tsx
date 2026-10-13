@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import * as FileSystem from "expo-file-system/legacy";
 
-// Image Color fields verified on BanG Dream! Wiki character pages, 2026-10-10.
+// Representative colors cross-checked with Moegirl on 2026-10-13.
+// MewType entries differ from the English Wiki; use the user-approved set.
 export const CHARACTER_THEMES = [
   { id: "sakiko", name: "丰川祥子", color: "#7799CC" },
-  { id: "arale", name: "仲町阿拉蕾", color: "#FFDD33" },
-  { id: "yuno", name: "千石由乃", color: "#FF6688" },
-  { id: "miyako", name: "藤都子", color: "#9977DD" },
+  { id: "arale", name: "仲町阿拉蕾", color: "#FFEE55" },
+  { id: "yuno", name: "千石由乃", color: "#EE5577" },
+  { id: "miyako", name: "藤都子", color: "#9977CC" },
   { id: "uika", name: "三角初华", color: "#BB9955" },
 ] as const;
 export type ThemeId = typeof CHARACTER_THEMES[number]["id"];

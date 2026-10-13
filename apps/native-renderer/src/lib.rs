@@ -1057,6 +1057,7 @@ pub struct Engine {
     program_events: BTreeMap<u64, ProgramGainEvent>,
     peak_guard: dsp::StereoPeakGuard,
     binaural_eq: StereoEq,
+    output_clarity: [dsp::Biquad; 2],
     headphone: headphone::HeadphoneCompensation,
     block_offset: usize,
     output_active: bool,
@@ -1188,6 +1189,8 @@ impl Engine {
             peak_guard: dsp::StereoPeakGuard::new(sample_rate),
             binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
                 .expect("48 kHz must support final binaural EQ"),
+            output_clarity: [dsp::Biquad::highshelf(sample_rate, 4000.0,
+                std::f32::consts::FRAC_1_SQRT_2, 0.0).expect("valid output shelf"); 2],
             headphone: headphone::HeadphoneCompensation::bypass()
                 .expect("bypass headphone FIR must be valid"),
             block_offset: 0,
@@ -1671,6 +1674,9 @@ impl Engine {
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
     /// Atomic listener preset for the accepted general enhancement recipe.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
+        let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
+            std::f32::consts::FRAC_1_SQRT_2, if enabled { 1.5 } else { 0.0 })?;
+        self.output_clarity = [clarity; 2];
         self.set_master_preamp_db(0.0)?;
         self.set_spatial_layer_gain_db(if enabled { 1.5 } else { 0.0 })?;
         self.final_output_trim.set(0.0, self.output_sample_rate, !self.output_active)?;
@@ -1867,6 +1873,7 @@ impl Engine {
         self.program_events.clear();
         self.peak_guard.reset();
         self.headphone.reset();
+        for filter in &mut self.output_clarity { filter.reset(); }
         if let Some(bus_renderer) = &mut self.bus_renderer {
             bus_renderer.reset();
         }
@@ -2978,6 +2985,9 @@ impl Engine {
             // Match master binaural ordering: summed HRTF/LFE -> headphone FIR
             // -> EQ -> volume/program -> linked guard (no fixed makeup).
             let equalized = self.binaural_eq.process(compensated[0], compensated[1]);
+            // Same shelf for both ears, complete mix before linked protection.
+            let equalized = std::array::from_fn::<_, 2, _>(|ear|
+                self.output_clarity[ear].process(equalized[ear]));
             let pre_guard = [
                 equalized[0] * self.output_gain * self.comparison_gain,
                 equalized[1] * self.output_gain * self.comparison_gain,
@@ -4328,6 +4338,40 @@ mod tests {
             immersive, immersive_reference,
             "stereo preference affected object programme"
         );
+    }
+
+    #[test]
+    fn original_stereo_output_preserves_full_band_without_high_frequency_loss() {
+        // Exercises final headphone FIR, EQ, volume and linked peak protection.
+        // This is unity-path coverage, not a flat-response claim for HRTFs or
+        // Apple hardware sample-rate conversion.
+        let rate = 48_000;
+        let count = 24_576;
+        let delay = 2 * convolution::DEFAULT_PARTITION + 240;
+        for frequency in [250.0_f64, 1000.0, 4000.0, 8000.0, 12000.0, 18000.0] {
+            let mut engine = calibrated_engine();
+            engine.set_layout(vbap::LayoutId::Stereo2_0).unwrap();
+            engine.stereo_mode = StereoMode::Original;
+            engine.paused = false;
+            let pcm: Vec<f32> = (0..count).map(|i|
+                (0.05 * (std::f64::consts::TAU * frequency * i as f64 / rate as f64).sin()) as f32
+            ).collect();
+            for (ear,label) in ["FrontLeft","FrontRight"].iter().enumerate() {
+                let mut source = Source {kind:SourceKind::Bed,bed_label:Some((*label).into()),
+                    gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default()};
+                Engine::set_source_route(&mut source,bed_route(label,&engine.vbap),0);
+                let samples:Vec<f32> = pcm.iter().map(|v| if ear==0 {*v} else {-*v*0.37}).collect();
+                source.samples.write(0,0,&samples);
+                engine.sources.insert((*label).into(),source);
+            }
+            let mut output=vec![0.0;count*2];engine.render_into(&mut output,2);
+            assert_eq!(engine.peak_guard.diagnostic_gain(),1.0);
+            for i in 4096..count {
+                let expected=pcm[i-delay];
+                assert!((output[2*i]-expected).abs()<2e-6,"left {frequency}Hz sample{i}");
+                assert!((output[2*i+1]+expected*0.37).abs()<2e-6,"right {frequency}Hz sample{i}");
+            }
+        }
     }
 
     #[test]
