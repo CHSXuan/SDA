@@ -193,7 +193,9 @@ pub(super) fn finish_sources<'a>(
         Ok(())
     };
     let worker_count = worker_count_for_sources(sources.len());
-    if let Some(pool) = workers().filter(|_| sources.len() >= 8 && worker_count > 1) {
+    if cfg!(target_os = "ios") {
+        crate::audio_executor::run(&mut sources, prepare)?;
+    } else if let Some(pool) = workers().filter(|_| sources.len() >= 8 && worker_count > 1) {
         let chunk = sources.len().div_ceil(worker_count);
         pool.install(|| {
             sources
@@ -294,7 +296,9 @@ pub(super) fn finish_sources<'a>(
         source.finish_block();
     };
     let worker_count = worker_count_for_sources(sources.len());
-    if let Some(pool) = workers().filter(|_| sources.len() >= 16 && worker_count > 1) {
+    if cfg!(target_os = "ios") {
+        crate::audio_executor::run(&mut sources, |source| -> Result<(), String> { finish(source); Ok(()) })?;
+    } else if let Some(pool) = workers().filter(|_| sources.len() >= 16 && worker_count > 1) {
         // Independent histories stay with their sources; summation order in
         // the engine is unchanged. Join before publishing the next PCM block.
         let chunk = sources.len().div_ceil(worker_count);

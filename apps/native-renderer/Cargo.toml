@@ -8,6 +8,8 @@ pcm-diagnostic = []
 # Experimental asynchronous filter pipeline; opt-in until moving-source latency
 # and Apple-platform parity have been validated.
 async-filter-preparation = []
+# Allows host parity tests to exercise the iOS dispatch path.
+caller-participating-dsp = []
 
 [lib]
 name = "sda_native_renderer"

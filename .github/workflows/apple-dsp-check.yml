@@ -34,6 +34,8 @@ jobs:
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib filter_preparation::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/preparation.txt
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib async_ -- --test-threads=1 2>&1 | tee dsp-artifacts/async.txt
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib delayed_preparation -- --test-threads=1 2>&1 | tee dsp-artifacts/delayed.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --features caller-participating-dsp --lib audio_executor::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/executor.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --features caller-participating-dsp --lib moving_bundled_cues_match_both_mixers_and_layouts -- --test-threads=1 2>&1 | tee dsp-artifacts/dispatch-parity.txt
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --release --lib benchmark_apple_against_rustfft -- --ignored --nocapture 2>&1 | tee dsp-artifacts/benchmark.txt
       - uses: actions/upload-artifact@v4
         if: always()

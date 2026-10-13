@@ -59,6 +59,7 @@ pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 #[cfg(target_vendor = "apple")]
 mod apple_fft;
 mod filter_preparation;
+mod audio_executor;
 pub mod direct_renderer;
 pub mod directional;
 pub mod dsp;

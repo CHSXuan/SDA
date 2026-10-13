@@ -135,7 +135,16 @@ pub fn mix(
             mix_source(source, buffer, controls, ctx, solver);
         }
     };
-    if let Some(pool) = pool.filter(|_| groups > 1) {
+    if cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) && groups > 1 {
+        let pool = pool.expect("parallel groups require a pool");
+        let (local, remote) = sources.split_at_mut(chunk);
+        let (local_buffer, remote_buffers) = buffers.split_first_mut().unwrap();
+        crate::audio_executor::join_on(pool,
+            || process((local, local_buffer)),
+            || {
+                for pair in remote.chunks_mut(chunk).zip(remote_buffers.iter_mut()) { process(pair); }
+            });
+    } else if let Some(pool) = pool.filter(|_| groups > 1) {
         pool.install(|| {
             sources
                 .par_chunks_mut(chunk)

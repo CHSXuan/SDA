@@ -585,6 +585,9 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
+    if cfg!(target_os = "ios") {
+        return crate::audio_executor::run(&mut sources, |source| source.finish(set));
+    }
     let worker_count = crate::direct_renderer::worker_count_for_sources(sources.len());
     if let Some(pool) =
         crate::direct_renderer::workers().filter(|_| sources.len() >= 8 && worker_count > 1)
