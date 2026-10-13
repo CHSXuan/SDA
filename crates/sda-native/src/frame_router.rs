@@ -89,6 +89,25 @@ mod tests {
     use sda_core::ObjectChannelDecl;
     use crate::NativeObjectEvent;
 
+    #[test]
+    fn authored_width_and_diffusion_survive_mobile_route() {
+        let mut router = FrameRouter::default();
+        let mut f = frame(0, &["Obj_42"], &[]);
+        let mut e = event(0);
+        e.size = [0.7, 0.2, 0.4];
+        e.diffuse = 0.35;
+        f.events.push(e.clone());
+        let commands = router.route(f).unwrap();
+        let RenderCommand::PcmFrame { events, .. } = commands.last().unwrap() else { panic!() };
+        assert_eq!(events[0], native_object_event(&e).unwrap());
+        let mut narrowed = e.clone();
+        narrowed.size = [0.0; 3];
+        assert_ne!(events[0], native_object_event(&narrowed).unwrap());
+        narrowed = e;
+        narrowed.diffuse = 0.0;
+        assert_ne!(events[0], native_object_event(&narrowed).unwrap());
+    }
+
     fn frame(at: u64, labels: &[&str], mapping: &[(u32, u32)]) -> FrameData {
         FrameData { codec: "eac3", sample_rate: 48000, sample_pos: at,
             channels: labels.iter().enumerate().map(|(i,_)| vec![i as f32 + 1.0; 16]).collect(),
