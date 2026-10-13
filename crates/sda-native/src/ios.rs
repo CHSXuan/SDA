@@ -158,6 +158,7 @@ pub unsafe extern "C" fn sda_ios_command(
                     status["renderBlocks"] = json!(blocks);
                     status["renderTotalMicros"] = json!(total);
                     status["renderMaxMicros"] = json!(maximum);
+                    status["renderWorstStagesMicros"] = json!(telemetry.worst_stage_micros());
                 }
                 return Ok(status)
             }

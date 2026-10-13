@@ -412,7 +412,44 @@ fn accumulate_stereo(
         }
         return;
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // NEON is available on the supported ARM64 iOS/Android targets.
+        unsafe { accumulate_stereo_neon(left, right, input, filter_left, filter_right, count); }
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
     for bin in 0..count {
+        left[bin] += input[bin] * filter_left[bin];
+        right[bin] += input[bin] * filter_right[bin];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn accumulate_stereo_neon(
+    left: &mut [Complex32], right: &mut [Complex32], input: &[Complex32],
+    filter_left: &[Complex32], filter_right: &[Complex32], count: usize,
+) {
+    use std::arch::aarch64::*;
+    let end = count / 4 * 4;
+    // Deinterleave four complex bins. Separate mul/add operations intentionally
+    // avoid fused rounding differences relative to the scalar complex product.
+    unsafe {
+        for bin in (0..end).step_by(4) {
+            let x = vld2q_f32(input.as_ptr().add(bin).cast());
+            for (out, filter) in [(left.as_mut_ptr(), filter_left.as_ptr()),
+                                  (right.as_mut_ptr(), filter_right.as_ptr())] {
+                let h = vld2q_f32(filter.add(bin).cast());
+                let old = vld2q_f32(out.add(bin).cast());
+                let real = vsubq_f32(vmulq_f32(x.0, h.0), vmulq_f32(x.1, h.1));
+                let imag = vaddq_f32(vmulq_f32(x.0, h.1), vmulq_f32(x.1, h.0));
+                vst2q_f32(out.add(bin).cast(), float32x4x2_t(
+                    vaddq_f32(old.0, real), vaddq_f32(old.1, imag)));
+            }
+        }
+    }
+    for bin in end..count {
         left[bin] += input[bin] * filter_left[bin];
         right[bin] += input[bin] * filter_right[bin];
     }

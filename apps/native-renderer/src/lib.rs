@@ -920,6 +920,12 @@ impl RuntimeTelemetry {
          self.render_block_total_micros.load(Ordering::Relaxed),
          self.render_block_max_micros.load(Ordering::Relaxed))
     }
+    pub fn worst_stage_micros(&self) -> [u64; 7] {
+        [&self.render_worst_prepare_micros, &self.render_worst_fast_mix_micros,
+         &self.render_worst_fast_reduce_micros, &self.render_worst_sample_micros,
+         &self.render_worst_directional_micros, &self.render_worst_direct_micros,
+         &self.render_worst_bus_micros].map(|value| value.load(Ordering::Relaxed))
+    }
     fn publish_rendering_state(&self, engine: &Engine) {
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
         self.direct_object_hrtf.store(engine.direct_objects, Ordering::Release);
