@@ -48,6 +48,7 @@ pub struct Position {
 
 #[derive(Debug, Clone)]
 pub struct NativeHrtfSet {
+    preparation_id: u64,
     historical_interpolation: bool,
     mobile_direct_only: bool,
     spatial_cues: bool,
@@ -62,8 +63,8 @@ pub struct NativeHrtfSet {
     pub sample_rate: u32,
     pub subject_id: Option<String>,
     pub complete_subject: bool,
-    positions: Vec<Position>,
-    cache: Vec<StereoIr>,
+    positions: std::sync::Arc<Vec<Position>>,
+    cache: std::sync::Arc<Vec<StereoIr>>,
     directional_grid: crate::directional::Grid,
     speaker_set: Option<Box<NativeHrtfSet>>,
     prepared: std::collections::HashMap<(i32, i32, u32), crate::convolution::PreparedStereoFilter>,
@@ -79,6 +80,41 @@ pub struct StereoIr {
 }
 
 impl NativeHrtfSet {
+    fn next_preparation_id() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+    pub(crate) fn preparation_id(&self) -> u64 { self.preparation_id }
+    pub(crate) fn preparation_snapshot(&self) -> std::sync::Arc<Self> {
+        type Cache = std::collections::HashMap<u64, std::sync::Weak<NativeHrtfSet>>;
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+        let mut cache = CACHE.get_or_init(|| std::sync::Mutex::new(Cache::new())).lock().unwrap();
+        if let Some(snapshot) = cache.get(&self.preparation_id).and_then(std::sync::Weak::upgrade) { return snapshot; }
+        cache.retain(|_, value| value.strong_count() > 0);
+        // Directional preparation does not use the legacy prepared banks.
+        // Share immutable measurements and omit those large spectral copies.
+        let snapshot = std::sync::Arc::new(Self {
+            preparation_id: self.preparation_id,
+            historical_interpolation: self.historical_interpolation,
+            mobile_direct_only: self.mobile_direct_only,
+            spatial_cues: self.spatial_cues,
+            spatial_cue_gain: self.spatial_cue_gain,
+            spatial_cues_active: self.spatial_cues_active,
+            cinema: self.cinema.clone(),
+            room_profile: self.room_profile.clone(),
+            speaker_prepared: Default::default(),
+            sample_rate: self.sample_rate,
+            subject_id: self.subject_id.clone(),
+            complete_subject: self.complete_subject,
+            positions: self.positions.clone(),
+            cache: self.cache.clone(),
+            directional_grid: self.directional_grid.clone(),
+            speaker_set: None,
+            prepared: Default::default(),
+        });
+        cache.insert(self.preparation_id, std::sync::Arc::downgrade(&snapshot));
+        snapshot
+    }
     pub fn simulation_shape(&self) -> (usize, usize, usize) {
         (
             self.positions.len(),
@@ -151,6 +187,7 @@ impl NativeHrtfSet {
             });
         }
         Ok(Self {
+            preparation_id: Self::next_preparation_id(),
             historical_interpolation: false,
             mobile_direct_only: false,
             spatial_cues: false,
@@ -162,9 +199,9 @@ impl NativeHrtfSet {
             sample_rate: 48000,
             subject_id: Some("performance-synthetic".into()),
             complete_subject: true,
-            positions,
+            positions: std::sync::Arc::new(positions),
             directional_grid: crate::directional::Grid::new(&cache),
-            cache,
+            cache: std::sync::Arc::new(cache),
             speaker_set: None,
             prepared: Default::default(),
         })
@@ -285,6 +322,7 @@ impl NativeHrtfSet {
         let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
             || (is_dense_ku100 && manifest.subject_id.is_none());
         Ok(Self {
+            preparation_id: Self::next_preparation_id(),
             historical_interpolation: manifest.processing.historical_interpolation,
             mobile_direct_only: manifest.processing.mobile_direct_only,
             spatial_cues: manifest.processing.spatial_cues,
@@ -296,12 +334,12 @@ impl NativeHrtfSet {
             sample_rate: manifest.sample_rate,
             subject_id: manifest.subject_id,
             complete_subject,
-            positions: manifest.positions,
+            positions: std::sync::Arc::new(manifest.positions),
             directional_grid: crate::directional::Grid::new_with_notch_guard(
                 &cache,
                 ku100_notch_guard,
             ).with_historical_interpolation(&cache, manifest.processing.historical_interpolation),
-            cache,
+            cache: std::sync::Arc::new(cache),
             speaker_set,
             prepared: std::collections::HashMap::new(),
         })
@@ -536,6 +574,7 @@ impl NativeHrtfSet {
         settings: crate::cinema::Settings,
         profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     ) {
+        self.preparation_id = Self::next_preparation_id();
         self.spatial_cues_active = false;
         if self.mobile_direct_only {
             self.cinema = crate::cinema::Settings::default();
@@ -551,6 +590,7 @@ impl NativeHrtfSet {
     /// Fixed, explicitly opted-in short spatial cues are separate from user room
     /// simulation. Raw mobile HRIR/wet files remain pure direct/zero respectively.
     pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
+        self.preparation_id = Self::next_preparation_id();
         self.spatial_cues_active = false;
         if !self.spatial_cues { return Ok(()); }
         self.cinema = crate::cinema::Settings::default();
@@ -571,6 +611,7 @@ impl NativeHrtfSet {
     pub fn set_spatial_cue_gain(&mut self, gain: f32) -> Result<(), String> {
         if !gain.is_finite() || gain <= 0.0 || gain > 1.0 { return Err("invalid spatial cue gain".into()); }
         self.spatial_cue_gain = gain;
+        self.preparation_id = Self::next_preparation_id();
         self.speaker_prepared.clear();
         self.prepared.clear();
         Ok(())
@@ -1101,6 +1142,34 @@ fn read_packed_f32(path: &Path) -> Result<Vec<f32>, String> {
 
 #[cfg(test)]
 mod raw_tests {
+    #[test]
+    fn preparation_snapshot_shares_measurements_and_preserves_directional_processing() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let mut settings = crate::cinema::Settings { enabled: true, direct_db: -1.5, ..Default::default() };
+        settings.speakers.insert("FrontLeft".into(), crate::cinema::SpeakerCalibration {
+            gain_db: -2.0, delay_ms: 0.2, low_db: 1.0, high_db: -1.0,
+        });
+        set.configure_cinema(settings, None);
+        let snapshot = set.preparation_snapshot();
+        assert!(std::sync::Arc::ptr_eq(&set.cache, &snapshot.cache));
+        assert!(std::sync::Arc::ptr_eq(&set.positions, &snapshot.positions));
+        assert!(std::sync::Arc::ptr_eq(&snapshot, &set.preparation_snapshot()));
+        assert!(snapshot.prepared.is_empty() && snapshot.speaker_prepared.is_empty());
+        for diffuse in [0.0, 0.35] {
+            let direction = crate::directional::Direction { position: [-0.6,0.8,0.2],
+                head:Some([0.0,0.0,0.1,0.9949874]),diffuse,horizontal_only:false,
+                width:12.0,height:3.0,depth:0.2 };
+            let gains = solver.pan(direction.position, 0.0);
+            for amount in [0.0, 0.2] {
+                let amounts = [amount; crate::vbap::MAX_BUS_COUNT];
+                assert_eq!(set.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap(),
+                    snapshot.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap());
+            }
+        }
+    }
     use super::*;
 
     #[test]
@@ -1197,7 +1266,7 @@ mod raw_tests {
         assert_eq!(full.0[128], 0.0, "old room direct must be removed");
         let mut b = a.clone();
         b.subject_id = Some("personal-other".into());
-        for ir in &mut b.cache {
+        for ir in std::sync::Arc::make_mut(&mut b.cache).iter_mut() {
             let n = ir.dry.len() / 2;
             let mut swapped = ir.dry[n..].to_vec();
             swapped.extend_from_slice(&ir.dry[..n]);
@@ -1662,7 +1731,7 @@ mod subject_dense_tests {
         assert_eq!(set.simulation_shape(), (128, 256, 1));
         assert_eq!(set.speaker_filter_len(), 256 + crate::directional::INTERPOLATION_TAIL);
         assert!(set.speaker_set.is_none());
-        for ir in &set.cache {
+        for ir in set.cache.iter() {
             let (l, r) = set.mixed_direction(ir.azimuth, ir.elevation, 1.0).unwrap();
             assert_eq!(l, ir.dry[..256]);
             assert_eq!(r, ir.dry[256..]);

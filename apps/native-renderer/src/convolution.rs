@@ -27,6 +27,17 @@ pub struct PreparedStereoFilter {
 }
 
 impl PreparedStereoFilter {
+    pub(crate) fn from_pair(left: &[f32], right: &[f32], partition: usize) -> Self {
+        let fft_len = partition * 2;
+        static PLANNER: OnceLock<Mutex<FftPlanner<f32>>> = OnceLock::new();
+        let forward = {
+            let mut planner = PLANNER.get_or_init(|| Mutex::new(FftPlanner::new())).lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            plan_fft(&mut planner, fft_len, rustfft::FftDirection::Forward)
+        };
+        let (filters_left, filters_right) = prepare_filters_stereo(left, right, partition, fft_len, &forward);
+        Self { filters_left, filters_right }
+    }
     pub fn clear(&mut self) {
         for partition in self.filters_left.iter_mut().chain(&mut self.filters_right) {
             partition.fill(Complex32::new(0.0, 0.0));
@@ -127,8 +138,8 @@ impl StereoPartitionedConvolver {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             (
-                planner.plan_fft_forward(fft_len),
-                planner.plan_fft_inverse(fft_len),
+                plan_fft(&mut planner, fft_len, rustfft::FftDirection::Forward),
+                plan_fft(&mut planner, fft_len, rustfft::FftDirection::Inverse),
             )
         };
         let scratch_len = forward
@@ -179,6 +190,12 @@ impl StereoPartitionedConvolver {
             filters_left: self.filters_left.clone(),
             filters_right: self.filters_right.clone(),
         }
+    }
+    pub(crate) fn accepts_prepared_filter(&self, filter: &PreparedStereoFilter) -> bool {
+        let bins = self.fft_len / 2 + 1;
+        filter.filters_left.len() == self.history.len()
+            && filter.filters_right.len() == self.history.len()
+            && filter.filters_left.iter().chain(&filter.filters_right).all(|part| part.len() == bins)
     }
     pub fn prepare_pair(&mut self, left: &[f32], right: &[f32]) -> PreparedStereoFilter {
         let mut filter = self.spare_filter.take().unwrap_or_default();
@@ -387,6 +404,23 @@ impl StereoPartitionedConvolver {
         self.history_cursor = (self.history_cursor + 1) % self.history.len();
         Ok(())
     }
+}
+
+fn plan_fft(planner: &mut FftPlanner<f32>, length: usize, direction: rustfft::FftDirection) -> Arc<dyn Fft<f32>> {
+    #[cfg(target_vendor = "apple")]
+    {
+        type Plans = std::collections::HashMap<(usize, bool), Arc<dyn Fft<f32>>>;
+        static PLANS: OnceLock<Mutex<Plans>> = OnceLock::new();
+        let mut plans = PLANS.get_or_init(|| Mutex::new(Plans::new())).lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let key = (length, direction == rustfft::FftDirection::Forward);
+        if let Some(plan) = plans.get(&key) { return plan.clone(); }
+        if let Some(plan) = crate::apple_fft::plan(length, direction) {
+            plans.insert(key, plan.clone());
+            return plan;
+        }
+    }
+    planner.plan_fft(length, direction)
 }
 
 fn accumulate_stereo(

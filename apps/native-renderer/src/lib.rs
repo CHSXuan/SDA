@@ -55,6 +55,9 @@ pub mod callback_output;
 pub mod cinema;
 mod spatial_cues;
 pub mod convolution;
+#[cfg(target_vendor = "apple")]
+mod apple_fft;
+mod filter_preparation;
 pub mod direct_renderer;
 pub mod directional;
 pub mod dsp;

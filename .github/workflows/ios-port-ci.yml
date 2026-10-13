@@ -124,6 +124,10 @@ jobs:
         run: |
           set -o pipefail
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib convolution::tests 2>&1 | tee ios-artifacts/convolution-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib apple_fft::tests
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib filter_preparation::tests
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib async_
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib delayed_preparation
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib worker_policy_tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib realtime::tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log

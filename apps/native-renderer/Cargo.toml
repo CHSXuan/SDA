@@ -5,6 +5,9 @@ default = ["cpal-output"]
 # windows crate cannot build, and for engine-only mobile targets.
 cpal-output = ["dep:cpal", "dep:windows", "dep:asio-sys"]
 pcm-diagnostic = []
+# Experimental asynchronous filter pipeline; opt-in until moving-source latency
+# and Apple-platform parity have been validated.
+async-filter-preparation = []
 
 [lib]
 name = "sda_native_renderer"
