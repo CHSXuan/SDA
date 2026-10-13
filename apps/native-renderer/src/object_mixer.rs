@@ -135,7 +135,7 @@ pub fn mix(
             mix_source(source, buffer, controls, ctx, solver);
         }
     };
-    if let Some(pool) = pool {
+    if let Some(pool) = pool.filter(|_| groups > 1) {
         pool.install(|| {
             sources
                 .par_chunks_mut(chunk)
