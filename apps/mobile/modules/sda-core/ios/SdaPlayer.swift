@@ -527,7 +527,10 @@ final class SdaPlayer {
       recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
      if status["preparingAudio"] as? Bool == true { return false }
      // Bound ALAC lookahead so a live switch does not sit behind four seconds.
-     let lead = alacActive ? 24000 : 4*48000
+     // Before the first output frame, decoder coverage must exceed the iOS
+     // rendered startup reserve (32768 frames) plus convolution latency.
+     // Restore the small ALAC live-switch lead once the consumer advances.
+     let lead = consumed == 0 ? 4*48000 : (alacActive ? 24000 : 4*48000)
      return decoded > consumed + UInt64(lead) || (status["fifoFrames"] as? Int ?? 0) > lead
     }
     guard let wait = shouldWait else { return false }

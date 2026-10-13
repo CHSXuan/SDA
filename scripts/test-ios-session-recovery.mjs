@@ -22,3 +22,4 @@ const stop = source.slice(source.indexOf('func stopNative'), source.indexOf('fun
 assert.match(stop, /sessionActivationPending = false/);
 assert.match(source, /if !sessionActivationPending \{ beginPreparation\(token\) \}/);
 console.log('iOS session recovery source contracts passed; Swift/device validation still required.');
+assert.match(source, /let lead = consumed == 0 \? 4\*48000 : \(alacActive \? 24000 : 4\*48000\)/);
