@@ -93,8 +93,22 @@ RustFFT. The transform remains unnormalized like RustFFT; existing convolution
 scaling and packed stereo inverse are unchanged. Apple-only reference/concurrency
 tests and all convolution tests are wired into CI. A Windows shim checked adapter
 packing and trait/FFI types but is explicitly not an Apple numerical or performance
-test. Actual Apple execution remains unverified. This is not a substitute for
+test. Apple execution has subsequently passed the host validation below. This is not a substitute for
 scheduling correctness; custom Audio Workgroups are still not implemented.
+
+## Apple Host Validation
+
+Apple DSP check run 38369334094 passed on ARM64 macOS. Accelerate reference,
+roundtrip/concurrency tests, eight production convolution tests, PCM and queue
+tests and async handoff tests passed. Release 2048-point FFT medians: RustFFT
+forward/inverse 3750 ns; Accelerate forward 2584 ns, inverse 2542 ns. These are
+Apple host microbenchmarks, not iPhone thermal performance guarantees.
+
+The production candidate uses Accelerate, packed PCM storage and nonblocking
+queue handling. Async preparation remains opt-in, not enabled by the iOS build.
+Diagnostics includes the renderer Git revision and backend description. This
+candidate does not include dedicated realtime DSP threads or Audio Workgroups
+and is not a completed realtime architecture rewrite.
 
 References:
 

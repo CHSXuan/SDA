@@ -152,6 +152,8 @@ pub unsafe extern "C" fn sda_ios_command(
             "status" => {
                 let mut status = serde_json::to_value(e.playback_status()).map_err(|e| e.to_string())?;
                 status["sourceCodec"] = json!(e.codec_name());
+                status["rendererRevision"] = json!(sda_native_renderer::BUILD_REVISION);
+                status["fftBackend"] = json!(if cfg!(target_vendor = "apple") { "Accelerate with RustFFT fallback" } else { "RustFFT" });
                 if let Some((_, telemetry)) = host.output.state.get() {
                     let (blocks, total, maximum) = telemetry.render_timing();
                     status["callbackMissingFrames"] = json!(telemetry.callback_missing_frames());

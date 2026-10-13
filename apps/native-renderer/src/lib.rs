@@ -55,6 +55,7 @@ pub mod callback_output;
 pub mod cinema;
 mod spatial_cues;
 pub mod convolution;
+pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 #[cfg(target_vendor = "apple")]
 mod apple_fft;
 mod filter_preparation;
