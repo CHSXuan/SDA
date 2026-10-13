@@ -995,6 +995,7 @@ pub struct Engine {
     spatial_balance: spatial_balance::SpatialBalance,
     fast_activity: Vec<ObjectActivitySnapshot>,
     fast_mix_buffers: Vec<object_mixer::Buffer>,
+    fast_mix_controls: Vec<object_mixer::Controls>,
     last_render_stages: RenderStageMicros,
     #[cfg(test)]
     disable_fast_objects: bool,
@@ -1134,6 +1135,7 @@ impl Engine {
             spatial_balance: Default::default(),
             fast_activity: Vec::new(),
             fast_mix_buffers: Vec::new(),
+            fast_mix_controls: Vec::with_capacity(convolution::DEFAULT_PARTITION),
             last_render_stages: RenderStageMicros::default(),
             #[cfg(test)]
             disable_fast_objects: false,
@@ -2160,7 +2162,8 @@ impl Engine {
             self.fast_activity.push(ObjectActivitySnapshot::empty(tick));
             tick = tick.saturating_add(self.activity_tick_every.max(1));
         }
-        let mut controls = Vec::with_capacity(frames);
+        let mut controls = std::mem::take(&mut self.fast_mix_controls);
+        controls.clear();
         let bass_target = if self.cinema.monitor.enabled
             && self.cinema.monitor.bass_enabled
             && self.layout != vbap::LayoutId::Stereo2_0
@@ -2225,6 +2228,7 @@ impl Engine {
             &self.vbap,
             &self.fast_activity,
         );
+        self.fast_mix_controls = controls;
         #[cfg(test)]
         {
             self.profile_ms[4] += profile_start.elapsed().as_secs_f64() * 1000.0;

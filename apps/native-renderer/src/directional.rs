@@ -994,19 +994,24 @@ impl Grid {
             horizontal_only,
             head: head.map(|orientation| orientation.map(f32::to_bits)),
         };
-        let mut cache = self
-            .diffuse_fields
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(field) = cache.get(&key) {
-            return field.clone();
+        {
+            let cache = self.diffuse_fields.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(field) = cache.get(&key) {
+                return field.clone();
+            }
         }
+        // Interpolation can be expensive. Never hold the shared cache mutex
+        // while building a field; unrelated sources must be able to proceed.
+        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
+        let mut cache = self.diffuse_fields.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = cache.get(&key) { return existing.clone(); }
         // Head tracking may report every frame. Exact keys retain precision;
         // the small bound only limits retained historic poses.
         if cache.len() >= 8 {
             cache.clear();
         }
-        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
         cache.insert(key, field.clone());
         field
     }
@@ -2330,6 +2335,7 @@ mod tests {
             }
             assert!(peak > 1e-6);
             assert!(fast.fast_object_blocks > 0);
+            assert!(fast.fast_mix_controls.capacity() >= crate::convolution::DEFAULT_PARTITION);
             assert_eq!(general.fast_object_blocks, 0);
             assert_eq!(fast.sources["obj:0"].motion_cues.gain(), 1.0);
             assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5);
@@ -2525,6 +2531,29 @@ mod tests {
         {
             assert!((cached - independent).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn concurrent_diffuse_cache_misses_preserve_independent_filters() {
+        let irs: Vec<_> = (0..12).map(|i| StereoIr {
+            azimuth: i as f64 * 30.0, elevation: 0.0,
+            dry: (0..256).map(|n| ((n + i) as f32 * 0.17).sin() * 0.02).collect(),
+            wet: vec![],
+        }).collect();
+        let grid = Grid::new(&irs);
+        let half = 0.2_f32;
+        let pose = Some([0.0, 0.0, half.sin(), half.cos()]);
+        let expected = Grid::new(&irs).diffuse_field(&irs, false, pose);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4).map(|_| scope.spawn(|| grid.diffuse_field(&irs, false, pose))).collect();
+            for handle in handles {
+                let field = handle.join().unwrap();
+                assert_eq!(field.left, expected.left);
+                assert_eq!(field.right, expected.right);
+                assert_eq!(field.reference_energy, expected.reference_energy);
+            }
+        });
+        assert_eq!(grid.diffuse_field_cache_len(), 1);
     }
     #[test]
     #[ignore = "offline full engine realtime budget measurement"]
