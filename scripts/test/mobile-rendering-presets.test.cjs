@@ -7,6 +7,9 @@ assert.equal(profiles.length,1);
 const dense=profiles[0];
 assert.deepEqual([dense.id,dense.hrtfSet,dense.assetDirectory,dense.direct,dense.directional,dense.nearField,dense.roomId,dense.hrtfWetWeight],['object-dense','dense','hrtf-restored/hrtf-dense',true,true,false,'',0]);
 const sha=b=>createHash('sha256').update(b).digest('hex');
+const experimentPath='apps/mobile/ios-experiments/active.json';
+const experiment=fs.existsSync(experimentPath)?JSON.parse(fs.readFileSync(experimentPath,'utf8')):null;
+if(experiment)assert.deepEqual([experiment.id,experiment.directionCount],['horizontal-support-218-v1',218]);
 for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
  const source=`apps/mobile/assets/hrtf-restored/${directory}`;
  const manifest=JSON.parse(fs.readFileSync(`${source}/hrtf-set.json`,'utf8'));
@@ -16,7 +19,19 @@ for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
  assert.equal(manifest.processing.historicalInterpolation,true);
  assert.equal(manifest.processing.spatialCues,true);
  assert.ok(Math.abs(manifest.processing.spatialCueGain-Math.pow(10,-6/20))<1e-12);
- assert.deepEqual(manifest,JSON.parse(fs.readFileSync(`apps/mobile/modules/sda-core/ios/Resources/hrtf-restored/${directory}/hrtf-set.json`,'utf8')));
+ const stagedRoot=`apps/mobile/modules/sda-core/ios/Resources/hrtf-restored/${directory}`;
+ const staged=JSON.parse(fs.readFileSync(`${stagedRoot}/hrtf-set.json`,'utf8'));
+ if(experiment && directory==='hrtf-dense') {
+  const expected=JSON.parse(fs.readFileSync('apps/mobile/ios-experiments/horizontal-support/hrtf-dense/hrtf-set.json','utf8'));
+  assert.deepEqual(staged,expected);
+  assert.equal(staged.positions.length,218);
+  assert.equal(staged.iosExperiment,experiment.id);
+  assert.equal(staged.processing.spatialCues,true);
+  for(const p of staged.positions) {
+   const data=fs.readFileSync(`${stagedRoot}/${p.dry}`);
+   assert.equal(data.length,4096);assert.equal(sha(data),p.assets.dry.sha256);
+  }
+ } else assert.deepEqual(manifest,staged);
  assert.equal(manifest.processing.mobileDirectOnly,false);
  assert.equal(new Set(manifest.positions.map(p=>`${p.azimuth}/${p.elevation}`)).size,count);
  for(const position of manifest.positions) {
@@ -24,7 +39,10 @@ for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
   const data=fs.readFileSync(`${source}/${position.dry}`);
   assert.equal(sha(data),position.assets.dry.sha256);
   assert.equal(data.length,4096);
-  assert.deepEqual(data,fs.readFileSync(`apps/mobile/modules/sda-core/ios/Resources/hrtf-restored/${directory}/${position.dry}`));
+  const stagedPosition=experiment && directory==='hrtf-dense'
+   ?staged.positions.find(p=>p.azimuth===position.azimuth && p.elevation===position.elevation):position;
+  assert.ok(stagedPosition,'original direction missing in staged experiment');
+  assert.deepEqual(data,fs.readFileSync(`${stagedRoot}/${stagedPosition.dry}`),'original measured response must remain byte-identical');
  }
 }
 for(const view of ['RemotePlayer.tsx','IOSPlayer.tsx','IOSNativeSettings.tsx']){
