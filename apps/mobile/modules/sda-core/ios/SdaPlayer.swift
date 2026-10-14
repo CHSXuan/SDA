@@ -241,7 +241,7 @@ final class SdaPlayer {
    if !sessionReady { _ = try command("pause", ["paused":true]) }
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
-   hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
+   hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 仅直达 HRTF · iOS 实机试听"
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {

@@ -6,6 +6,8 @@ from pathlib import Path
 
 def verify_mobile_ios_assets(app):
     bundle = Path(app) / 'SdaCoreAssets.bundle'
+    presets = json.loads((bundle / 'rendering-presets.json').read_text(encoding='utf-8'))
+    direct_trial = len(presets) == 1 and presets[0].get('iosDirectReflectionTrial') is True
     for directory, count in [('hrtf-dense', 61), ('hrtf', 17)]:
         root = bundle / 'hrtf-restored' / directory
         manifest = json.loads((root / 'hrtf-set.json').read_text(encoding='utf-8'))
@@ -14,7 +16,7 @@ def verify_mobile_ios_assets(app):
         if (len(positions) != count or manifest['sampleRate'] != 48000
                 or processing.get('calibrated') is not True
                 or processing.get('historicalInterpolation') is not True
-                or processing.get('spatialCues') is not True
+                or processing.get('spatialCues') is not (False if direct_trial else True)
                 or processing.get('mobileDirectOnly') is not False):
             raise RuntimeError('Invalid restored KU100 manifest')
         if len({(p['azimuth'], p['elevation']) for p in positions}) != count:
