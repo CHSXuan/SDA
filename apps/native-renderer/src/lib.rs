@@ -2291,7 +2291,7 @@ impl Engine {
         // Object-bearing E-AC-3 only: ordinary stereo AC-3/E-AC-3 and 360RA
         // retain unity. Both ears share the envelope before peak protection.
         let atmos_db = if self.program_codec.as_deref() == Some("eac3")
-            && self.sources.values().any(|s| s.kind == SourceKind::Object) { 1.5 } else { 0.0 };
+            && self.sources.values().any(|s| s.kind == SourceKind::Object) { 2.0 } else { 0.0 };
         if self.atmos_output_gain.target_db() != atmos_db {
             self.atmos_output_gain.set(atmos_db, self.output_sample_rate, false).unwrap();
         }
@@ -4388,7 +4388,7 @@ mod tests {
 
     #[test]
     fn atmos_presentation_gain_is_object_eac3_only_and_resets() {
-        for (codec,object,expected) in [("eac3",true,1.5),("eac3",false,0.0),
+        for (codec,object,expected) in [("eac3",true,2.0),("eac3",false,0.0),
             ("mpegh",true,0.0),("alac",false,0.0),("ac3",true,0.0)] {
             let mut e=calibrated_engine();e.paused=false;
             e.set_program_codec(codec.into());

@@ -4,6 +4,8 @@ import MediaPlayer
 import CryptoKit
 import AudioToolbox
 import UIKit
+import CoreMotion
+import simd
 
 enum SdaError: LocalizedError {
  case message(String)
@@ -24,6 +26,16 @@ final class SdaPlayer {
  var playbackQueue: [[String:Any]] = []
  var playbackMode = "sequence"
  var playbackYaw: Double = 0
+ let headphoneMotion = CMHeadphoneMotionManager()
+ let motionQueue: OperationQueue = {
+  let queue = OperationQueue(); queue.name = "sda.ios.head-motion"; queue.maxConcurrentOperationCount = 1
+  return queue
+ }()
+ var motionSession = 0
+ var motionReference: simd_quatd?
+ var motionLastSample: TimeInterval = 0
+ var motionWatchdog: DispatchSourceTimer?
+ var headTrackingDetail = "未启用"
  var generation = 0
  var isPaused = false
  var done = false
@@ -78,7 +90,7 @@ final class SdaPlayer {
    // Status is queried by the feeder every ~20 ms. Do not serialize the
    // entire object graph here; explicit objects + the native 1 s tick drain
    // consumed events even when JS is suspended in the background.
-   case "status": return system.status()
+   case "status": return outputRouteStatus(system.status())
    case "objects": return try system.objects(decodeReply)
    case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
    case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
@@ -87,7 +99,7 @@ final class SdaPlayer {
    case "loudness": return try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
    case "measured": try system.setMeasurement(args["json"] as? String ?? "",decodeReply:decodeReply); return true
    // Saved SDA preferences never enter the system-rendered path.
-   case "yaw", "resetPose", "near", "room", "preset", "rendering": return ["bypassed":true]
+   case "yaw", "pose", "resetPose", "near", "room", "preset", "rendering": return ["bypassed":true]
    default: throw SdaError.message("系统空间音频不支持该命令: \(op)")
    }
   }
@@ -100,9 +112,20 @@ final class SdaPlayer {
    status["alacUpmixActive"] = alacUpmixActive
    status["outputChannels"] = 2
    status["outputLayout"] = layout
-   return status
+   return outputRouteStatus(status)
   }
   return result
+ }
+ // Read-only device output facts, not source-file metadata or an analysis cache.
+ func outputRouteStatus(_ input: [String:Any]) -> [String:Any] {
+  var status = input
+  let session = AVAudioSession.sharedInstance()
+  status["hardwareSampleRate"] = session.sampleRate
+  status["audioSessionCategory"] = session.category.rawValue
+  status["audioSessionMode"] = session.mode.rawValue
+  status["audioOutputPortTypes"] = session.currentRoute.outputs.map { $0.portType.rawValue }
+  status["audioOutputUsesCallProfile"] = session.currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
+  return status
  }
  func assetRoot() throws -> URL {
   let moduleBundle = Bundle(for: SdaPlayer.self)
@@ -147,6 +170,7 @@ final class SdaPlayer {
   return ["alacStereoUpmix":prefs.bool(forKey:"sda.alacStereoUpmix"), "systemSpatialStereo":prefs.bool(forKey:"sda.systemSpatialStereo"), "systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
    "hrtfWetWeight": 0.0, "spatialCueDb": spatialCueDb(),
    "spatialEnhancementEnabled": prefs.bool(forKey:"sda.spatialEnhancement"),
+   "headTrackingEnabled": prefs.bool(forKey:"sda.headTracking"),
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
    "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
@@ -158,6 +182,7 @@ final class SdaPlayer {
   return path.path
  }
  func stopNative() {
+  stopHeadTracking()
   generation += 1
   finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false; sessionActivationPending = false
   systemSpatial?.close(); systemSpatial = nil
@@ -317,6 +342,7 @@ final class SdaPlayer {
     guard let self else { return }; self.locked {
      self.inBackground = notification == UIApplication.didEnterBackgroundNotification
      if self.inBackground { self.backgroundTransitions += 1 }
+     if self.inBackground { self.stopHeadTracking() } else { self.startHeadTracking() }
      self.recordPlaybackEvent(self.inBackground ? "background" : "foreground")
      do { try self.recoverOutputIfNeeded("lifecycle") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
      self.updateNowPlaying()
@@ -363,6 +389,7 @@ final class SdaPlayer {
    guard let self else { return }
    self.locked {
     self.recordPlaybackEvent("routeChange",detail:String(describing:note.userInfo ?? [:]))
+    self.stopHeadTracking(); self.startHeadTracking()
     if (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { _ = try? self.setPaused(true) }
     else { do { try self.recoverOutputIfNeeded("routeChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
    }
@@ -393,13 +420,14 @@ final class SdaPlayer {
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = input.isAlac ? "ALAC 立体声 → \(alacUpmixActive ? "7.1.4 上混" : "2.0") · 苹果系统输出 · KU100/房间已旁路" : "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative() }
-    playbackYaw = yaw
+    playbackYaw = prefs.bool(forKey:"sda.headTracking") || inBackground ? 0 : yaw
     title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     // Apply persisted balance after the new route/source is fully selected.
     _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
-    _ = try command("yaw",["degrees":yaw])
+    _ = try command("yaw",["degrees":playbackYaw])
+    startHeadTracking()
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
     let loudnessKey = (systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness.")) + hash
     if !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }

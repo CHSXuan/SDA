@@ -9,6 +9,7 @@
     "ios": {
       "bundleIdentifier": "app.sda.mobile",
       "infoPlist": {
+        "NSMotionUsageDescription": "SDA 使用兼容耳机的头部运动数据控制空间音频方向。",
         "UIBackgroundModes": [
           "audio"
         ]

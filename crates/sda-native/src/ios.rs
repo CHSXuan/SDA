@@ -136,6 +136,7 @@ pub unsafe extern "C" fn sda_ios_command(
             "measured" => e.set_measured_loudness(str_arg("json")?)?,
             "loudness" => return Ok(json!(e.complete_loudness_json())),
             "yaw" => e.set_head_yaw_degrees(number("degrees")?)?,
+            "pose" => e.set_head_orientation([number("x")?, number("y")?, number("z")?, number("w")?])?,
             "resetPose" => e.reset_head_pose()?,
             "near" => e.set_near_field(boolean("enabled")?, number("scale")?)?,
             "room" => e.set_room(str_arg("path")?)?,
