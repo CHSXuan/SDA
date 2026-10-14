@@ -53,6 +53,9 @@ private enum ChromeSmoke {
   let entry: [String: Any] = ["material": kind, "width": view.bounds.width, "height": view.bounds.height]
   if let previous = entries[key], NSDictionary(dictionary: previous).isEqual(to: entry) { return }
   entries[key] = entry
+  // The inspection timer owns complete view snapshots. A control relayout
+  // must not replace them with a partial report lacking nativeViews.
+  if inspecting { return }
   let report: [String: Any] = ["ok": true, "ios": UIDevice.current.systemVersion, "controls": entries]
   if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
    let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
