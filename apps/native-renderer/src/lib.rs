@@ -2309,6 +2309,21 @@ impl Engine {
         if self.paused || !self.output_active || self.bus_renderer.is_none() {
             return;
         }
+        // A final throttled pose may never be followed by another message:
+        // mobile providers suppress unchanged orientations. Consume the latest
+        // accepted pose on the render worker at a convolution-block boundary.
+        if self.block_offset == 0 && self.pending_pose.is_some()
+            && self.last_pose_apply.is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(20))
+        {
+            let pose = self.pending_pose.take().expect("checked pending pose");
+            self.head_pose = Some(pose);
+            self.last_pose_apply = Some(std::time::Instant::now());
+            if self.pose_route_base.is_none() { self.pose_route_base = Some(pose); }
+            let ids: Vec<_> = self.sources.keys().cloned().collect();
+            for id in ids {
+                let _ = self.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
+            }
+        }
         self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
         // Fixed user-requested presentation compensation, not loudness analysis.
         // Object-bearing E-AC-3 only: ordinary stereo AC-3/E-AC-3 and 360RA
@@ -2367,6 +2382,11 @@ impl Engine {
         let layout_ceiling = self.vbap.highest_elevation();
         let auto_sky_codec =
             !self.directional_hrtf && Self::is_dolby_object_codec(self.program_codec.as_deref());
+        // Offline path-isolation only. Release always retains the existing
+        // sky-object fallback; disabling it is not a production proposal.
+        #[cfg(test)]
+        let auto_sky_codec = auto_sky_codec
+            && std::env::var("SDA_DIAGNOSTIC_DISABLE_AUTO_SKY").as_deref() != Ok("1");
         let auto_sky_active = auto_sky_codec
             && self
                 .sources

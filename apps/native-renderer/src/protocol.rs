@@ -236,6 +236,7 @@ fn handle_command(
                 if !throttled {
                     state.last_pose_apply = Some(now);
                     state.head_pose = Some(pose);
+                    state.pending_pose = None;
                     if state.pose_route_base.is_none() {
                         state.pose_route_base = Some(pose);
                     }
@@ -1466,6 +1467,140 @@ fn command_name(command: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_pose_waits_for_block_boundary_without_rebasing_audio() {
+        let mut engine=Engine::new(48_000,2);
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+        engine.output_active=true;engine.paused=false;
+        let fifo=stereo_fifo::StereoFifo::new(4096);let telemetry=RuntimeTelemetry::default();
+        let old=[0.0,0.0,0.0,1.0];let latest=[0.0,0.0,0.5,0.8660254];
+        handle_command(&mut engine,Command::HeadPose{orientation:old},&fifo,&telemetry);
+        engine.render_into(&mut [0.0;200],2);
+        assert_eq!(engine.block_offset,100);
+        let clock=engine.sample_pos;let epoch=engine.render_epoch;
+        engine.last_pose_apply=Some(std::time::Instant::now());
+        handle_command(&mut engine,Command::HeadPose{orientation:latest},&fifo,&telemetry);
+        engine.last_pose_apply=Some(std::time::Instant::now()-std::time::Duration::from_millis(21));
+        let remaining=convolution::DEFAULT_PARTITION-engine.block_offset;
+        engine.render_into(&mut vec![0.0;remaining*2],2);
+        assert_eq!(engine.block_offset,0);
+        assert_eq!(engine.head_pose,Some(old));
+        assert!(engine.pending_pose.is_some());
+        assert_eq!(engine.sample_pos,clock+remaining as u64);
+        engine.render_into(&mut [0.0;2],2);
+        assert_eq!(engine.head_pose,spatial::normalize_quaternion(latest));
+        assert!(engine.pending_pose.is_none());
+        assert_eq!(engine.sample_pos,clock+remaining as u64+1);
+        assert_eq!(engine.render_epoch,epoch,"pose update must not flush/rebase PCM");
+    }
+    #[test]
+    fn pending_pose_audio_matches_immediate_pose_at_same_render_boundary() {
+        let make = || {
+            let mut e = Engine::new(48_000, 2);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+            e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+            e.set_direct_objects(true).unwrap();
+            e.set_directional_hrtf(true);
+            e.set_program_codec("eac3".into());
+            e.direct_mix = 1.0;
+            e.output_active = true; e.paused = false;
+            let mut source = Source { kind: SourceKind::Object, object_id: Some(10),
+                position: [0.0,1.0,0.4], gain:1.0,target_gain:1.0,
+                availability:1.0,availability_target:1.0,..Default::default() };
+            let samples:Vec<_>=(0..16384).map(|n| ((n as f32*0.071).sin()+0.3*(n as f32*0.193).sin())*0.001).collect();
+            source.samples.write(0,0,&samples);
+            e.sources.insert("obj:10".into(),source);
+            e.route_source_now("obj:10",0).unwrap(); e
+        };
+        let mut pending=make(); let mut immediate=make();
+        let fifo=stereo_fifo::StereoFifo::new(4096);let telemetry=RuntimeTelemetry::default();
+        let old=[0.0,0.0,0.0,1.0];let latest=[0.0,0.0,0.5,0.8660254];
+        for e in [&mut pending,&mut immediate] {
+            handle_command(e,Command::HeadPose{orientation:old},&fifo,&telemetry);
+            e.render_into(&mut [0.0;8192],2);
+        }
+        let clock=pending.sample_pos;
+        pending.last_pose_apply=Some(std::time::Instant::now());
+        handle_command(&mut pending,Command::HeadPose{orientation:latest},&fifo,&telemetry);
+        pending.last_pose_apply=Some(std::time::Instant::now()-std::time::Duration::from_millis(21));
+        immediate.last_pose_apply=None;
+        handle_command(&mut immediate,Command::HeadPose{orientation:latest},&fifo,&telemetry);
+        let mut a=vec![0.0;16384];let mut b=a.clone();
+        pending.render_into(&mut a,2);immediate.render_into(&mut b,2);
+        assert_eq!(pending.sample_pos,clock+8192);
+        assert_eq!(pending.sample_pos,immediate.sample_pos);
+        assert!(a.iter().all(|v|v.is_finite()));
+        assert!(a.iter().any(|v|v.abs()>1e-6));
+        let error=a.iter().zip(&b).map(|(a,b)|(a-b).abs()).fold(0.0_f32,f32::max);
+        assert!(error<1e-6,"pending delivery changed audio vs equivalent immediate pose: {error}");
+    }
+    #[test]
+    fn pending_pose_latest_invalid_pause_resume_and_clear_contract() {
+        let mut engine = Engine::new(48_000, 2);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+        engine.output_active = true;
+        engine.paused = false;
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        let old = [0.0, 0.0, 0.0, 1.0];
+        let first = [0.0, 0.0, 0.25, 0.9682458];
+        let latest = [0.0, 0.0, 0.5, 0.8660254];
+        handle_command(&mut engine, Command::HeadPose { orientation: old }, &fifo, &telemetry);
+        engine.last_pose_apply = Some(std::time::Instant::now());
+        handle_command(&mut engine, Command::HeadPose { orientation: first }, &fifo, &telemetry);
+        handle_command(&mut engine, Command::HeadPose { orientation: latest }, &fifo, &telemetry);
+        handle_command(&mut engine, Command::HeadPose { orientation: [f32::NAN, 0.0, 0.0, 1.0] }, &fifo, &telemetry);
+        assert_eq!(engine.pending_pose, spatial::normalize_quaternion(latest));
+        engine.last_pose_apply = Some(std::time::Instant::now() - std::time::Duration::from_millis(21));
+        engine.paused = true;
+        let clock = engine.sample_pos;
+        let mut output = [1.0; 2048];
+        engine.render_into(&mut output, 2);
+        assert!(output.iter().all(|v| *v == 0.0));
+        assert_eq!(engine.sample_pos, clock);
+        assert_eq!(engine.head_pose, Some(old));
+        assert_eq!(engine.pending_pose, spatial::normalize_quaternion(latest));
+        engine.paused = false;
+        engine.render_into(&mut output, 2);
+        assert_eq!(engine.head_pose, spatial::normalize_quaternion(latest));
+        assert!(engine.pending_pose.is_none());
+        engine.last_pose_apply = Some(std::time::Instant::now());
+        handle_command(&mut engine, Command::HeadPose { orientation: first }, &fifo, &telemetry);
+        assert!(engine.pending_pose.is_some());
+        handle_command(&mut engine, Command::ClearHeadPose, &fifo, &telemetry);
+        engine.render_into(&mut output, 2);
+        assert!(engine.head_pose.is_none());
+        assert!(engine.pending_pose.is_none());
+    }
+    #[test]
+    fn throttled_final_pose_is_applied_by_render_without_another_message() {
+        let mut engine = Engine::new(48_000, 2);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        engine.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+        engine.output_active = true;
+        engine.paused = false;
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        let old = [0.0, 0.0, 0.0, 1.0];
+        let newest = [0.0, 0.0, 0.5, 0.8660254];
+        handle_command(&mut engine, Command::HeadPose { orientation: old }, &fifo, &telemetry);
+        // Force the second delivery into the throttle window, without relying
+        // on scheduler speed or a sleep in the regression.
+        engine.last_pose_apply = Some(std::time::Instant::now());
+        handle_command(&mut engine, Command::HeadPose { orientation: newest }, &fifo, &telemetry);
+        assert_eq!(engine.head_pose, Some(old));
+        assert_eq!(engine.pending_pose, spatial::normalize_quaternion(newest));
+        engine.last_pose_apply = Some(std::time::Instant::now() - std::time::Duration::from_millis(21));
+        engine.render_into(&mut [0.0; 2048], 2);
+        assert_eq!(engine.head_pose, spatial::normalize_quaternion(newest), "last throttled pose stuck after motion stops");
+        assert!(engine.pending_pose.is_none());
+    }
     #[test]
     fn live_hrtf_preset_preserves_clock_pause_pcm_and_epoch() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/native-renderer/hrtf-assets");

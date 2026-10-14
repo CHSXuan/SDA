@@ -1,4 +1,4 @@
-import {cpSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {cpSync,mkdirSync,readFileSync,writeFileSync,existsSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
@@ -6,6 +6,14 @@ const out=join(root,'apps/mobile/modules/sda-core/ios/Resources');
 mkdirSync(out,{recursive:true});
 cpSync(join(root,'apps/mobile/assets/hrtf-restored'),join(out,'hrtf-restored'),{recursive:true});
 cpSync(join(root,'apps/mobile/rendering-presets.json'),join(out,'rendering-presets.json'));
+const experimentPath=join(root,'apps/mobile/ios-experiments/active.json');
+if (existsSync(experimentPath)) {
+  const experiment=JSON.parse(readFileSync(experimentPath,'utf8'));
+  if (experiment.id!=='horizontal-support-218-v1' || experiment.directionCount!==218) throw new Error('Unknown iOS experiment');
+  cpSync(join(root,'apps/mobile/ios-experiments/horizontal-support/hrtf-dense'),join(out,'hrtf-restored/hrtf-dense'),{recursive:true});
+  cpSync(experimentPath,join(out,'ios-experiment.json'));
+  console.log('iOS TEST BUILD: horizontal-support-218-v1, original height responses and cues retained');
+}
 // Explicit iOS audition configuration; shared measured HRIRs stay identical.
 const presets=JSON.parse(readFileSync(join(out,'rendering-presets.json'),'utf8'));
 if (presets[0]?.iosDirectReflectionTrial === true) {

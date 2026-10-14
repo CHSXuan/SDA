@@ -22,6 +22,17 @@ class MobileAssetsTest(unittest.TestCase):
     def test_mobile_only_bundle_passes(self):
         verify_mobile_ios_assets(self.app)
 
+    def test_horizontal_experiment_passes_and_rejects_corruption(self):
+        source = ROOT / 'apps/mobile/ios-experiments'
+        shutil.copytree(source / 'horizontal-support/hrtf-dense',
+                        self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
+        shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
+        verify_mobile_ios_assets(self.app)
+        path = self.bundle / 'hrtf-restored/hrtf-dense/direction-100.f32'
+        path.write_bytes(b'broken')
+        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile KU100 asset'):
+            verify_mobile_ios_assets(self.app)
+
     def test_explicit_direct_reflection_trial_requires_both_cue_flags_off(self):
         path = self.bundle / 'rendering-presets.json'
         presets = json.loads(path.read_text(encoding='utf-8'))

@@ -1,0 +1,6 @@
+{
+  "id": "horizontal-support-218-v1",
+  "directionCount": 218,
+  "scope": "iOS test build only; original61 + historical13lower +144horizontal supplements; original17fallback, cues enabled; no triangle mode",
+  "baselineDirectionCount": 61
+}

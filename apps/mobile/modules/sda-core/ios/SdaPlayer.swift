@@ -251,6 +251,10 @@ final class SdaPlayer {
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
    hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
+   let experiment = try assetRoot().appendingPathComponent("ios-experiment.json")
+   if FileManager.default.fileExists(atPath: experiment.path) {
+    hrtfState = "实验版 · KU100 218 方向 · 水平方位补充 · 高度响应及空间线索保留"
+   }
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {
