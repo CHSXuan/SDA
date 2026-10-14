@@ -6,7 +6,7 @@ import simd
 extension SdaPlayer {
  func stopHeadTracking() {
   motionSession += 1
-  headphoneMotion.stopDeviceMotionUpdates()
+  headphoneMotion?.stopDeviceMotionUpdates()
   motionWatchdog?.cancel(); motionWatchdog = nil
   motionReference = nil; motionLastSample = 0; playbackYaw = 0
   if handle != nil { _ = try? command("resetPose") }
@@ -18,11 +18,13 @@ extension SdaPlayer {
    if prefs.bool(forKey:"sda.headTracking") && systemSpatial != nil { headTrackingDetail = "系统输出由 Apple 控制" }
    return
   }
-  guard !headphoneMotion.isDeviceMotionActive else { return }
+  guard headphoneMotion?.isDeviceMotionActive != true else { return }
   guard CMHeadphoneMotionManager.authorizationStatus() != .denied,
         CMHeadphoneMotionManager.authorizationStatus() != .restricted else {
    headTrackingDetail = "运动权限未授权"; return
   }
+  if headphoneMotion == nil { headphoneMotion = CMHeadphoneMotionManager() }
+  guard let headphoneMotion else { return }
   // The manager can wait for a compatible headset to connect on iOS.
   motionSession += 1
   let session = motionSession
