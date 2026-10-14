@@ -10,6 +10,7 @@
       "bundleIdentifier": "app.sda.mobile",
       "infoPlist": {
         "NSMotionUsageDescription": "SDA 使用兼容耳机的头部运动数据控制空间音频方向。",
+        "NSLocalNetworkUsageDescription": "开启远程诊断服务时，允许同网络电脑读取 SDA 的播放状态和头部姿态。",
         "UIBackgroundModes": [
           "audio"
         ]

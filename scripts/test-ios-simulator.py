@@ -73,7 +73,11 @@ try:
  launch=run('xcrun','simctl','launch','--stdout='+str(out/'scene.stdout'),'--stderr='+str(out/'scene.stderr'),udid,'app.sda.mobile')
  deadline=time.monotonic()+60
  while not sceneReport.is_file() and time.monotonic()<deadline:time.sleep(1)
- if not sceneReport.is_file():raise RuntimeError('Cold-start 7.1.4 scene did not report a rendered frame')
+ if not sceneReport.is_file():
+  run('xcrun','simctl','io',udid,'screenshot',str(out/'scene-failure.png'),check=False)
+  diagnostic=container/'Documents/sda-ci-chrome.json'
+  if diagnostic.is_file():(out/'scene-failure-chrome.json').write_bytes(diagnostic.read_bytes())
+  raise RuntimeError('Cold-start 7.1.4 scene did not report a rendered frame; inspect scene-failure.png and scene-failure-chrome.json')
  scene=json.loads(sceneReport.read_text())
  (out/'scene-smoke.json').write_text(json.dumps(scene,indent=2))
  if scene.get('ok') is not True or scene.get('layout')!='7.1.4' or scene.get('calls',0)<=0 or scene.get('triangles',0)<=0:
@@ -85,7 +89,7 @@ try:
  # SDA's retired tabs/settings wrappers. Require actual mounted native classes.
  def chrome_report(stage):
   report=container/'Documents/sda-ci-chrome.json'
-  deadline=time.monotonic()+30
+  deadline=time.monotonic()+75
   data={}
   while time.monotonic()<deadline:
    if report.is_file():
@@ -113,9 +117,7 @@ try:
    time.sleep(1)
   else:
    (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
-   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'-failed.png')),check=False)
-   state=run('xcrun','simctl','spawn',udid,'launchctl','list',check=False)
-   (out/('chrome-'+stage+'-processes.txt')).write_text(state.stdout+state.stderr)
+   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'-failure.png')),check=False)
    raise RuntimeError('System native chrome did not mount: '+stage)
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
   return data
@@ -126,9 +128,7 @@ try:
   if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
   (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
-  launch=run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),
-             '--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
-  (out/('chrome-'+stage+'-launch.txt')).write_text(launch.stdout+launch.stderr)
+  run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),'--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
   chrome_report(stage)
   time.sleep(3)
   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))

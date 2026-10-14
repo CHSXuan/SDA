@@ -74,8 +74,25 @@ fn buffer_scale_for_platform(ios: bool, synchronized: bool, dense: bool) -> usiz
     if synchronized { 1 } else if ios { 4 } else if dense { 2 } else { 1 }
 }
 
+pub(super) fn render_reserve(ios: bool, tracking: bool, synchronized: bool, normal: (usize, usize)) -> (usize, usize) {
+    if ios && tracking && !synchronized {
+        (4096, 2048)
+    } else {
+        normal
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tracked_ios_reserve_does_not_change_other_outputs() {
+        use super::render_reserve;
+        let normal = (65536, 32768);
+        assert_eq!(render_reserve(true, true, false, normal), (4096, 2048));
+        for flags in [(true, false, false), (false, true, false), (true, true, true)] {
+            assert_eq!(render_reserve(flags.0, flags.1, flags.2, normal), normal);
+        }
+    }
     #[test]
     fn ios_reserve_handles_other_app_bursts_without_changing_remote_sync() {
         use super::buffer_scale_for_platform as scale;

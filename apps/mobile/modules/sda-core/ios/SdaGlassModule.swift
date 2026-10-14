@@ -14,7 +14,7 @@ private enum ChromeSmoke {
    ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" || ProcessInfo.processInfo.environment["SDA_IOS_CHROME_SMOKE"] != nil else { return }
   inspecting = true
   DispatchQueue.main.async {
-   var remaining = 45
+   var remaining = 90
    Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
     remaining -= 1
     var views: [[String: Any]] = []

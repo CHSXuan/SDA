@@ -355,6 +355,13 @@ impl Default for Frame {
     }
 }
 pub struct ContinuousSource {
+    preparation: Option<crate::filter_preparation::LatestPreparation<Route, Result<(Route, crate::convolution::PreparedStereoFilter), String>>>,
+    preparing_route: Option<Route>,
+    preparation_version: u64,
+    applied_preparation_version: u64,
+    last_preparation_error: Option<String>,
+    preparation_set: u64,
+    preparation_fn: Option<std::sync::Arc<dyn Fn(Route) -> Result<(Route, crate::convolution::PreparedStereoFilter), String> + Send + Sync>>,
     pub perf_id: String,
     hardware: crate::hardware::Chain,
     convolver: crate::convolution::StereoPartitionedConvolver,
@@ -375,7 +382,14 @@ pub struct ContinuousSource {
 impl ContinuousSource {
     pub fn new(set: &crate::hrtf::NativeHrtfSet) -> Result<Self, String> {
         let zero = vec![0.0; set.directional_filter_len()];
-        Ok(Self {
+        let mut source = Self {
+            preparation: None,
+            preparing_route: None,
+            preparation_version: 0,
+            applied_preparation_version: 0,
+            last_preparation_error: None,
+            preparation_set: 0,
+            preparation_fn: None,
             perf_id: String::new(),
             hardware: crate::hardware::Chain::new(&set.cinema.monitor.hardware),
             convolver: crate::convolution::StereoPartitionedConvolver::new(
@@ -392,7 +406,11 @@ impl ContinuousSource {
             frames: [Frame::default(); crate::convolution::DEFAULT_PARTITION],
             left: [0.0; crate::convolution::DEFAULT_PARTITION],
             right: [0.0; crate::convolution::DEFAULT_PARTITION],
-        })
+        };
+        if cfg!(all(target_os = "ios", feature = "async-filter-preparation")) {
+            source.configure_preparation(set);
+        }
+        Ok(source)
     }
     pub(crate) fn effective_route(&self) -> Option<Route> {
         self.pending.or(self.route)
@@ -416,6 +434,24 @@ impl ContinuousSource {
             .then_some(route);
     }
     fn finish(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
+        self.finish_with_preparation(set, cfg!(all(target_os = "ios", feature = "async-filter-preparation")))
+    }
+    fn finish_with_preparation(&mut self, set: &crate::hrtf::NativeHrtfSet, asynchronous: bool) -> Result<(), String> {
+        // No old filter exists on first use. Preserve synchronous initialization
+        // so the asynchronous update path cannot silently consume startup PCM.
+        let asynchronous = asynchronous && self.route.is_some()
+            && self.preparation_set == set.preparation_id()
+            && self.pending.or(self.route).is_some_and(|target| target.0.head.is_some())
+            && self.pending.is_none_or(|target| self.route.is_some_and(|current| head_only_update(current, target)));
+        if asynchronous {
+            self.update_prepared_route(set)?;
+        } else if self.pending.is_some() {
+            // Authored metadata and neutral resets are synchronous. Cancel an
+            // outstanding head-only result before applying this new route.
+            if let Some(preparation) = self.preparation.take() { preparation.cancel(); }
+            self.preparing_route = None;
+            self.preparation_set = 0;
+        }
         let _perf = crate::performance::span(
             "hrtf.object.convolution",
             &self.perf_id,
@@ -425,7 +461,8 @@ impl ContinuousSource {
             *input = self.hardware.process(frame.input);
         }
         if self.input.iter().any(|x| *x != 0.0) || !self.convolver.tail_is_silent() {
-            if let Some((direction, layout, gains, amounts)) = self.pending.take() {
+            let pending = if asynchronous { None } else { self.pending.take() };
+            if let Some((direction, layout, gains, amounts)) = pending {
                 let _filter_perf = crate::performance::span(
                     "hrtf.object.filter_update",
                     &self.perf_id,
@@ -447,6 +484,10 @@ impl ContinuousSource {
                     );
                 }
                 self.route = Some((direction, layout, gains, amounts));
+                if cfg!(all(target_os = "ios", feature = "async-filter-preparation")) {
+                    self.configure_preparation(set);
+                    self.pending = None;
+                }
             }
         }
         self.left.fill(0.0);
@@ -464,6 +505,79 @@ impl ContinuousSource {
         self.occlusion_targets = [1.0; 2];
         Ok(())
     }
+    fn update_prepared_route(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
+        if self.preparation_set != set.preparation_id() {
+            self.configure_preparation(set);
+        }
+        let target = self.pending.or(self.route);
+        let preparation = self.preparation.as_ref().unwrap();
+        // An exact latest target is still correct after a slow preparation.
+        // The age gate applies only to intermediate moving-target results.
+        let completed = preparation.take().or_else(|| preparation.take_recent(
+            self.applied_preparation_version, std::time::Duration::from_millis(50)));
+        if let Some((version, result)) = completed {
+            if version <= self.preparation_version {
+                let (route, filter) = match result {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        // Retain the audible filter, and allow the current target
+                        // to be retried rather than permanently losing updates.
+                        self.preparing_route = None;
+                        self.last_preparation_error = Some(error);
+                        return Ok(());
+                    }
+                };
+                {
+                    if !self.convolver.accepts_prepared_filter(&filter) {
+                        self.preparing_route = None;
+                        return Err("asynchronous HRTF filter shape changed".into());
+                    }
+                    if self.route.is_none() { self.convolver.set_prepared_filter(filter); }
+                    else { self.convolver.transition_to(filter, crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES); }
+                    self.route = Some(route);
+                    self.last_preparation_error = None;
+                    self.applied_preparation_version = version;
+                    if target.as_ref().is_some_and(|target| equivalent_route(target, &route)) { self.pending = None; }
+                }
+            }
+        }
+        if let Some(target) = target {
+            if self.preparing_route.as_ref().is_none_or(|old| !equivalent_route(old, &target))
+                || (self.pending.is_some() && self.preparation.as_ref().unwrap().needs_retry(std::time::Duration::from_millis(50))) {
+                if let Some(version) = self.preparation.as_ref().unwrap().submit(target, self.preparation_fn.as_ref().unwrap().clone()) {
+                    self.preparation_version = version;
+                    self.preparing_route = Some(target);
+                }
+            }
+        }
+        Ok(())
+    }
+    fn configure_preparation(&mut self, set: &crate::hrtf::NativeHrtfSet) {
+        if let Some(previous) = &self.preparation { previous.cancel(); }
+        // A new asset revision needs a new filter even when spatial metadata
+        // is unchanged. Keep the old audible filter until the replacement lands.
+        self.pending = self.pending.or(self.route);
+        self.preparation = Some(crate::filter_preparation::LatestPreparation::new());
+        self.preparation.as_ref().unwrap().warm();
+        let snapshot = set.preparation_snapshot();
+        self.preparation_fn = Some(std::sync::Arc::new(move |route: Route| {
+            let (direction, layout, gains, amounts) = route;
+            let (left, right) = snapshot.directional_dry_compact(direction, layout, gains, amounts)?;
+            Ok((route, crate::convolution::PreparedStereoFilter::from_pair(
+                &left, &right, crate::convolution::DEFAULT_PARTITION)))
+        }));
+        self.preparation_set = set.preparation_id();
+        self.preparation_version = 0;
+        self.applied_preparation_version = 0;
+        self.last_preparation_error = None;
+        self.preparing_route = None;
+    }
+}
+fn head_only_update(current: Route, target: Route) -> bool {
+    let mut direction = current.0;
+    direction.head = target.0.head;
+    direction == target.0 && current.1 == target.1
+        && current.2 == target.2 && current.3 == target.3
 }
 pub fn finish_sources<'a>(
     sources: impl Iterator<Item = &'a mut ContinuousSource>,
@@ -471,6 +585,9 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
+    if cfg!(target_os = "ios") {
+        return crate::audio_executor::run(&mut sources, |source| source.finish(set));
+    }
     let worker_count = crate::direct_renderer::worker_count_for_sources(sources.len());
     if let Some(pool) =
         crate::direct_renderer::workers().filter(|_| sources.len() >= 8 && worker_count > 1)
@@ -994,19 +1111,24 @@ impl Grid {
             horizontal_only,
             head: head.map(|orientation| orientation.map(f32::to_bits)),
         };
-        let mut cache = self
-            .diffuse_fields
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(field) = cache.get(&key) {
-            return field.clone();
+        {
+            let cache = self.diffuse_fields.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(field) = cache.get(&key) {
+                return field.clone();
+            }
         }
+        // Interpolation can be expensive. Never hold the shared cache mutex
+        // while building a field; unrelated sources must be able to proceed.
+        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
+        let mut cache = self.diffuse_fields.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = cache.get(&key) { return existing.clone(); }
         // Head tracking may report every frame. Exact keys retain precision;
         // the small bound only limits retained historic poses.
         if cache.len() >= 8 {
             cache.clear();
         }
-        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
         cache.insert(key, field.clone());
         field
     }
@@ -1375,6 +1497,226 @@ impl Grid {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn asynchronous_gate_never_defers_authored_position_width_or_gain() {
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0,1.0,0.0], head: None, diffuse: 0.0,
+            horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let current = (direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        let mut target = current;
+        target.0.head = Some([0.0,0.0,0.1,0.9949874]);
+        assert!(head_only_update(current,target));
+        target.0.position[0] = 0.1;
+        assert!(!head_only_update(current,target));
+        target = current; target.0.width = 1.0;
+        assert!(!head_only_update(current,target));
+        target = current; target.0.diffuse = 0.2;
+        assert!(!head_only_update(current,target));
+        target = current; target.2[0] *= 0.5;
+        // Pick a nonzero route bus rather than assuming the layout's first one.
+        let bus = current.2.iter().position(|gain| *gain != 0.0).unwrap();
+        target.2[bus] = current.2[bus] * 0.5;
+        assert!(!head_only_update(current,target));
+    }
+    #[test]
+    fn async_preparation_failure_retries_without_losing_audible_route() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0,1.0,0.0],head:None,diffuse:0.0,
+            horizontal_only:false,width:0.0,height:0.0,depth:0.0 };
+        let mut source = ContinuousSource::new(&set).unwrap();
+        source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        for frame in &mut source.frames { frame.input=0.01; }
+        source.finish_with_preparation(&set,false).unwrap();
+        let old = source.route;
+        source.configure_preparation(&set);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_calls = calls.clone();
+        let snapshot = set.clone();
+        source.preparation_fn = Some(std::sync::Arc::new(move |route: Route| {
+            if worker_calls.fetch_add(1,std::sync::atomic::Ordering::Relaxed)==0 { return Err("injected failure".into()); }
+            let (l,r)=snapshot.directional_dry_compact(route.0,route.1,route.2,route.3)?;
+            Ok((route,crate::convolution::PreparedStereoFilter::from_pair(&l,&r,crate::convolution::DEFAULT_PARTITION)))
+        }));
+        let moved = Direction { position:[0.8,0.6,0.0], ..direction };
+        source.schedule(moved,solver.layout(),solver.pan(moved.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        while source.pending.is_some() {
+            source.update_prepared_route(&set).unwrap();
+            assert!(source.route==old || source.route.unwrap().0.position==moved.position);
+            assert!(std::time::Instant::now()<deadline); std::thread::yield_now();
+        }
+        assert!(calls.load(std::sync::atomic::Ordering::Relaxed)>=2);
+        assert_eq!(source.route.unwrap().0.position,moved.position);
+    }
+    #[test]
+    fn async_first_filter_does_not_consume_audio_through_zero_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0,1.0,0.0],head:None,diffuse:0.0,
+            horizontal_only:false,width:0.0,height:0.0,depth:0.0 };
+        let mut asynchronous = ContinuousSource::new(&set).unwrap();
+        let mut reference = ContinuousSource::new(&set).unwrap();
+        for source in [&mut asynchronous,&mut reference] {
+            source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+            for frame in &mut source.frames { frame.input=0.01; }
+        }
+        asynchronous.finish_with_preparation(&set,true).unwrap();
+        reference.finish_with_preparation(&set,false).unwrap();
+        assert_eq!(asynchronous.route,reference.route);
+        assert!(asynchronous.frames.iter().zip(&reference.frames).all(|(a,b)|a.output==b.output));
+    }
+    #[test]
+    fn delayed_preparation_keeps_audio_blocks_running_on_previous_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let mut actual = ContinuousSource::new(&set).unwrap();
+        let mut reference = ContinuousSource::new(&set).unwrap();
+        for source in [&mut actual, &mut reference] {
+            source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+            for frame in &mut source.frames { frame.input = 0.01; }
+            source.finish_with_preparation(&set,false).unwrap();
+        }
+        let old_route = actual.route;
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let snapshot = set.clone();
+        actual.configure_preparation(&set);
+        actual.preparation_fn = Some(std::sync::Arc::new(move |route: Route| {
+            started_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            let (l,r) = snapshot.directional_dry_compact(route.0,route.1,route.2,route.3)?;
+            Ok((route,crate::convolution::PreparedStereoFilter::from_pair(&l,&r,crate::convolution::DEFAULT_PARTITION)))
+        }));
+        let moved = Direction { head: Some([0.0,0.0,0.2,0.9797959]), ..direction };
+        actual.schedule(moved,solver.layout(),solver.pan(moved.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        actual.update_prepared_route(&set).unwrap();
+        started_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        // Hold preparation blocked while the actual production finish path runs.
+        for _ in 0..4 {
+            for source in [&mut actual,&mut reference] { for frame in &mut source.frames { frame.input = 0.01; } }
+            actual.finish_with_preparation(&set,true).unwrap();
+            reference.finish_with_preparation(&set,false).unwrap();
+            assert_eq!(actual.route,old_route);
+            assert!(actual.frames.iter().zip(&reference.frames).all(|(a,b)| a.output == b.output));
+        }
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(3);
+        while actual.pending.is_some() {
+            actual.update_prepared_route(&set).unwrap();
+            assert!(std::time::Instant::now()<deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(actual.route.unwrap().0.head,moved.head);
+    }
+    #[test]
+    #[ignore = "host timing experiment; not an iOS latency guarantee"]
+    fn moving_ku100_preparation_progresses_across_multiple_sources() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let mut sources: Vec<_> = (0..8).map(|_| ContinuousSource::new(&set).unwrap()).collect();
+        let mut applied = [0; 8];
+        for tick in 0..20 {
+            for (i, source) in sources.iter_mut().enumerate() {
+                let angle = (tick as f32 + i as f32 * 5.0).to_radians();
+                let direction = Direction { position: [angle.sin(), angle.cos(), 0.0], head: None,
+                    diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+                source.pending = Some((direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]));
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(33);
+            let mut done = [false; 8];
+            while std::time::Instant::now() < deadline {
+                for (i, source) in sources.iter_mut().enumerate() {
+                    if done[i] { continue; }
+                    source.update_prepared_route(&set).unwrap();
+                    if source.pending.is_none() { applied[i] += 1; done[i] = true; }
+                }
+                if done.iter().all(|value| *value) { break; }
+                std::thread::yield_now();
+            }
+        }
+        assert!(applied.iter().all(|count| *count >= 10), "moving targets stalled: {applied:?}");
+    }
+    #[test]
+    fn async_prepared_route_matches_synchronous_filter_and_keeps_old_route() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let mut source = ContinuousSource::new(&set).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let amounts = [0.0; crate::vbap::MAX_BUS_COUNT];
+        let first = (base, solver.layout(), solver.pan(base.position, 0.0), amounts);
+        source.pending = Some(first);
+        let settle = |source: &mut ContinuousSource| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while source.pending.is_some() {
+                source.update_prepared_route(&set).unwrap();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        settle(&mut source);
+        assert_eq!(source.route, Some(first));
+        let mut replacement = set.clone();
+        replacement.configure_spatial_cues(solver.layout()).unwrap();
+        assert_ne!(replacement.preparation_id(), set.preparation_id());
+        source.update_prepared_route(&replacement).unwrap();
+        assert_eq!(source.preparation_set, replacement.preparation_id());
+        // Return to the original asset revision before moving the source.
+        source.update_prepared_route(&set).unwrap();
+        let moved = Direction { position: [0.7, 0.7, 0.0], ..base };
+        let second = (moved, solver.layout(), solver.pan(moved.position, 0.0), amounts);
+        source.pending = Some(second);
+        source.update_prepared_route(&set).unwrap();
+        assert_eq!(source.route, Some(first), "old route remains while preparing");
+        settle(&mut source);
+        let (l,r) = set.directional_dry_compact(second.0,second.1,second.2,second.3).unwrap();
+        let mut reference = crate::convolution::StereoPartitionedConvolver::new(&l,&r,crate::convolution::DEFAULT_PARTITION).unwrap();
+        let mut a = [0.0; crate::convolution::DEFAULT_PARTITION];
+        let mut b = a; let mut c = a; let mut d = a;
+        let input = [0.001; crate::convolution::DEFAULT_PARTITION];
+        // Let the normal short transition finish, then compare stationary output.
+        for block in 0..8 {
+            source.convolver.process_block(&input,&mut a,&mut b).unwrap();
+            reference.process_block(&input,&mut c,&mut d).unwrap();
+            if block >= 4 {
+                assert!(a.iter().zip(&c).chain(b.iter().zip(&d)).all(|(a,b)| (a-b).abs()<1e-5));
+            }
+        }
+    }
+    #[test]
+    fn head_turn_selects_ku100_filter_before_stereo_convolution() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let irs: Vec<_> = [-60.0, -30.0, 0.0, 30.0, 60.0].iter()
+            .map(|&az| set.nearest(az, 0.0).unwrap()).collect();
+        let grid = Grid::new(&irs);
+        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let half = 30.0_f32.to_radians() / 2.0;
+        let pose = [0.0, 0.0, half.sin(), half.cos()];
+        let tracked = grid.direct_footprint(&irs, Direction { head: Some(pose), ..base });
+        let relative = spatial::head_relative_adm(base.position, Some(pose));
+        let expected = grid.direct_footprint(&irs, Direction { position: relative, ..base });
+        for (actual, expected) in tracked.0.iter().chain(&tracked.1).zip(expected.0.iter().chain(&expected.1)) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        assert_ne!(tracked, grid.direct_footprint(&irs, base));
+    }
     use super::*;
 
     #[test]
@@ -2310,6 +2652,7 @@ mod tests {
             }
             assert!(peak > 1e-6);
             assert!(fast.fast_object_blocks > 0);
+            assert!(fast.fast_mix_controls.capacity() >= crate::convolution::DEFAULT_PARTITION);
             assert_eq!(general.fast_object_blocks, 0);
             assert_eq!(fast.sources["obj:0"].motion_cues.gain(), 1.0);
             assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5);
@@ -2505,6 +2848,29 @@ mod tests {
         {
             assert!((cached - independent).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn concurrent_diffuse_cache_misses_preserve_independent_filters() {
+        let irs: Vec<_> = (0..12).map(|i| StereoIr {
+            azimuth: i as f64 * 30.0, elevation: 0.0,
+            dry: (0..256).map(|n| ((n + i) as f32 * 0.17).sin() * 0.02).collect(),
+            wet: vec![],
+        }).collect();
+        let grid = Grid::new(&irs);
+        let half = 0.2_f32;
+        let pose = Some([0.0, 0.0, half.sin(), half.cos()]);
+        let expected = Grid::new(&irs).diffuse_field(&irs, false, pose);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4).map(|_| scope.spawn(|| grid.diffuse_field(&irs, false, pose))).collect();
+            for handle in handles {
+                let field = handle.join().unwrap();
+                assert_eq!(field.left, expected.left);
+                assert_eq!(field.right, expected.right);
+                assert_eq!(field.reference_energy, expected.reference_energy);
+            }
+        });
+        assert_eq!(grid.diffuse_field_cache_len(), 1);
     }
     #[test]
     #[ignore = "offline full engine realtime budget measurement"]

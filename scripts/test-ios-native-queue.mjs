@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
+import { trackingModule } from './ios-tracking-test-module.mjs';
 const bundle = await build({entryPoints:['apps/mobile/App.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['*']});
 function fixture(platform='ios') {
  let preparations=0, releases=0, stops=0, plays=0, configured, currentHash='a';
@@ -12,7 +13,7 @@ function fixture(platform='ios') {
   hrtfStatus:()=>'',renderingSettings:()=> '{}',setVolume:()=>{},
   feedError:()=>null,feedDone:()=>false,status:()=> '{}',objects:()=> '{}',
  };
- const deps=name=> name==='react'?{Component}:name==='react-native'?{Platform:{OS:platform},AppState:{currentState:'active'}}:
+ const deps=name=> name.endsWith('/head-tracking-session')?trackingModule:name==='react'?{Component}:name==='react-native'?{Platform:{OS:platform},AppState:{currentState:'active'}}:
   name.endsWith('/mpeghMp4')?{prepare360RaMp4:async(_host,uri,name)=>{preparations++;return {uri:uri+'.mhas',name:name+'.mhas',durationMs:42000,release:async()=>{releases++;}};}}:
   name.endsWith('.json')?[]:{};
  new Function('require','module','exports',bundle.outputFiles[0].text)(deps,module,module.exports);

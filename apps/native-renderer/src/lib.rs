@@ -55,6 +55,11 @@ pub mod callback_output;
 pub mod cinema;
 mod spatial_cues;
 pub mod convolution;
+pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
+#[cfg(target_vendor = "apple")]
+mod apple_fft;
+mod filter_preparation;
+mod audio_executor;
 pub mod direct_renderer;
 pub mod directional;
 pub mod dsp;
@@ -912,6 +917,20 @@ pub struct RuntimeTelemetry {
 }
 
 impl RuntimeTelemetry {
+    pub fn callback_missing_frames(&self) -> u64 {
+        self.callback_fifo_underrun_frames.load(Ordering::Relaxed)
+    }
+    pub fn render_timing(&self) -> (u64, u64, u64) {
+        (self.render_block_count.load(Ordering::Relaxed),
+         self.render_block_total_micros.load(Ordering::Relaxed),
+         self.render_block_max_micros.load(Ordering::Relaxed))
+    }
+    pub fn worst_stage_micros(&self) -> [u64; 7] {
+        [&self.render_worst_prepare_micros, &self.render_worst_fast_mix_micros,
+         &self.render_worst_fast_reduce_micros, &self.render_worst_sample_micros,
+         &self.render_worst_directional_micros, &self.render_worst_direct_micros,
+         &self.render_worst_bus_micros].map(|value| value.load(Ordering::Relaxed))
+    }
     fn publish_rendering_state(&self, engine: &Engine) {
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
         self.direct_object_hrtf.store(engine.direct_objects, Ordering::Release);
@@ -981,6 +1000,7 @@ pub struct Engine {
     spatial_balance: spatial_balance::SpatialBalance,
     fast_activity: Vec<ObjectActivitySnapshot>,
     fast_mix_buffers: Vec<object_mixer::Buffer>,
+    fast_mix_controls: Vec<object_mixer::Controls>,
     last_render_stages: RenderStageMicros,
     #[cfg(test)]
     disable_fast_objects: bool,
@@ -1122,6 +1142,7 @@ impl Engine {
             spatial_balance: Default::default(),
             fast_activity: Vec::new(),
             fast_mix_buffers: Vec::new(),
+            fast_mix_controls: Vec::with_capacity(convolution::DEFAULT_PARTITION),
             last_render_stages: RenderStageMicros::default(),
             #[cfg(test)]
             disable_fast_objects: false,
@@ -2157,7 +2178,8 @@ impl Engine {
             self.fast_activity.push(ObjectActivitySnapshot::empty(tick));
             tick = tick.saturating_add(self.activity_tick_every.max(1));
         }
-        let mut controls = Vec::with_capacity(frames);
+        let mut controls = std::mem::take(&mut self.fast_mix_controls);
+        controls.clear();
         let bass_target = if self.cinema.monitor.enabled
             && self.cinema.monitor.bass_enabled
             && self.layout != vbap::LayoutId::Stereo2_0
@@ -2222,6 +2244,7 @@ impl Engine {
             &self.vbap,
             &self.fast_activity,
         );
+        self.fast_mix_controls = controls;
         #[cfg(test)]
         {
             self.profile_ms[4] += profile_start.elapsed().as_secs_f64() * 1000.0;
@@ -3361,10 +3384,15 @@ pub fn spawn_render_worker(
                 // reserve absorbs scheduler/remote-video bursts without changing
                 // source clocks, filters or the DAC-driven presentation clock.
                 let buffer_scale = realtime::render_buffer_scale(synchronized, engine.is_high_density_adm());
+                // Keep decoded PCM ahead, but do not bake old head orientation
+                // into more than a short reserve of final KU100 stereo audio.
+                let (local_target, start_frames) = realtime::render_reserve(
+                    cfg!(target_os = "ios"), engine.head_pose.is_some(), synchronized,
+                    (STEREO_FIFO_TARGET_FRAMES * buffer_scale, STEREO_FIFO_START_FRAMES * buffer_scale));
                 let target = if synchronized {
                     remote_sync::buffer_frames()
                 } else {
-                    STEREO_FIFO_TARGET_FRAMES * buffer_scale
+                    local_target
                 };
                 if fifo.available_read() >= target - 512
                     || fifo.available_write() < convolution::DEFAULT_PARTITION
@@ -3435,7 +3463,7 @@ pub fn spawn_render_worker(
                 // Enabling at a thin watermark made the callback catch up to the
                 // renderer during the start burst, and every catch-up dropped to
                 // zeros and refilled as an audible level step.
-                if fifo.available_read() >= STEREO_FIFO_START_FRAMES * buffer_scale
+                if fifo.available_read() >= start_frames
                     || (fifo.available_read() > 0
                         && engine.pcm_coverage.available(engine.sample_pos, 1) == 0)
                 {

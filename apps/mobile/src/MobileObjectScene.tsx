@@ -66,6 +66,8 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
   React.useEffect(() => {
     if (Platform.OS !== "ios") return;
     const subscription = AppState.addEventListener("change", state => setForeground(state === "active"));
+    // The initial async native state may resolve between render and subscription.
+    setForeground(AppState.currentState === "active");
     return () => subscription.remove();
   }, []);
   const renderActive = active && (Platform.OS !== "ios" || foreground);

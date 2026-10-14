@@ -26,14 +26,20 @@ final class SdaPlayer {
  var playbackQueue: [[String:Any]] = []
  var playbackMode = "sequence"
  var playbackYaw: Double = 0
- var headphoneMotion: CMHeadphoneMotionManager?
+ lazy var headphoneMotion = CMHeadphoneMotionManager()
  let motionQueue: OperationQueue = {
-  let queue = OperationQueue(); queue.name = "sda.ios.head-motion"; queue.maxConcurrentOperationCount = 1
+  let queue = OperationQueue(); queue.name = "sda.ios.head-motion"; queue.maxConcurrentOperationCount = 1; queue.qualityOfService = .userInteractive
   return queue
  }()
  var motionSession = 0
- var motionReference: simd_quatd?
+ var motionReferenceAfter: TimeInterval = 0
  var motionLastSample: TimeInterval = 0
+ var motionCallbackCount = 0
+ var motionBackgroundCallbackCount = 0
+ var motionRetryAfter: TimeInterval = 0
+ var motionRetryCount = 0
+ var motionWarmSamples: [(time:TimeInterval, pose:[Double])] = []
+ var motionNeutralApplied = false
  var motionWatchdog: DispatchSourceTimer?
  var headTrackingDetail = "未启用"
  var generation = 0
@@ -74,6 +80,8 @@ final class SdaPlayer {
  var preparationSerial = 0
  var playbackEvents: [[String:Any]] = []
  let prefs = UserDefaults.standard
+ let diagnostics = RemoteDiagnostics()
+ var diagnosticMotion: [String:Any] = [:]
  func locked<T>(_ work: () throws -> T) rethrows -> T { lock.lock(); defer { lock.unlock() }; return try work() }
  func json(_ value: Any) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]), as: UTF8.self) }
  func decodeReply(_ p: UnsafeMutablePointer<CChar>?) throws -> Any {
@@ -90,7 +98,7 @@ final class SdaPlayer {
    // Status is queried by the feeder every ~20 ms. Do not serialize the
    // entire object graph here; explicit objects + the native 1 s tick drain
    // consumed events even when JS is suspended in the background.
-   case "status": return outputRouteStatus(system.status())
+   case "status": return system.status()
    case "objects": return try system.objects(decodeReply)
    case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
    case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
@@ -112,20 +120,9 @@ final class SdaPlayer {
    status["alacUpmixActive"] = alacUpmixActive
    status["outputChannels"] = 2
    status["outputLayout"] = layout
-   return outputRouteStatus(status)
+   return status
   }
   return result
- }
- // Read-only device output facts, not source-file metadata or an analysis cache.
- func outputRouteStatus(_ input: [String:Any]) -> [String:Any] {
-  var status = input
-  let session = AVAudioSession.sharedInstance()
-  status["hardwareSampleRate"] = session.sampleRate
-  status["audioSessionCategory"] = session.category.rawValue
-  status["audioSessionMode"] = session.mode.rawValue
-  status["audioOutputPortTypes"] = session.currentRoute.outputs.map { $0.portType.rawValue }
-  status["audioOutputUsesCallProfile"] = session.currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
-  return status
  }
  func assetRoot() throws -> URL {
   let moduleBundle = Bundle(for: SdaPlayer.self)
@@ -181,8 +178,8 @@ final class SdaPlayer {
   guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("KU100 测量资源缺失") }
   return path.path
  }
- func stopNative() {
-  stopHeadTracking()
+ func stopNative(keepMotion: Bool = false) {
+  if !keepMotion { stopHeadTracking() }
   generation += 1
   finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false; sessionActivationPending = false
   systemSpatial?.close(); systemSpatial = nil
@@ -218,6 +215,7 @@ final class SdaPlayer {
    _ = try decodeReply(error); throw SdaError.message("引擎初始化失败")
   }
   handle = h
+  prepareHeadTrackingForPlayback()
   do {
    // Bundled kernels already contain the approved -6 dB cues.
    if spatialCueDb() != -6 { try saveSpatialCueDb(spatialCueDb()) }
@@ -264,7 +262,9 @@ final class SdaPlayer {
    _ = try command("pause",["paused":false])
    if audio?.isRunning == false { try audio?.start() }
   }
-  isPaused = paused; updateNowPlaying(); return true
+  isPaused = paused
+  if !allowsHeadTrackingNow { stopHeadTracking() } else { startHeadTracking() }
+  updateNowPlaying(); return true
  }
  func updateNowPlaying() {
   guard hasPlayback else { return }
@@ -335,16 +335,30 @@ final class SdaPlayer {
    try audio.start(); recordPlaybackEvent("engineRestart",detail:reason)
   }
   if let system = systemSpatial { try system.pump() }
+  startHeadTracking()
  }
  func installSystemControls() {
+  observers.append(NotificationCenter.default.addObserver(forName:ProcessInfo.thermalStateDidChangeNotification,object:nil,queue:nil) { [weak self] _ in
+   guard let self else { return }
+   self.locked { self.recordPlaybackEvent("thermalStateChanged",detail:String(ProcessInfo.processInfo.thermalState.rawValue)) }
+  })
+  observers.append(NotificationCenter.default.addObserver(forName:UIScreen.capturedDidChangeNotification,object:nil,queue:nil) { [weak self] _ in
+   guard let self else { return }
+   self.locked {
+    self.recordPlaybackEvent("screenCaptureChanged")
+    self.stopHeadTracking()
+    do { try self.recoverOutputIfNeeded("screenCapture") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
+    self.startHeadTracking()
+   }
+  })
   for notification in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
    observers.append(NotificationCenter.default.addObserver(forName: notification, object:nil, queue:nil) { [weak self] _ in
     guard let self else { return }; self.locked {
      self.inBackground = notification == UIApplication.didEnterBackgroundNotification
      if self.inBackground { self.backgroundTransitions += 1 }
-     if self.inBackground { self.stopHeadTracking() } else { self.startHeadTracking() }
      self.recordPlaybackEvent(self.inBackground ? "background" : "foreground")
      do { try self.recoverOutputIfNeeded("lifecycle") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
+     if !self.allowsHeadTrackingNow { self.stopHeadTracking() } else { self.startHeadTracking() }
      self.updateNowPlaying()
     }
    })
@@ -389,9 +403,10 @@ final class SdaPlayer {
    guard let self else { return }
    self.locked {
     self.recordPlaybackEvent("routeChange",detail:String(describing:note.userInfo ?? [:]))
-    self.stopHeadTracking(); self.startHeadTracking()
+    self.stopHeadTracking()
     if (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { _ = try? self.setPaused(true) }
     else { do { try self.recoverOutputIfNeeded("routeChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
+    self.startHeadTracking()
    }
   })
   observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object:nil, queue:nil) { [weak self] _ in
@@ -401,7 +416,7 @@ final class SdaPlayer {
  }
  func play(_ uri: String, _ name: String, _ yaw: Double, _ hash: String) throws -> String {
   try locked {
-   stopNative(); failure = nil
+   stopNative(keepMotion:!inBackground && prefs.bool(forKey:"sda.headTracking")); failure = nil
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    let ext = (name as NSString).pathExtension.lowercased()
    let input = try CompressedInput(url:url,name:name)
@@ -410,6 +425,7 @@ final class SdaPlayer {
    layout = input.isAlac ? (alacUpmixActive ? "7.1.4" : "2.0") : (ext == "mhas" ? "360RA-13" : "7.1.4")
    do {
     if (ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo")) {
+     stopHeadTracking()
      let session = AVAudioSession.sharedInstance()
      try session.setCategory(.playback, mode:.default, options:[])
      try session.setPreferredSampleRate(48000)
@@ -426,7 +442,7 @@ final class SdaPlayer {
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     // Apply persisted balance after the new route/source is fully selected.
     _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
-    _ = try command("yaw",["degrees":playbackYaw])
+    if !prefs.bool(forKey:"sda.headTracking") { _ = try command("yaw",["degrees":playbackYaw]) }
     startHeadTracking()
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
     let loudnessKey = (systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness.")) + hash
@@ -511,7 +527,10 @@ final class SdaPlayer {
       recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
      if status["preparingAudio"] as? Bool == true { return false }
      // Bound ALAC lookahead so a live switch does not sit behind four seconds.
-     let lead = alacActive ? 24000 : 4*48000
+     // Before the first output frame, decoder coverage must exceed the iOS
+     // rendered startup reserve (32768 frames) plus convolution latency.
+     // Restore the small ALAC live-switch lead once the consumer advances.
+     let lead = consumed == 0 ? 4*48000 : (alacActive ? 24000 : 4*48000)
      return decoded > consumed + UInt64(lead) || (status["fifoFrames"] as? Int ?? 0) > lead
     }
     guard let wait = shouldWait else { return false }

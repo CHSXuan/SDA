@@ -26,6 +26,7 @@ const ORDINARY_OBJECT_WORKERS: usize = 4;
 const LARGE_SCENE_OBJECT_WORKERS: usize = 4;
 
 fn large_scene_worker_cap() -> usize {
+    if cfg!(target_os = "ios") { return 2; }
     #[cfg(test)]
     if let Ok(value) = std::env::var("SDA_TEST_OBJECT_WORKERS") {
         if let Ok(value) = value.parse::<usize>() {
@@ -60,6 +61,9 @@ pub(super) fn worker_count_for_sources(source_count: usize) -> usize {
 }
 
 fn worker_count_for_sources_with_available(source_count: usize, available: usize) -> usize {
+    if cfg!(target_os = "ios") {
+        return ios_worker_count(source_count, available);
+    }
     if source_count >= LARGE_SCENE_OBJECTS {
         // Dense ADM convolvers are independent, but their end-of-block join is
         // deadline-sensitive. Keep a core budget for audio callbacks and the
@@ -72,15 +76,30 @@ fn worker_count_for_sources_with_available(source_count: usize, available: usize
     }
 }
 
+fn ios_worker_count(source_count: usize, available: usize) -> usize {
+    // Small scenes avoid a pool handoff; larger scenes leave CPU capacity for
+    // the coordinator, audio callback and competing foreground app animation.
+    if source_count < 8 { 1 } else { available.clamp(1, 2) }
+}
+
 #[cfg(test)]
 mod worker_policy_tests {
     use super::worker_count_for_sources_with_available;
+    #[test]
+    fn ios_small_scenes_inline_and_large_scenes_bound_parallelism() {
+        assert_eq!(super::ios_worker_count(2, 6), 1);
+        assert_eq!(super::ios_worker_count(7, 6), 1);
+        assert_eq!(super::ios_worker_count(13, 6), 2);
+        assert_eq!(super::ios_worker_count(109, 6), 2);
+        assert_eq!(super::ios_worker_count(109, 1), 1);
+    }
 
     #[test]
     fn large_object_scenes_reserve_host_capacity_without_changing_ordinary_scenes() {
-        assert_eq!(worker_count_for_sources_with_available(16, 8), 4);
-        assert_eq!(worker_count_for_sources_with_available(109, 8), 4);
-        assert_eq!(worker_count_for_sources_with_available(109, 4), 4);
+        let expected = if cfg!(target_os = "ios") { 2 } else { 4 };
+        assert_eq!(worker_count_for_sources_with_available(16, 8), expected);
+        assert_eq!(worker_count_for_sources_with_available(109, 8), expected);
+        assert_eq!(worker_count_for_sources_with_available(109, 4), expected);
     }
 }
 
@@ -174,7 +193,9 @@ pub(super) fn finish_sources<'a>(
         Ok(())
     };
     let worker_count = worker_count_for_sources(sources.len());
-    if let Some(pool) = workers().filter(|_| sources.len() >= 8 && worker_count > 1) {
+    if cfg!(target_os = "ios") {
+        crate::audio_executor::run(&mut sources, prepare)?;
+    } else if let Some(pool) = workers().filter(|_| sources.len() >= 8 && worker_count > 1) {
         let chunk = sources.len().div_ceil(worker_count);
         pool.install(|| {
             sources
@@ -275,7 +296,9 @@ pub(super) fn finish_sources<'a>(
         source.finish_block();
     };
     let worker_count = worker_count_for_sources(sources.len());
-    if let Some(pool) = workers().filter(|_| sources.len() >= 16 && worker_count > 1) {
+    if cfg!(target_os = "ios") {
+        crate::audio_executor::run(&mut sources, |source| -> Result<(), String> { finish(source); Ok(()) })?;
+    } else if let Some(pool) = workers().filter(|_| sources.len() >= 16 && worker_count > 1) {
         // Independent histories stay with their sources; summation order in
         // the engine is unchanged. Join before publishing the next PCM block.
         let chunk = sources.len().div_ceil(worker_count);

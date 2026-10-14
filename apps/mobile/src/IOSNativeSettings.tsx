@@ -1,5 +1,5 @@
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Alert, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, useWindowDimensions } from "react-native";
 import { swiftUI } from "./IOSSystemTabs";
 import type { PlayerProps } from "./RemotePlayer";
@@ -27,6 +27,30 @@ export function IOSSettingsButton({ onPress }: { onPress(): void }) {
   const { Host, Button } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   return <Host style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
+}
+
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect }: {
+  enabled: boolean; disabled: boolean; accent: string; onSelect(enabled: boolean): void;
+}) {
+  if (!swiftUI || !hasView("Button")) return null;
+  const { Host, Menu, Picker, Text } = swiftUI;
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const label = enabled ? "空间音频 · 头部追踪" : "空间音频 · 固定";
+  if (!hasView("MenuView")) return <Host style={{ width: 44, height: 44, marginRight: 8 }}>
+    <swiftUI.Button label={label} systemImage="person.crop.circle" onPress={() => Alert.alert("空间音频", "", [
+      { text: "固定", onPress: () => onSelect(false) }, { text: "头部追踪", onPress: () => onSelect(true) }, { text: "取消", style: "cancel" },
+    ])} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), disabled(isDisabled)]} />
+  </Host>;
+  return <Host style={{ width: 44, height: 44, marginRight: 8 }}><Menu label={label}
+    systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"}
+    modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
+      accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]}>
+    <Picker label="空间音频" selection={enabled ? "tracking" : "fixed"}
+      onSelectionChange={(value: string) => onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
+      <Text modifiers={[tag("fixed")]}>固定</Text>
+      <Text modifiers={[tag("tracking")]}>头部追踪</Text>
+    </Picker>
+  </Menu></Host>;
 }
 
 // A single native navigation stack stays mounted over the existing player.
@@ -131,7 +155,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>
     </Section>
-    <Section title="声音增强" footer={<Text>主层与低频维持原电平，高度与后方辅助层总提升最多 +1.5 dB；保留最早反射并渐弱附加拖尾；总输出高频轻微提升 +1.5 dB。不识别人声。仅 SDA / KU100 路径应用，系统空间音频路径不应用。</Text>}>
+    <Section title="声音增强" footer={<Text>主层与低频维持原电平，高度与后方辅助层总提升最多 +1.5 dB；保留最早反射并渐弱附加拖尾。不识别人声。仅 SDA / KU100 路径应用，系统空间音频路径不应用。</Text>}>
       <Toggle label="空间平衡" isOn={p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(appTheme.accent), disabled(p.busy || p.systemSpatial360RAActive)]} />
     </Section>
     <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100 直达渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
@@ -163,5 +187,26 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       <Text>{p.systemSpatial360RAActive && p.outputChannels === 12 ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道"}</Text>
       <Button label="关于 SDA" systemImage="info.circle" onPress={() => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器")} />
     </Section>
+    <RemoteDiagnosticsSettings />
   </Form>;
+}
+
+function RemoteDiagnosticsSettings() {
+  const engine = (globalThis as any).expo?.modules?.SdaEngine;
+  const [enabled, setEnabled] = useState(() => engine?.diagnosticsEnabled?.() === true);
+  const [status, setStatus] = useState("已关闭");
+  useEffect(() => { const timer = setInterval(() => setStatus(engine?.diagnosticsStatus?.() ?? "原生模块未更新"), 1000); return () => clearInterval(timer); }, [engine]);
+  if (!swiftUI) return null;
+  const { Section, Toggle, Text } = swiftUI;
+  const save = (next: boolean) => {
+    try {
+      if (!engine?.configureDiagnostics) throw new Error("请更新原生模块");
+      engine.configureDiagnostics(next);
+      setEnabled(next);
+    } catch (error) { Alert.alert("远程诊断", error instanceof Error ? error.message : String(error)); }
+  };
+  return <Section title="远程诊断" footer={<Text>{status}</Text>}>
+    <Toggle label="远程诊断服务" isOn={enabled} onIsOnChange={save} />
+    <Text>开启后，同网络设备可读取播放状态、姿态和性能数据。不提供音频、歌曲名或文件路径；每次启动默认关闭。</Text>
+  </Section>;
 }

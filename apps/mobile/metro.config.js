@@ -31,6 +31,13 @@ config.resolver.extraNodeModules = {
 
 const defaultResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Shared ESM TypeScript uses emitted .js specifiers. Metro consumes source
+  // directly; translate only workspace renderer imports that have a .ts file.
+  const rendererRoot = path.join(workspaceRoot, 'packages', 'renderer', 'src') + path.sep;
+  if (context.originModulePath.startsWith(rendererRoot) && moduleName.startsWith('.') && moduleName.endsWith('.js')) {
+    const source = path.resolve(path.dirname(context.originModulePath), moduleName.slice(0, -3) + '.ts');
+    if (source.startsWith(rendererRoot) && fs.existsSync(source)) return { type: 'sourceFile', filePath: source };
+  }
   // Fiber and shared desktop scene components must see the same Three classes.
   // Cross-version instanceof checks otherwise try to replace readonly vectors.
   if (moduleName === 'three') return { type: 'sourceFile', filePath: threeEntry };

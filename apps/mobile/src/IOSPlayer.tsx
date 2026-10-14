@@ -8,7 +8,7 @@ import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
 import { hasNativeIOSChrome, IOSAction, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
-import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
+import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings } from "./IOSNativeSettings";
 import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
@@ -157,7 +157,9 @@ function ThemedPlayer(p: PlayerProps) {
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       <View style={s.header}>
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? pc.muted : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
-        {Platform.OS === "ios" && <Pressable accessibilityRole="switch"
+        {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
+          disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
+          onSelect={p.setHeadTracking} /> : <Pressable accessibilityRole="switch"
           accessibilityLabel="AirPods 头部追踪" accessibilityHint={p.headTrackingStatus}
           accessibilityState={{ checked: p.headTrackingEnabled, disabled: p.busy || p.systemSpatial360RAActive }}
           disabled={p.busy || p.systemSpatial360RAActive}
@@ -166,7 +168,7 @@ function ThemedPlayer(p: PlayerProps) {
             opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
           <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"}
             fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
-        </Pressable>}
+        </Pressable>)}
         {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
       </View>
       {/* Status belongs above the native tabs, never below their full-screen
@@ -250,7 +252,7 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {actionRow("scope", "头部方向归中", "", p.resetYaw, !p.headTrackingEnabled || p.systemSpatial360RAActive)}
             {divider()}
-            {toggle("空间平衡", "主层维持原电平，高度与后方辅助层最多额外 +1.5 dB；总输出高频轻微提升 +1.5 dB，Atmos 总电平补偿 +2.0 dB，保留早期反射并渐弱拖尾，仅 SDA / KU100 路径应用", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
+            {toggle("空间平衡", "主层维持原电平，高度与后方辅助层最多额外 +1.5 dB；无额外整体增益，保留最早反射并渐弱附加拖尾，仅 SDA / KU100 路径应用", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
           </View>
           {heading("360 Reality Audio")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
