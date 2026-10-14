@@ -117,7 +117,9 @@ try:
    time.sleep(1)
   else:
    (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
-   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'-failure.png')),check=False)
+   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'-failed.png')),check=False)
+   state=run('xcrun','simctl','spawn',udid,'launchctl','list',check=False)
+   (out/('chrome-'+stage+'-processes.txt')).write_text(state.stdout+state.stderr)
    raise RuntimeError('System native chrome did not mount: '+stage)
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
   return data
@@ -128,7 +130,9 @@ try:
   if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
   (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
-  run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),'--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
+  launch=run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),
+             '--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
+  (out/('chrome-'+stage+'-launch.txt')).write_text(launch.stdout+launch.stderr)
   chrome_report(stage)
   time.sleep(3)
   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))

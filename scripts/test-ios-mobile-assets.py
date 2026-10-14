@@ -22,6 +22,20 @@ class MobileAssetsTest(unittest.TestCase):
     def test_mobile_only_bundle_passes(self):
         verify_mobile_ios_assets(self.app)
 
+    def test_explicit_direct_reflection_trial_requires_both_cue_flags_off(self):
+        path = self.bundle / 'rendering-presets.json'
+        presets = json.loads(path.read_text(encoding='utf-8'))
+        presets[0]['iosDirectReflectionTrial'] = True
+        path.write_text(json.dumps(presets), encoding='utf-8')
+        with self.assertRaisesRegex(RuntimeError, 'Invalid restored'):
+            verify_mobile_ios_assets(self.app)
+        for directory in ['hrtf-dense', 'hrtf']:
+            manifest_path = self.bundle / 'hrtf-restored' / directory / 'hrtf-set.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest['processing']['spatialCues'] = False
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+        verify_mobile_ios_assets(self.app)
+
     def test_legacy_assets_rejected(self):
         for name in ['hrtf', 'hrtf-dense', 'hrtf-raw', 'hrtf-dense-raw', 'rooms']:
             with self.subTest(name=name):

@@ -65,6 +65,53 @@ fn taper_residual_tail(p: &mut cinema::RoomProfile, start_ms: f64) {
 mod diagnostic_tail_tests {
     use super::*;
     #[test]
+    fn temporal_window_preserves_direct_first_arrivals_and_mirror_equivariance() {
+        for data in [include_str!("../assets/spatial-cues/height714.json"),include_str!("../assets/spatial-cues/height360.json")] {
+            let before:cinema::RoomProfile=serde_json::from_str(data).unwrap();
+            let mut a=before.clone();let mut b=before.clone();
+            for s in &mut b.speakers {
+                std::mem::swap(&mut s.direct_left,&mut s.direct_right);
+                std::mem::swap(&mut s.room_left,&mut s.room_right);
+                s.azimuth = -s.azimuth;
+            }
+            apply_temporal_reflection_trial(&mut a);
+            apply_temporal_reflection_trial(&mut b);
+            validate_short(&a).unwrap();
+            for ((old,new),mirror) in before.speakers.iter().zip(&a.speakers).zip(&b.speakers) {
+                assert_eq!(old.direct_left,new.direct_left);assert_eq!(old.direct_right,new.direct_right);
+                assert_eq!(new.room_left,mirror.room_right);assert_eq!(new.room_right,mirror.room_left);
+                for (dry,room,original) in [(&new.direct_left,&new.room_left,&old.room_left),(&new.direct_right,&new.room_right,&old.room_right)] {
+                    let end=(old.onset_sample+576).min(room.len());assert_eq!(&room[..end],&original[..end]);
+                    for i in old.onset_sample+1680..room.len() {assert_eq!(room[i],dry[i]);}
+                }
+            }
+        }
+    }
+    #[test]
+    fn rejected_front_reflection_diagnostic_preserves_direct_and_height_rear_kernels() {
+        for data in [include_str!("../assets/spatial-cues/height714.json"),
+                     include_str!("../assets/spatial-cues/height360.json")] {
+            let before:cinema::RoomProfile=serde_json::from_str(data).unwrap();
+            // Rejected diagnostic remains test-only; never called by profile().
+            let mut after=before.clone();
+            for s in &mut after.speakers {
+                if s.elevation.abs()>0.01 || s.azimuth.abs()>60.0 {continue;}
+                for (dry,room) in [(&s.direct_left,&mut s.room_left),(&s.direct_right,&mut s.room_right)] {
+                    for (&d,r) in dry.iter().zip(room) { *r=d+(*r-d)*0.25; }
+                }
+            }
+            validate_short(&after).unwrap();
+            let mut changed=0;
+            for (a,b) in before.speakers.iter().zip(&after.speakers) {
+                assert_eq!(a.direct_left,b.direct_left);assert_eq!(a.direct_right,b.direct_right);
+                if a.elevation.abs()>0.01 || a.azimuth.abs()>60.0 {
+                    assert_eq!(a.room_left,b.room_left);assert_eq!(a.room_right,b.room_right);
+                } else {changed+=1;assert!(residual_direct_ratio(b)<residual_direct_ratio(a));}
+            }
+            assert!(changed>0);
+        }
+    }
+    #[test]
     fn tail_taper_preserves_direct_early_support_and_never_adds_energy() {
         for data in [include_str!("../assets/spatial-cues/height714.json"),
                      include_str!("../assets/spatial-cues/height360.json")] {

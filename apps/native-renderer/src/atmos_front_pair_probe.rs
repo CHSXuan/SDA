@@ -2,6 +2,41 @@
 use super::*;
 
 #[test]
+#[ignore = "explicit user-requested synthetic bed audition; no playback cache"]
+fn export_bed_restore_audition() {
+    use std::io::Write;
+    let out=std::path::PathBuf::from(std::env::var("SDA_BED_AUDITION_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    for old in [true,false] {
+        let mut e=Engine::new(48000,2);
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+        e.set_spatial_enhancement(true).unwrap();e.set_program_codec("eac3".into());
+        // Emulate the old steady-state all-zero bed weights as identical
+        // -2dB source gains. The HRTF routes, master and output trim stay intact.
+        if old {e.spatial_layer.main_restore_db=0.0;}
+        for (index,label) in ["FrontLeft","FrontRight","TopFrontLeft","TopFrontRight"].iter().enumerate() {
+            let id=format!("bed-audition-{index}");
+            let gain=if old {10.0f32.powf(-2.0/20.0)} else {1.0};
+            let mut source=Source{kind:SourceKind::Bed,bed_label:Some((*label).into()),gain,target_gain:gain,availability:1.0,availability_target:1.0,..Default::default()};
+            Engine::set_source_route(&mut source,crate::bed_route(label,&e.vbap),0);
+            let pcm:Vec<_>=(0..432000).map(|n| {
+                let t=n as f32/48000.0;
+                let frequency=if index<2 {220.0} else {660.0};
+                let env=(t*std::f32::consts::PI*2.0).sin().max(0.0);
+                (1..=4).map(|h| (t*frequency*h as f32*std::f32::consts::TAU).sin()/h as f32).sum::<f32>()*0.018*env
+            }).collect();
+            source.samples.write(0,0,&pcm);e.sources.insert(id,source);
+        }
+        e.output_active=true;e.paused=false;
+        let mut pcm=vec![0.0;864000];e.render_into(&mut pcm,2);
+        assert_eq!(e.peak_guard.diagnostic_gain(),1.0);
+        let mut file=std::io::BufWriter::new(std::fs::File::create(out.join(if old {"before.f32"} else {"after.f32"})).unwrap());
+        for value in &pcm[48000..816000] {file.write_all(&value.to_le_bytes()).unwrap();}
+    }
+}
+
+#[test]
 #[ignore = "requires SDA_FRONT_PAIR_DIR; exports synthetic impulse responses only"]
 fn export_atmos_front_pair_transfer() {
     let out = std::path::PathBuf::from(std::env::var("SDA_FRONT_PAIR_DIR").unwrap());
@@ -102,6 +137,30 @@ fn replay_atmos_object_stream() {
     if std::env::var("SDA_ATMOS_REPLAY_ENHANCEMENT").as_deref() == Ok("1") {
         e.set_spatial_enhancement(true).unwrap();
     }
+    // Listening candidate: bound TOTAL pre-guard object lift, rather than
+    // adding master makeup on top. Production preset remains untouched.
+    if std::env::var("SDA_ATMOS_REPLAY_TOTAL_LIFT_CAP").as_deref() == Ok("1") {
+        e.set_master_preamp_db(0.0).unwrap();
+        e.spatial_layer.set(1.5,48000).unwrap();
+        e.spatial_layer.main_restore_db=0.0;
+    }
+    // Listening-only parameter, not a song/ID-specific production rule.
+    if let Ok(value) = std::env::var("SDA_ATMOS_REPLAY_MAIN_TRIM_DB") {
+        let trim: f32 = value.parse().unwrap();
+        assert!(trim.is_finite() && (-6.0..=0.0).contains(&trim));
+        assert_eq!(e.spatial_layer.main_restore_db, 2.0);
+        e.spatial_layer.main_restore_db = 2.0 - trim;
+    }
+    // Diagnostic controls applied AFTER the preset, to compare at one common
+    // presentation gain without adaptive peak protection changing the balance.
+    if let Ok(value) = std::env::var("SDA_ATMOS_REPLAY_AUX_DB") {
+        e.spatial_layer.set(value.parse().unwrap(), 48000).unwrap();
+    }
+    if let Ok(value) = std::env::var("SDA_ATMOS_REPLAY_PRESENTATION_DB") {
+        let offset: f32 = value.parse().unwrap();
+        assert!(offset.is_finite() && (-12.0..=0.0).contains(&offset));
+        e.set_master_preamp_db(e.master_preamp_db() + offset).unwrap();
+    }
     e.output_active = true;
     e.paused = false;
     let fifo = stereo_fifo::StereoFifo::new(4096);
@@ -143,7 +202,14 @@ fn replay_atmos_object_stream() {
             }
             let mut bytes = vec![0u8; n * 4];
             input.read_exact(&mut bytes).unwrap();
-            let pcm = bytes.chunks_exact(4).map(|v| f32::from_le_bytes(v.try_into().unwrap())).collect();
+            let mut pcm: Vec<f32> = bytes.chunks_exact(4).map(|v| f32::from_le_bytes(v.try_into().unwrap())).collect();
+            // Reconstruct the historical accepted C for diagnostics only.
+            // This test module is absent from production; IDs are not roles.
+            if std::env::var("SDA_ATMOS_REPLAY_HISTORICAL_C").as_deref() == Ok("1")
+                && object.is_some_and(|id| (12..=24).contains(&id)) {
+                let gain=10.0f32.powf(6.0/20.0);
+                for value in &mut pcm {*value*=gain;}
+            }
             entries.push((id, pcm));
         }
         let raw_events: Vec<NativeObjectEvent> = serde_json::from_value(f["events"].clone()).unwrap();

@@ -477,10 +477,15 @@ impl ContinuousSource {
                     // Two valid HRTFs can have opposing narrow-band phase.
                     // Keep the click-free handoff short so motion does not
                     // dwell in their destructive output sum for a full block.
+                    let transition_samples=crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES;
+                    #[cfg(test)]
+                    let transition_samples=std::env::var("SDA_DIAGNOSTIC_TRANSITION_SAMPLES")
+                        .ok().map(|value| {let n=value.parse::<usize>().expect("invalid diagnostic transition");assert!((1..=256).contains(&n));n})
+                        .unwrap_or(transition_samples);
                     self.convolver.transition_to_pair(
                         &left,
                         &right,
-                        crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES,
+                        transition_samples,
                     );
                 }
                 self.route = Some((direction, layout, gains, amounts));

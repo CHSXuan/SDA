@@ -75,8 +75,11 @@ extension SdaPlayer {
     guard self.handle != nil, self.systemSpatial == nil else { return }
     // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
-      "y":current.imag.y,"z":current.imag.z,"w":current.real]),
-      filtered is [Double] else { return }
+      "y":current.imag.y,"z":current.imag.z,"w":current.real]) else { return }
+    guard filtered is [Double] else {
+     self.headTrackingDetail = "姿态校准中"
+     return
+    }
     self.diagnosticMotion["filtered"] = filtered
     self.motionNeutralApplied = false
     self.headTrackingDetail = "追踪中"
@@ -119,6 +122,11 @@ extension SdaPlayer {
  }
 
  func setHeadTracking(_ enabled: Bool) {
+  // Repeated delivery is not a recenter request: retain live warm samples.
+  if prefs.bool(forKey:"sda.headTracking") == enabled {
+   if enabled { startHeadTracking() }
+   return
+  }
   prefs.set(enabled,forKey:"sda.headTracking")
   stopHeadTracking()
   if enabled { startHeadTracking() }
@@ -126,6 +134,8 @@ extension SdaPlayer {
 
  func prepareHeadTrackingForPlayback() {
   guard prefs.bool(forKey:"sda.headTracking"), handle != nil else { return }
+  // A new subscription resets the helper, so start it before warm replay.
+  startHeadTracking()
   _ = try? command("trackingProviderReset")
   motionNeutralApplied = false
   // Enter tracked rendering before PCM is queued, not after calibration.
@@ -136,7 +146,6 @@ extension SdaPlayer {
    let q=sample.pose
    _ = try? command("trackingProvider",["x":q[0],"y":q[1],"z":q[2],"w":q[3]])
   }
-  startHeadTracking()
  }
 
  func recenterHeadTracking() {

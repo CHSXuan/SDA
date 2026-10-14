@@ -98,7 +98,7 @@ final class SdaPlayer {
    // Status is queried by the feeder every ~20 ms. Do not serialize the
    // entire object graph here; explicit objects + the native 1 s tick drain
    // consumed events even when JS is suspended in the background.
-   case "status": return system.status()
+   case "status": return outputRouteStatus(system.status())
    case "objects": return try system.objects(decodeReply)
    case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
    case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
@@ -120,9 +120,20 @@ final class SdaPlayer {
    status["alacUpmixActive"] = alacUpmixActive
    status["outputChannels"] = 2
    status["outputLayout"] = layout
-   return status
+   return outputRouteStatus(status)
   }
   return result
+ }
+ // Read-only device output facts, not source-file metadata or an analysis cache.
+ func outputRouteStatus(_ input: [String:Any]) -> [String:Any] {
+  var status = input
+  let session = AVAudioSession.sharedInstance()
+  status["hardwareSampleRate"] = session.sampleRate
+  status["audioSessionCategory"] = session.category.rawValue
+  status["audioSessionMode"] = session.mode.rawValue
+  status["audioOutputPortTypes"] = session.currentRoute.outputs.map { $0.portType.rawValue }
+  status["audioOutputUsesCallProfile"] = session.currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
+  return status
  }
  func assetRoot() throws -> URL {
   let moduleBundle = Bundle(for: SdaPlayer.self)
