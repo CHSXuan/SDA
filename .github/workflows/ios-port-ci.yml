@@ -30,6 +30,11 @@ jobs:
       CI: '1'
       EXPO_NO_TELEMETRY: '1'
       RCT_NEW_ARCH_ENABLED: '1'
+      # Keep React and Expo modules on one linkage path. Precompiled Worklets
+      # can depend on a dynamic React.framework absent from the packaged app.
+      RCT_USE_PREBUILT_RNCORE: '0'
+      RCT_USE_RN_DEP: '0'
+      EXPO_USE_PRECOMPILED_MODULES: '0'
     steps:
       - uses: actions/checkout@v4
         with:
