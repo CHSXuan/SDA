@@ -1041,6 +1041,7 @@ pub struct Engine {
     speaker_lfe_level: f32,
     spatial_layer: spatial_layer::Settings,
     master_preamp: master_preamp::MasterPreamp,
+    atmos_output_gain: master_preamp::MasterPreamp,
     final_output_trim: master_preamp::MasterPreamp,
     output_gain: f32,
     comparison_gain: f32,
@@ -1172,6 +1173,7 @@ impl Engine {
             speaker_lfe_level: 1.0,
             spatial_layer: spatial_layer::Settings::new(sample_rate),
             master_preamp: Default::default(),
+            atmos_output_gain: Default::default(),
             final_output_trim: Default::default(),
             output_gain: 1.0,
             comparison_gain: 1.0,
@@ -1733,6 +1735,7 @@ impl Engine {
     }
 
     fn advance_output_envelopes(&mut self) {
+        self.atmos_output_gain.advance();
         self.master_preamp.advance();
         self.final_output_trim.advance();
         self.comparison_gain += (self.comparison_target - self.comparison_gain) / 960.0;
@@ -1852,6 +1855,7 @@ impl Engine {
         self.pending_object_events.clear();
         self.sources.clear();
         self.program_codec = None;
+        self.atmos_output_gain.set(0.0, self.output_sample_rate, true).unwrap();
         self.refresh_directional_hrtf();
         self.pcm_coverage = pcm_coverage::PcmCoverage::default();
         self.clear_object_activity(origin);
@@ -2283,6 +2287,14 @@ impl Engine {
             return;
         }
         self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
+        // Fixed user-requested presentation compensation, not loudness analysis.
+        // Object-bearing E-AC-3 only: ordinary stereo AC-3/E-AC-3 and 360RA
+        // retain unity. Both ears share the envelope before peak protection.
+        let atmos_db = if self.program_codec.as_deref() == Some("eac3")
+            && self.sources.values().any(|s| s.kind == SourceKind::Object) { 1.5 } else { 0.0 };
+        if self.atmos_output_gain.target_db() != atmos_db {
+            self.atmos_output_gain.set(atmos_db, self.output_sample_rate, false).unwrap();
+        }
         let stereo = self.sources.len() == 2
             && self
                 .sources
@@ -2993,7 +3005,7 @@ impl Engine {
                 equalized[1] * self.output_gain * self.comparison_gain,
             ];
             // One linked master gain after the complete mix, before protection.
-            let master = self.master_preamp.gain();
+            let master = self.master_preamp.gain() * self.atmos_output_gain.gain();
             let guarded = self.peak_guard.process(
                 pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain() * master,
                 pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain() * master,
@@ -4371,6 +4383,21 @@ mod tests {
                 assert!((output[2*i]-expected).abs()<2e-6,"left {frequency}Hz sample{i}");
                 assert!((output[2*i+1]+expected*0.37).abs()<2e-6,"right {frequency}Hz sample{i}");
             }
+        }
+    }
+
+    #[test]
+    fn atmos_presentation_gain_is_object_eac3_only_and_resets() {
+        for (codec,object,expected) in [("eac3",true,1.5),("eac3",false,0.0),
+            ("mpegh",true,0.0),("alac",false,0.0),("ac3",true,0.0)] {
+            let mut e=calibrated_engine();e.paused=false;
+            e.set_program_codec(codec.into());
+            e.sources.insert("route-check".into(),Source {kind:if object {SourceKind::Object} else {SourceKind::Bed},..Default::default()});
+            e.render_into(&mut vec![0.0;4096],2);
+            assert_eq!(e.atmos_output_gain.target_db(),expected);
+            assert_eq!(e.master_preamp_db(),0.0);
+            e.sources.clear();e.render_into(&mut vec![0.0;4096],2);
+            assert_eq!(e.atmos_output_gain.target_db(),0.0);
         }
     }
 
