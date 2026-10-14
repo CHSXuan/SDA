@@ -104,6 +104,7 @@ jobs:
           node scripts/test-ios-session-recovery.mjs
           node scripts/test-ios-native-drawable.mjs
           node scripts/test-ios-head-tracking.mjs
+          node scripts/test-ios-temporal-trial.mjs
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'
         run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts

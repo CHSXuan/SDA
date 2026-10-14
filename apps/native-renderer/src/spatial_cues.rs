@@ -33,6 +33,7 @@ pub fn profile(layout: LayoutId) -> Result<Option<Arc<cinema::RoomProfile>>, Str
         balance_rear_residuals(&mut p);
         shape_residual_spectrum(&mut p, RESIDUAL_HIGH_GAIN);
         taper_residual_tail(&mut p, 20.0);
+        apply_temporal_reflection_trial(&mut p);
         validate_short(&p)?;
         Ok(Arc::new(p))
     }).clone()?;
@@ -523,9 +524,25 @@ mod residual_profile_integration_tests {
             let before = expected.clone();
             shape_residual_spectrum(&mut expected, RESIDUAL_HIGH_GAIN);
             taper_residual_tail(&mut expected, 20.0);
+            apply_temporal_reflection_trial(&mut expected);
             let actual = profile(layout).unwrap().unwrap();
             assert_eq!(format!("{:?}", expected), format!("{:?}", actual));
             assert!(before.speakers.iter().zip(&actual.speakers).any(|(a,b)| a.room_left != b.room_left));
+        }
+    }
+}
+
+// User-requested trial build: identical arrival-time envelope for every route.
+fn apply_temporal_reflection_trial(p: &mut cinema::RoomProfile) {
+    for s in &mut p.speakers {
+        for (dry,room) in [(&s.direct_left,&mut s.room_left),(&s.direct_right,&mut s.room_right)] {
+            for (i,(&d,r)) in dry.iter().zip(room).enumerate() {
+                let ms=i.saturating_sub(s.onset_sample) as f64/48.0;
+                if ms<=12.0 {continue;}
+                let t=((ms-12.0)/23.0).clamp(0.0,1.0);
+                let gain=1.0-t*t*(3.0-2.0*t);
+                *r=(f64::from(d)+(f64::from(*r)-f64::from(d))*gain) as f32;
+            }
         }
     }
 }
