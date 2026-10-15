@@ -21,6 +21,9 @@ export function stageSharedExperiment(destination) {
   const manifest=JSON.parse(readFileSync(join(source,'hrtf-set.json'),'utf8'));
   if(manifest.positions.length!==experiment.directionCount || manifest.iosExperiment!==experiment.id
     || manifest.processing?.spatialCues!==true) throw Error('Experimental manifest mismatch');
+  for (const key of ['historicalInterpolationMode','spatialCueWindow']) {
+    if (experiment[key] !== undefined && manifest.processing?.[key] !== experiment[key]) throw Error(`Approved render policy mismatch: ${key}`);
+  }
   const safe=name=>typeof name==='string' && basename(name)===name && !name.includes('\\') && !name.includes('..');
   const files=new Set(['hrtf-set.json']);
   for(const p of manifest.positions)for(const kind of ['dry','wet']) {

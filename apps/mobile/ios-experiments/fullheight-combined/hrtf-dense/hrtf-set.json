@@ -30,11 +30,13 @@
     "calibrated": true,
     "runtimeEnergyNormalization": false,
     "directPathModel": "KU100 calibrated direct path plus bounded H13-guided clarity experiment",
-    "note": "USER REQUESTED LOCAL EXPERIMENT: fullheight; combined adds symmetric triangle support and common fractional timing calibration. Not accepted production.",
+    "note": "User-approved G80-based audition: aligned pairwise waveform clock without dominant-anchor fallback, extended80 spatial cues. Keeps all542 directions, triangle support and common fractional timing.",
     "historicalInterpolation": true,
     "mobileDirectOnly": false,
     "spatialCues": true,
-    "spatialCueGain": 0.5011872336272722
+    "spatialCueGain": 0.5011872336272722,
+    "historicalInterpolationMode": "aligned-pairwise",
+    "spatialCueWindow": "extended80"
   },
   "positions": [
     {

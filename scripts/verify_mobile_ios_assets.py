@@ -19,6 +19,9 @@ def verify_mobile_ios_assets(app):
         positions = manifest['positions']
         processing = manifest.get('processing', {})
         if experiment and directory == 'hrtf-dense':
+            for key in ('historicalInterpolationMode', 'spatialCueWindow'):
+                if key in experiment and processing.get(key) != experiment[key]:
+                    raise RuntimeError('Approved render policy mismatch: ' + key)
             if manifest.get('iosExperiment') != experiment['id'] or manifest.get('subjectId') != 'ku100' or manifest.get('completeSubject') is not True:
                 raise RuntimeError('Invalid experiment provenance')
             if experiment['id'] == 'horizontal-support-218-v1' and any(p['elevation'] != 0 for p in positions[74:]):

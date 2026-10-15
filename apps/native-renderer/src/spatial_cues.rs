@@ -3,6 +3,14 @@
 use crate::{cinema, vbap::LayoutId};
 use std::sync::{Arc, OnceLock};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CueWindow {
+    #[default]
+    Short35,
+    Extended80,
+}
+
 pub fn settings() -> cinema::Settings {
     cinema::Settings {
         enabled: true,
@@ -18,11 +26,19 @@ pub fn settings() -> cinema::Settings {
 }
 
 pub fn profile(layout: LayoutId) -> Result<Option<Arc<cinema::RoomProfile>>, String> {
+    profile_with_window(layout, CueWindow::Short35)
+}
+
+pub(crate) fn profile_with_window(layout: LayoutId, window: CueWindow) -> Result<Option<Arc<cinema::RoomProfile>>, String> {
     static DOLBY: OnceLock<Result<Arc<cinema::RoomProfile>, String>> = OnceLock::new();
     static SONY: OnceLock<Result<Arc<cinema::RoomProfile>, String>> = OnceLock::new();
-    let (cache, data) = match layout {
-        LayoutId::Dolby7_1_4 => (&DOLBY, include_str!("../assets/spatial-cues/height714.json")),
-        LayoutId::Sony360Ra13 => (&SONY, include_str!("../assets/spatial-cues/height360.json")),
+    static DOLBY_LONG: OnceLock<Result<Arc<cinema::RoomProfile>, String>> = OnceLock::new();
+    static SONY_LONG: OnceLock<Result<Arc<cinema::RoomProfile>, String>> = OnceLock::new();
+    let (cache, data) = match (layout, window) {
+        (LayoutId::Dolby7_1_4, CueWindow::Short35) => (&DOLBY, include_str!("../assets/spatial-cues/height714.json")),
+        (LayoutId::Sony360Ra13, CueWindow::Short35) => (&SONY, include_str!("../assets/spatial-cues/height360.json")),
+        (LayoutId::Dolby7_1_4, CueWindow::Extended80) => (&DOLBY_LONG, include_str!("../assets/spatial-cues/height714.json")),
+        (LayoutId::Sony360Ra13, CueWindow::Extended80) => (&SONY_LONG, include_str!("../assets/spatial-cues/height360.json")),
         // Never apply a 7.1.4 response to a layout containing different speakers.
         _ => return Ok(None),
     };
@@ -33,7 +49,10 @@ pub fn profile(layout: LayoutId) -> Result<Option<Arc<cinema::RoomProfile>>, Str
         balance_rear_residuals(&mut p);
         shape_residual_spectrum(&mut p, RESIDUAL_HIGH_GAIN);
         taper_residual_tail(&mut p, 20.0);
-        apply_temporal_reflection_trial(&mut p);
+        match window {
+            CueWindow::Short35 => apply_temporal_reflection_trial(&mut p),
+            CueWindow::Extended80 => apply_temporal_reflection_window(&mut p, 80.0),
+        }
         validate_short(&p)?;
         Ok(Arc::new(p))
     }).clone()?;
@@ -581,14 +600,112 @@ mod residual_profile_integration_tests {
 
 // User-requested trial build: identical arrival-time envelope for every route.
 fn apply_temporal_reflection_trial(p: &mut cinema::RoomProfile) {
+    let end_ms = 35.0;
+    // Offline isolation only. Release always retains the accepted envelope.
+    #[cfg(test)]
+    let end_ms = std::env::var("SDA_DIAGNOSTIC_CUE_END_MS").ok().map(|v| {
+        let value: f64 = v.parse().expect("invalid diagnostic cue window");
+        assert!((35.0..=80.0).contains(&value)); value
+    }).unwrap_or(end_ms);
+    apply_temporal_reflection_window(p, end_ms);
+}
+
+fn apply_temporal_reflection_window(p: &mut cinema::RoomProfile, end_ms: f64) {
     for s in &mut p.speakers {
+        // Diagnostic isolation: retain the accepted long frontal cue while
+        // restoring the short tail progressively towards rear/upper speakers.
+        // Release has no environment-controlled behavior.
+        #[cfg(test)]
+        let end_ms = if std::env::var("SDA_DIAGNOSTIC_REAR_TOP_SHORT").as_deref()==Ok("1") {
+            directional_cue_end_ms(f64::from(s.azimuth), f64::from(s.elevation), end_ms)
+        } else { end_ms };
         for (dry,room) in [(&s.direct_left,&mut s.room_left),(&s.direct_right,&mut s.room_right)] {
             for (i,(&d,r)) in dry.iter().zip(room).enumerate() {
                 let ms=i.saturating_sub(s.onset_sample) as f64/48.0;
                 if ms<=12.0 {continue;}
-                let t=((ms-12.0)/23.0).clamp(0.0,1.0);
+                let t=((ms-12.0)/(end_ms-12.0)).clamp(0.0,1.0);
                 let gain=1.0-t*t*(3.0-2.0*t);
                 *r=(f64::from(d)+(f64::from(*r)-f64::from(d))*gain) as f32;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn directional_cue_end_ms(azimuth: f64, elevation: f64, front_end: f64) -> f64 {
+    let rear=((azimuth.abs()-60.0)/60.0).clamp(0.0,1.0);
+    let upper=(elevation/45.0).clamp(0.0,1.0);
+    let t=rear.max(upper); let t=t*t*(3.0-2.0*t);
+    front_end+(35.0-front_end)*t
+}
+
+#[cfg(test)]
+mod reflection_window_isolation_tests {
+    use super::*;
+    #[test]
+    fn manifest_cue_window_caches_are_independent_and_direct_is_unchanged() {
+        for layout in [LayoutId::Dolby7_1_4, LayoutId::Sony360Ra13] {
+            let long=profile_with_window(layout,CueWindow::Extended80).unwrap().unwrap();
+            let short=profile_with_window(layout,CueWindow::Short35).unwrap().unwrap();
+            assert!(!Arc::ptr_eq(&long,&short));
+            assert!(Arc::ptr_eq(&long,&profile_with_window(layout,CueWindow::Extended80).unwrap().unwrap()));
+            assert!(Arc::ptr_eq(&short,&profile(layout).unwrap().unwrap()));
+            let mut restored_energy=0.0f64;
+            for (a,b) in short.speakers.iter().zip(&long.speakers) {
+                assert_eq!(a.direct_left,b.direct_left);assert_eq!(a.direct_right,b.direct_right);
+                assert_eq!(a.onset_sample,b.onset_sample);
+                for (dry,old,new) in [(&a.direct_left,&a.room_left,&b.room_left),(&a.direct_right,&a.room_right,&b.room_right)] {
+                    let first=(a.onset_sample+576).min(dry.len());
+                    assert_eq!(&old[..first],&new[..first]);
+                    for i in a.onset_sample+1680..dry.len() {
+                        assert_eq!(old[i],dry[i]);
+                        restored_energy+=f64::from(new[i]-dry[i]).powi(2);
+                    }
+                }
+            }
+            assert!(restored_energy>0.0);
+        }
+        assert!(profile_with_window(LayoutId::Stereo2_0,CueWindow::Extended80).unwrap().is_none());
+    }
+    #[test]
+    fn directional_window_preserves_front_and_bounds_rear_upper_transition() {
+        for az in [-60.0,-30.0,0.0,30.0,60.0] {
+            assert_eq!(directional_cue_end_ms(az,0.0,80.0),80.0);
+        }
+        for az in [-180.0,-140.0,140.0,180.0] {
+            assert_eq!(directional_cue_end_ms(az,0.0,80.0),35.0);
+        }
+        for el in [45.0,60.0,90.0] { assert_eq!(directional_cue_end_ms(0.0,el,80.0),35.0); }
+        for az in 0..180 {
+            let x=directional_cue_end_ms(az as f64,20.0,80.0);
+            assert!((35.0..=80.0).contains(&x));
+            assert_eq!(x,directional_cue_end_ms(-(az as f64),20.0,80.0));
+        }
+    }
+    #[test]
+    fn longer_windows_keep_direct_and_first12ms_and_do_not_exceed_reference() {
+        for data in [include_str!("../assets/spatial-cues/height714.json"),include_str!("../assets/spatial-cues/height360.json")] {
+            let mut reference: cinema::RoomProfile=serde_json::from_str(data).unwrap();
+            balance_rear_residuals(&mut reference);
+            shape_residual_spectrum(&mut reference,RESIDUAL_HIGH_GAIN);
+            taper_residual_tail(&mut reference,20.0);
+            for end_ms in [35.0,50.0,80.0] {
+                let mut candidate=reference.clone();
+                apply_temporal_reflection_window(&mut candidate,end_ms);
+                candidate.validate().unwrap(); validate_short(&candidate).unwrap();
+                let mut changed=0;
+                for (a,b) in reference.speakers.iter().zip(&candidate.speakers) {
+                    assert_eq!(a.direct_left,b.direct_left);assert_eq!(a.direct_right,b.direct_right);
+                    for (dry,original,current) in [(&a.direct_left,&a.room_left,&b.room_left),(&a.direct_right,&a.room_right,&b.room_right)] {
+                        for (i,((&d,&x),&y)) in dry.iter().zip(original).zip(current).enumerate() {
+                            if i<=a.onset_sample+576 {assert_eq!(x,y);}
+                            assert!((y-d).abs()<=(x-d).abs()+1e-6);
+                            if i>=a.onset_sample+(end_ms*48.0) as usize {assert_eq!(y,d);}
+                            if x!=y {changed+=1;}
+                        }
+                    }
+                }
+                assert!(changed>0);
             }
         }
     }

@@ -24,7 +24,7 @@ class MobileAssetsTest(unittest.TestCase):
 
     def test_horizontal_experiment_passes_and_rejects_corruption(self):
         source = ROOT / 'apps/mobile/ios-experiments'
-        active = json.loads((source / 'active.json').read_text())
+        active = json.loads((source / 'active.json').read_text(encoding='utf-8'))
         directory = 'fullheight-combined' if active['directionCount'] == 542 else 'horizontal-support'
         shutil.copytree(source / directory / 'hrtf-dense',
                         self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
@@ -51,7 +51,7 @@ class MobileAssetsTest(unittest.TestCase):
 
     def test_combined_triangle_sidecar_corruption_rejected(self):
         source = ROOT / 'apps/mobile/ios-experiments'
-        active = json.loads((source / 'active.json').read_text())
+        active = json.loads((source / 'active.json').read_text(encoding='utf-8'))
         if active['directionCount'] != 542:
             self.skipTest('Combined experiment not selected')
         shutil.copytree(source / 'fullheight-combined/hrtf-dense',
@@ -61,6 +61,24 @@ class MobileAssetsTest(unittest.TestCase):
         (self.bundle / 'hrtf-restored/hrtf-dense/triangle-grid.json').write_bytes(b'{}')
         with self.assertRaisesRegex(RuntimeError, 'triangle support corrupt'):
             verify_mobile_ios_assets(self.app)
+
+    def test_approved_render_policy_cannot_silently_revert(self):
+        source = ROOT / 'apps/mobile/ios-experiments'
+        active = json.loads((source / 'active.json').read_text(encoding='utf-8'))
+        shutil.copytree(source / active['assetSubdirectory'] / 'hrtf-dense',
+                        self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
+        shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
+        path = self.bundle / 'hrtf-restored/hrtf-dense/hrtf-set.json'
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        verify_mobile_ios_assets(self.app)
+        for key in ('historicalInterpolationMode', 'spatialCueWindow'):
+            with self.subTest(key=key):
+                changed = json.loads(json.dumps(manifest))
+                changed['processing'].pop(key, None)
+                path.write_text(json.dumps(changed), encoding='utf-8')
+                with self.assertRaisesRegex(RuntimeError, 'Approved render policy mismatch'):
+                    verify_mobile_ios_assets(self.app)
+        path.write_text(json.dumps(manifest), encoding='utf-8')
 
     def test_legacy_assets_rejected(self):
         for name in ['hrtf', 'hrtf-dense', 'hrtf-raw', 'hrtf-dense-raw', 'rooms']:

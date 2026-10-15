@@ -652,6 +652,8 @@ struct SpectralBank {
     responses: Vec<[Vec<(f64, f64)>; 2]>, // (power, unwrapped phase), positive bins
     endpoints: Vec<[[f64; 2]; 2]>,        // real DC/Nyquist, per ear
     inverse: std::sync::Arc<dyn rustfft::Fft<f64>>,
+    #[cfg(test)]
+    forward: std::sync::Arc<dyn rustfft::Fft<f64>>,
     length: usize,
     output_length: usize,
 }
@@ -703,9 +705,63 @@ impl SpectralBank {
             responses,
             endpoints,
             inverse,
+            #[cfg(test)]
+            forward,
             length,
             output_length,
         }
+    }
+
+    #[cfg(test)]
+    fn blend_power_phase(
+        &self, a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>), mix: f32,
+    ) -> (Vec<f32>, Vec<f32>) {
+        self.blend_response(a,b,mix,false)
+    }
+
+    #[cfg(test)]
+    fn blend_response(
+        &self, a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>), mix: f32, preserve_phase: bool,
+    ) -> (Vec<f32>, Vec<f32>) {
+        use rustfft::num_complex::Complex;
+        if mix == 0.0 || a == b { return a.clone(); }
+        if mix == 1.0 && !preserve_phase { return b.clone(); }
+        assert!((0.0..=1.0).contains(&mix));
+        let t = f64::from(mix);
+        let output: [Vec<f32>; 2] = std::array::from_fn(|ear| {
+            let (first, second) = if ear == 0 { (&a.0, &b.0) } else { (&a.1, &b.1) };
+            assert!(first.len() <= self.output_length && second.len() <= self.output_length);
+            let mut x = vec![Complex::new(0.0, 0.0); self.length];
+            let mut y = x.clone();
+            for (bin, &v) in x.iter_mut().zip(first) { bin.re = f64::from(v); }
+            for (bin, &v) in y.iter_mut().zip(second) { bin.re = f64::from(v); }
+            self.forward.process(&mut x);
+            self.forward.process(&mut y);
+            // Unwrap the phase DIFFERENCE on the endpoints' common clock.
+            // Power interpolation cannot create a per-bin cancellation notch.
+            // Finite FIR truncation and spatial phase continuity need separate tests.
+            let mut previous = (y[0] * x[0].conj()).arg();
+            let mut difference = previous;
+            for k in 1..self.length / 2 {
+                let wrapped = (y[k] * x[k].conj()).arg();
+                difference += (wrapped - previous + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                previous = wrapped;
+                let magnitude = ((1.0-t)*x[k].norm_sqr()+t*y[k].norm_sqr()).sqrt();
+                x[k] = Complex::from_polar(magnitude, x[k].arg()+if preserve_phase {0.0} else {t*difference});
+                x[self.length-k] = x[k].conj();
+            }
+            for k in [0, self.length/2] {
+                let value = if preserve_phase {
+                    ((1.0-t)*x[k].norm_sqr()+t*y[k].norm_sqr()).sqrt()*x[k].re.signum()
+                } else {x[k].re*(1.0-t)+y[k].re*t};
+                x[k] = Complex::new(value, 0.0);
+            }
+            self.inverse.process(&mut x);
+            x[..self.output_length].iter().map(|v| (v.re/self.length as f64) as f32).collect()
+        });
+        let [left, right] = output;
+        (left, right)
     }
 
     fn interpolate(&self, irs: &[StereoIr], weights: &[(usize, f64)]) -> (Vec<f32>, Vec<f32>) {
@@ -765,11 +821,61 @@ impl SpectralBank {
     }
 }
 
+#[cfg(test)]
+struct DiagnosticTriangle {
+    indices: [usize;3],
+    inverse: [[f64;3];3],
+}
+
+#[cfg(test)]
+fn load_diagnostic_triangles(irs: &[StereoIr]) -> Option<std::sync::Arc<Vec<DiagnosticTriangle>>> {
+    let path=std::env::var("SDA_DIAGNOSTIC_TRIANGLE_GRID").ok()?;
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(path).expect("triangle sidecar missing")).unwrap();
+    let points=data["positions"].as_array().unwrap();
+    // Matching standard fallback retains its original interpolation. Never
+    // apply one geometry's indices to another response bank.
+    if points.len()!=irs.len() { return None; }
+    for (p,ir) in points.iter().zip(irs) {
+        assert!((p["azimuth"].as_f64().unwrap()-ir.azimuth).abs()<1e-9);
+        assert!((p["elevation"].as_f64().unwrap()-ir.elevation).abs()<1e-9);
+    }
+    let faces=data["faces"].as_array().unwrap().iter().map(|f| {
+        let indices: [usize;3]=std::array::from_fn(|i| f["indices"][i].as_u64().unwrap() as usize);
+        assert!(indices.iter().all(|i| *i<irs.len()));
+        let inverse:[[f64;3];3]=std::array::from_fn(|i| std::array::from_fn(|j| f["inverse"][i][j].as_f64().unwrap()));
+        assert!(inverse.iter().flatten().all(|v| v.is_finite()));
+        // Validate supplied matrix against actual directions, not sidecar alone.
+        let dirs=indices.map(|i| unit(irs[i].azimuth,irs[i].elevation));
+        for i in 0..3 { for j in 0..3 {
+            let value:f64=inverse[i].iter().zip(dirs[j]).map(|(a,b)| a*b).sum();
+            assert!((value-if i==j {1.0}else{0.0}).abs()<1e-7);
+        }}
+        DiagnosticTriangle {indices,inverse}
+    }).collect();
+    Some(std::sync::Arc::new(faces))
+}
+
 pub struct Grid {
     directions: Vec<[f64; 3]>,
     triangle_support: Option<std::sync::Arc<crate::triangle_support::TriangleSupport>>,
+    #[cfg(test)]
+    diagnostic_triangles: Option<std::sync::Arc<Vec<DiagnosticTriangle>>>,
     historical_arrivals: Option<Vec<[usize; 2]>>,
     spectral_bank: Option<std::sync::Arc<SpectralBank>>,
+    // Asset-scoped experimental pairwise clock; legacy packs keep false.
+    consistent_waveform: bool,
+    #[cfg(test)]
+    rear_spectral_control: Option<std::sync::Arc<SpectralBank>>,
+    #[cfg(test)]
+    rear_hemisphere_control: bool,
+    #[cfg(test)]
+    historical_correlation_clock: bool,
+    #[cfg(test)]
+    historical_forced_anchor: Option<usize>,
+    #[cfg(test)]
+    historical_disable_guard: bool,
+    #[cfg(test)]
+    historical_pairwise_alignment: bool,
     lower_support: Option<std::sync::Arc<LowerSupport>>,
     /// KU100's measured pinna notches can cancel a moving tone when adjacent
     /// directions are added in the time domain. Complete subject sets keep
@@ -800,8 +906,23 @@ impl Clone for Grid {
         Self {
             directions: self.directions.clone(),
             triangle_support: self.triangle_support.clone(),
+            #[cfg(test)]
+            diagnostic_triangles: self.diagnostic_triangles.clone(),
             historical_arrivals: self.historical_arrivals.clone(),
             spectral_bank: self.spectral_bank.clone(),
+            consistent_waveform: self.consistent_waveform,
+            #[cfg(test)]
+            rear_spectral_control: self.rear_spectral_control.clone(),
+            #[cfg(test)]
+            rear_hemisphere_control: self.rear_hemisphere_control,
+            #[cfg(test)]
+            historical_correlation_clock: self.historical_correlation_clock,
+            #[cfg(test)]
+            historical_forced_anchor: self.historical_forced_anchor,
+            #[cfg(test)]
+            historical_disable_guard: self.historical_disable_guard,
+            #[cfg(test)]
+            historical_pairwise_alignment: self.historical_pairwise_alignment,
             lower_support: self.lower_support.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -892,10 +1013,6 @@ fn waveform_alignment_lag(a: &[f32], b: &[f32], max_lag: isize) -> f64 {
 }
 
 impl Grid {
-    pub(crate) fn with_triangle_support(mut self, path:&std::path::Path, irs:&[StereoIr]) -> Result<Self,String> {
-        self.triangle_support=Some(crate::triangle_support::TriangleSupport::load(path,irs)?);
-        Ok(self)
-    }
     /// Shift `neighbour` onto `anchor`'s timeline.
     ///
     /// The cache is canonical: it stores only the lower-index anchor to
@@ -995,18 +1112,37 @@ fn add_shifted(output: &mut [f32], input: &[f32], offset: isize, gain: f32) {
     }
 }
 impl Grid {
+    pub(crate) fn with_triangle_support(mut self, path:&std::path::Path, irs:&[StereoIr]) -> Result<Self,String> {
+        self.triangle_support=Some(crate::triangle_support::TriangleSupport::load(path,irs)?);
+        Ok(self)
+    }
     pub fn new(irs: &[StereoIr]) -> Self {
         Self::new_with_notch_guard(irs, false)
     }
     pub fn new_with_notch_guard(irs: &[StereoIr], ku100_notch_guard: bool) -> Self {
         Self {
             triangle_support: None,
+            #[cfg(test)]
+            diagnostic_triangles: load_diagnostic_triangles(irs),
             directions: irs
                 .iter()
                 .map(|ir| unit(ir.azimuth, ir.elevation))
                 .collect(),
             historical_arrivals: None,
             spectral_bank: None,
+            consistent_waveform: false,
+            #[cfg(test)]
+            rear_spectral_control: None,
+            #[cfg(test)]
+            rear_hemisphere_control: false,
+            #[cfg(test)]
+            historical_correlation_clock: false,
+            #[cfg(test)]
+            historical_forced_anchor: None,
+            #[cfg(test)]
+            historical_disable_guard: false,
+            #[cfg(test)]
+            historical_pairwise_alignment: false,
             lower_support: None,
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1022,6 +1158,12 @@ impl Grid {
         if enabled {
             if self.ku100_notch_guard {
                 self.spectral_bank = Some(std::sync::Arc::new(SpectralBank::new(irs)));
+                // Isolate interpolation choice without replacing measurements
+                // or directions. Release never reads this diagnostic flag.
+                #[cfg(test)]
+                if std::env::var("SDA_DIAGNOSTIC_WAVEFORM_INTERPOLATION").as_deref() == Ok("1") {
+                    self.spectral_bank = None;
+                }
             }
             self.historical_arrivals = Some(irs.iter().map(|ir| {
                 let n = ir.dry.len() / 2;
@@ -1039,6 +1181,37 @@ impl Grid {
             }
         }
         self
+    }
+
+    /// Explicit asset-scoped audition policy. Unlike the test-only environment
+    /// switch, the same manifest selects the same interpolator in release hosts.
+    /// Does not quantize direction, alter measurements or disable object DSP.
+    pub(crate) fn with_aligned_waveform_interpolation(mut self) -> Self {
+        #[cfg(test)]
+        if std::env::var("SDA_DIAGNOSTIC_PAIRWISE_CLOCK").as_deref()==Ok("1") {
+            self.historical_correlation_clock=true;
+            self.historical_pairwise_alignment=true;
+            // Attribution control only: distinguish dominant-anchor guard
+            // switches from the pairwise clock itself on real head trajectories.
+            self.historical_disable_guard = std::env::var("SDA_DIAGNOSTIC_PAIRWISE_SKIP_GUARD").as_deref()==Ok("1");
+        }
+        #[cfg(test)]
+        if std::env::var("SDA_DIAGNOSTIC_REAR_SPECTRAL").as_deref()==Ok("1") {
+            self.rear_spectral_control = self.spectral_bank.clone();
+            self.rear_hemisphere_control = std::env::var("SDA_DIAGNOSTIC_REAR_HEMISPHERE").as_deref()==Ok("1");
+        }
+        self.spectral_bank = None;
+        self
+    }
+
+    /// Explicit opt-in: aligned pairwise interpolation on one consistent clock.
+    /// The dominant-anchor fallback is omitted because switching its reference
+    /// introduces discontinuities even after the pairwise clock correction.
+    /// Existing manifests retain their previous interpolation policy.
+    pub(crate) fn with_consistent_waveform_interpolation(self) -> Self {
+        let mut result=self.with_aligned_waveform_interpolation();
+        result.consistent_waveform=true;
+        result
     }
 
     #[cfg(test)]
@@ -1148,7 +1321,41 @@ impl Grid {
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
         let u = unit(az, el);
         if let Some(support) = &self.triangle_support {
+            // Validated sphere; retain a finite legacy fallback if numerical
+            // roundoff ever leaves a direction outside all faces.
             if let Some(weights) = support.weights(u) { return weights; }
+        }
+        #[cfg(test)]
+        if let Some(faces) = &self.diagnostic_triangles {
+            if let Some((index, _)) = self.directions.iter().enumerate().find(|(_, p)| {
+                p.iter().zip(u).map(|(a,b)| (a-b).powi(2)).sum::<f64>() < 1e-18
+            }) { return vec![(index, 1.0)]; }
+            let solve = |target:[f64;3]| {
+              for face in faces.iter() {
+                let gains: [f64;3] = std::array::from_fn(|i| face.inverse[i].iter().zip(target).map(|(a,b)| a*b).sum());
+                if gains.iter().all(|g| *g >= -1e-9) {
+                    let sum: f64 = gains.iter().map(|g| g.max(0.0)).sum();
+                    assert!(sum > 0.0);
+                    return face.indices.iter().zip(gains).filter_map(|(&i,g)| {
+                        let w=g.max(0.0)/sum; (w>1e-12).then_some((i,w))
+                    }).collect::<Vec<_>>();
+                }
+              }
+              panic!("diagnostic triangle grid does not enclose direction {az}/{el}");
+            };
+            let primary=solve(u);
+            if std::env::var("SDA_DIAGNOSTIC_TRIANGLE_SYMMETRIC").as_deref()!=Ok("1") { return primary; }
+            let reflected=solve([-u[0],u[1],u[2]]);
+            let mut combined=vec![0.0;self.directions.len()];
+            for (index,weight) in primary {combined[index]+=weight*0.5;}
+            for (index,weight) in reflected {
+                let p=self.directions[index];
+                let mirror=self.directions.iter().position(|q| {
+                    (q[0]+p[0]).abs()<1e-9 && (q[1]-p[1]).abs()<1e-9 && (q[2]-p[2]).abs()<1e-9
+                }).expect("diagnostic sphere has no mirror position");
+                combined[mirror]+=weight*0.5;
+            }
+            return combined.into_iter().enumerate().filter(|(_,w)| *w>1e-12).collect();
         }
         let mut distances: Vec<_> = self
             .directions
@@ -1200,6 +1407,29 @@ impl Grid {
         weights
     }
     fn interpolate_historical(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
+        #[cfg(test)]
+        if let Some(bank) = &self.rear_spectral_control {
+            let mix=if self.rear_hemisphere_control { rear_hemisphere_weight(az,el) } else { rear_interpolation_weight(az,el) };
+            if mix>0.0 {
+                let weights=self.weights(az,el);
+                let spectral=if std::env::var("SDA_DIAGNOSTIC_REAR_PAIRWISE").as_deref()==Ok("1") {
+                    self.interpolate_historical_weighted_policy(irs,weights.clone(),true,true)
+                } else { bank.interpolate(irs,&weights) };
+                let preserve_phase=std::env::var("SDA_DIAGNOSTIC_REAR_KEEP_PHASE").as_deref()==Ok("1");
+                if mix==1.0 && !preserve_phase { return spectral; }
+                let mut waveform=self.interpolate_historical_weighted(irs,weights);
+                if preserve_phase { return bank.blend_response(&waveform,&spectral,mix,true); }
+                if std::env::var("SDA_DIAGNOSTIC_REAR_POLAR").as_deref()==Ok("1") {
+                    return bank.blend_power_phase(&waveform,&spectral,mix);
+                }
+                // Diagnostic only: exposes transition cancellation risk; never
+                // normalize/boost to conceal it or claim production readiness.
+                for (a,b) in waveform.0.iter_mut().chain(&mut waveform.1).zip(spectral.0.iter().chain(&spectral.1)) {
+                    *a=*a*(1.0-mix)+*b*mix;
+                }
+                return waveform;
+            }
+        }
         if el < -30.0 {
             if let Some(lower) = &self.lower_support {
                 return lower.grid.interpolate_historical_weighted(&lower.irs, lower.weights(self, az, el));
@@ -1208,6 +1438,13 @@ impl Grid {
         self.interpolate_historical_weighted(irs, self.weights(az, el))
     }
     fn interpolate_historical_weighted(&self, irs: &[StereoIr], weights: Vec<(usize, f64)>) -> (Vec<f32>, Vec<f32>) {
+        #[cfg(not(test))]
+        let (correlation_clock,pairwise)=(self.consistent_waveform,self.consistent_waveform);
+        #[cfg(test)]
+        let (correlation_clock,pairwise)=(self.consistent_waveform || self.historical_correlation_clock,self.consistent_waveform || self.historical_pairwise_alignment);
+        self.interpolate_historical_weighted_policy(irs,weights,correlation_clock,pairwise)
+    }
+    fn interpolate_historical_weighted_policy(&self, irs: &[StereoIr], weights: Vec<(usize, f64)>, correlation_clock: bool, pairwise: bool) -> (Vec<f32>, Vec<f32>) {
         if let Some(bank) = &self.spectral_bank {
             return bank.interpolate(irs, &weights);
         }
@@ -1229,6 +1466,8 @@ impl Grid {
         } else {
             weights.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |x| x.0)
         };
+        #[cfg(test)]
+        let dominant = self.historical_forced_anchor.unwrap_or(dominant);
         for ear in 0..2 {
             // Keep the fine waveform locked to the dominant measurement, but
             // move that temporary timeline to the weighted measured arrival.
@@ -1243,6 +1482,9 @@ impl Grid {
                 .sum();
             let timeline_shift =
                 (target_arrival - arrivals[dominant][ear] as f64).clamp(-16.0, 16.0);
+            let timeline_shift = if correlation_clock {
+                -weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,dominant,i)[ear]).sum::<f64>()
+            } else { timeline_shift };
             for &(index, weight) in &weights {
                 let len = irs[index].dry.len() / 2;
                 let alignment_shift = if index == dominant {
@@ -1251,6 +1493,9 @@ impl Grid {
                     self.neighbour_shift(irs, dominant, index)[ear]
                 };
                 let shift = alignment_shift + timeline_shift;
+                let shift = if pairwise {
+                    weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,i,index)[ear]).sum::<f64>()
+                } else { shift };
                 let input = &irs[index].dry[ear * len..(ear + 1) * len];
                 add_fractional_shifted(&mut output[ear], input, shift, weight as f32);
             }
@@ -1287,6 +1532,9 @@ impl Grid {
                 } else {
                     (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
                 };
+                let floor = if self.consistent_waveform { 0.0 } else { floor };
+                #[cfg(test)]
+                let floor = if self.historical_disable_guard { 0.0 } else { floor };
                 if floor > 0.0 {
                     let mut anchor = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
                     for ear in 0..2 {
@@ -1296,6 +1544,12 @@ impl Grid {
                             .sum();
                         let shift = (target_arrival - arrivals[dominant][ear] as f64)
                             .clamp(-16.0, 16.0);
+                        let shift = if correlation_clock {
+                            -weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,dominant,i)[ear]).sum::<f64>()
+                        } else { shift };
+                        let shift = if pairwise {
+                            weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,i,dominant)[ear]).sum::<f64>()
+                        } else { shift };
                         let len = irs[dominant].dry.len() / 2;
                         let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
                         add_fractional_shifted(&mut anchor[ear], input, shift, 1.0);
@@ -1508,6 +1762,24 @@ impl Grid {
         }
         pair
     }
+}
+
+#[cfg(test)]
+fn rear_interpolation_weight(az: f64, el: f64) -> f32 {
+    let rear=((az.abs()-60.0)/60.0).clamp(0.0,1.0);
+    let upper=((el-20.0)/25.0).clamp(0.0,1.0);
+    let t=rear.max(upper); (t*t*(3.0-2.0*t)) as f32
+}
+
+/// Offline isolation of rear timing: all front-facing and polar responses stay
+/// on G. Using the unit vector's rearward component also removes azimuth
+/// dependence at the poles; elevation alone never activates this control.
+#[cfg(test)]
+fn rear_hemisphere_weight(az: f64, el: f64) -> f32 {
+    if el.abs() >= 90.0 { return 0.0; }
+    let rearward = -az.to_radians().cos() * el.to_radians().cos();
+    let t = (rearward / 0.5).clamp(0.0,1.0);
+    (t*t*(3.0-2.0*t)) as f32
 }
 
 #[cfg(test)]
@@ -2612,14 +2884,17 @@ mod tests {
 
     #[test]
     fn moving_bundled_cues_match_both_mixers_and_layouts() {
+        for keep_cues in [false, true] {
         for layout in [crate::vbap::LayoutId::Dolby7_1_4, crate::vbap::LayoutId::Sony360Ra13] {
             let build = |fast: bool| {
-                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+                let path = std::env::var_os("SDA_COORDINATE_PARITY_MANIFEST").map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json"));
                 let mut e = crate::Engine::new(48000, 2);
                 e.set_layout(layout).unwrap();
                 e.directional_hrtf = true;
                 e.disable_fast_objects = !fast;
+                e.diagnostic_continuous_cues = keep_cues;
                 e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
                 assert!(e.active_hrtf_set.as_ref().unwrap().spatial_cues_active());
                 e.direct_mix = 1.0;
@@ -2635,6 +2910,7 @@ mod tests {
                     };
                     if id != 0 {
                         source.spatial_events.insert(0, crate::SpatialEvent {
+                            coordinate_space: None,
                             position: [0.8, -0.4, 0.1], extent: [0.0;3],
                             zone_exclusion: Default::default(), horizontal_only: false,
                             diffuse: 0.0, spread: 0.0, distance_m: None, ramp: 32768,
@@ -2670,8 +2946,10 @@ mod tests {
             assert!(fast.fast_mix_controls.capacity() >= crate::convolution::DEFAULT_PARTITION);
             assert_eq!(general.fast_object_blocks, 0);
             assert_eq!(fast.sources["obj:0"].motion_cues.gain(), 1.0);
-            assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5);
+            if keep_cues { assert_eq!(fast.sources["obj:1"].motion_cues.gain(), 1.0); }
+            else { assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5); }
             assert!(fast.sources.values().all(|s| s.continuous_active && s.continuous.is_some()));
+        }
         }
     }
     #[test]
@@ -2959,6 +3237,7 @@ mod tests {
                 source.spatial_events.insert(
                     0,
                     crate::SpatialEvent {
+                        coordinate_space: None,
                         position: [(angle + 0.6).cos() * 0.7, (angle + 0.6).sin() * 0.7, 0.5],
                         extent: [0.0; 3],
                         zone_exclusion: Default::default(),
@@ -3070,6 +3349,7 @@ mod tests {
                     source.spatial_events.insert(
                         31,
                         crate::SpatialEvent {
+                            coordinate_space: None,
                             position: [-0.3, 0.2, 0.7],
                             extent: [0.2, 0.1, 0.1],
                             zone_exclusion: if id == 1 {
@@ -3728,6 +4008,211 @@ mod restored_historical_interpolation_regressions {
 #[cfg(test)]
 mod spectral_interpolation_audit {
     use super::*;
+    #[test]
+    fn historical_pairwise_clock_preserves_anchors_and_removes_reference_choice() {
+        let irs:Vec<StereoIr>=[(30.0,1.0,0.8),(60.0,0.8,1.0),(90.0,0.9,0.9)].into_iter().map(|(az,a,b)| {
+            let mut dry=vec![0.0;1024];
+            for ear in 0..2 {dry[ear*512+128]=a;dry[ear*512+130]=b;}
+            StereoIr{azimuth:az,elevation:0.0,dry,wet:vec![]}
+        }).collect();
+        let mut grid=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true)
+            .with_aligned_waveform_interpolation();
+        grid.historical_pairwise_alignment=true;
+        for (i,ir) in irs.iter().enumerate() {
+            let p=grid.interpolate_historical_weighted(&irs,vec![(i,1.0)]);
+            assert_eq!(&p.0[..512],&ir.dry[..512]);assert_eq!(&p.1[..512],&ir.dry[512..]);
+        }
+        let mut a=grid.clone();a.historical_forced_anchor=Some(0);
+        let mut b=grid.clone();b.historical_forced_anchor=Some(1);
+        let weights=vec![(0,0.4),(1,0.4),(2,0.2)];
+        assert_eq!(a.interpolate_historical_weighted(&irs,weights.clone()),b.interpolate_historical_weighted(&irs,weights));
+        let p=grid.interpolate_historical_weighted(&irs,vec![(0,0.40001),(1,0.39999),(2,0.2)]);
+        let q=grid.interpolate_historical_weighted(&irs,vec![(0,0.39999),(1,0.40001),(2,0.2)]);
+        assert!(relative_error(&p,&q)<0.0001);
+    }
+    #[test]
+    fn historical_correlation_clock_removes_peak_lobe_pivot_jump() {
+        let irs:Vec<StereoIr>=[(30.0,1.0,0.8),(60.0,0.8,1.0)].into_iter().map(|(az,a,b)| {
+            let mut dry=vec![0.0;1024];
+            for ear in 0..2 {dry[ear*512+128]=a;dry[ear*512+130]=b;}
+            StereoIr{azimuth:az,elevation:0.0,dry,wet:vec![]}
+        }).collect();
+        let legacy=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true)
+            .with_aligned_waveform_interpolation();
+        let mut corrected=legacy.clone();corrected.historical_correlation_clock=true;
+        let below=vec![(0,0.50001),(1,0.49999)];let above=vec![(0,0.49999),(1,0.50001)];
+        let old_a=legacy.interpolate_historical_weighted(&irs,below.clone());
+        let old_b=legacy.interpolate_historical_weighted(&irs,above.clone());
+        let new_a=corrected.interpolate_historical_weighted(&irs,below);
+        let new_b=corrected.interpolate_historical_weighted(&irs,above);
+        assert!(relative_error(&old_a,&old_b)>0.5,"fixture must expose old peak-pivot mismatch");
+        assert!(relative_error(&new_a,&new_b)<0.0001);
+        let mut forced_a=corrected.clone();forced_a.historical_forced_anchor=Some(0);
+        let mut forced_b=corrected.clone();forced_b.historical_forced_anchor=Some(1);
+        let a=forced_a.interpolate_historical_weighted(&irs,vec![(0,0.5),(1,0.5)]);
+        let b=forced_b.interpolate_historical_weighted(&irs,vec![(0,0.5),(1,0.5)]);
+        assert!(relative_error(&a,&b)<1e-6);
+    }
+    #[test]
+    fn rear_magnitude_control_preserves_phase_while_interpolating_power() {
+        let bank=SpectralBank::new(&restored_irs());
+        let mut a=(vec![0.0;bank.output_length],vec![0.0;bank.output_length]);let mut b=a.clone();
+        a.0[128]=0.7;a.1[136]=0.4;b.0[139]=0.5;b.1[147]=0.8;
+        assert_eq!(bank.blend_response(&a,&b,0.0,true),a);
+        for t in [0.25,0.5,0.75,1.0] {
+            let c=bank.blend_response(&a,&b,t,true);
+            for (ear,impulse) in [&c.0,&c.1].into_iter().enumerate() {
+                let peak=impulse.iter().enumerate().max_by(|a,b|a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+                assert_eq!(peak,128+8*ear);
+                let (aa,bb)=if ear==0 {(0.7f64,0.5f64)} else {(0.4,0.8)};
+                let expected=((1.0-f64::from(t))*aa*aa+f64::from(t)*bb*bb).sqrt();
+                for (i,&v) in impulse.iter().enumerate() {
+                    let target=if i==peak {expected} else {0.0};
+                    assert!((f64::from(v)-target).abs()<1e-6);
+                }
+            }
+        }
+    }
+    #[test]
+    fn rear_polar_blend_preserves_endpoints_delay_and_binaural_symmetry() {
+        let irs = restored_irs();
+        let bank = SpectralBank::new(&irs);
+        let mut a = (vec![0.0; bank.output_length], vec![0.0; bank.output_length]);
+        let mut b = a.clone();
+        a.0[128] = 0.7; a.1[136] = 0.4;
+        b.0[136] = 0.5; b.1[144] = 0.8;
+        assert_eq!(bank.blend_power_phase(&a,&b,0.0),a);
+        assert_eq!(bank.blend_power_phase(&a,&b,1.0),b);
+        assert_eq!(bank.blend_power_phase(&a,&a,0.37),a);
+        for t in [0.125,0.25,0.5,0.75,0.875] {
+            let c = bank.blend_power_phase(&a,&b,t);
+            let mirrored = bank.blend_power_phase(&(a.1.clone(),a.0.clone()),&(b.1.clone(),b.0.clone()),t);
+            assert_eq!(c.0,mirrored.1); assert_eq!(c.1,mirrored.0);
+            for (ear, impulse) in [&c.0,&c.1].into_iter().enumerate() {
+                let peak = impulse.iter().enumerate().max_by(|a,b|a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+                assert_eq!(peak,128+8*ear+(8.0*t) as usize);
+                let (aa,bb) = if ear==0 {(0.7f64,0.5f64)} else {(0.4,0.8)};
+                let expected = (1.0-f64::from(t))*aa*aa+f64::from(t)*bb*bb;
+                for freq in [375.0,750.0,1500.0,3000.0,6000.0] {
+                    let ratio = power(impulse,freq)/expected;
+                    assert!((ratio-1.0).abs()<0.01,"frequency {freq}, ratio {ratio}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "actual542 rear transition filter audit; requires SDA_REAR_POLAR_AUDIT_OUT"]
+    fn export_rear_polar_transition_filters() {
+        use std::io::Write;
+        let keep_phase=std::env::var("SDA_REAR_AUDIT_KEEP_PHASE").as_deref()==Ok("1");
+        let correlation_clock=std::env::var("SDA_REAR_AUDIT_CORRELATION_CLOCK").as_deref()==Ok("1");
+        let disable_guard=std::env::var("SDA_REAR_AUDIT_SKIP_GUARD").as_deref()==Ok("1");
+        let pairwise=std::env::var("SDA_REAR_AUDIT_PAIRWISE_ALIGNMENT").as_deref()==Ok("1");
+        let local_pairwise=std::env::var("SDA_REAR_AUDIT_LOCAL_PAIRWISE").as_deref()==Ok("1");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/ios-experiments/fullheight-combined/hrtf-dense");
+        let manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(source.join("hrtf-set.json")).unwrap()).unwrap();
+        let irs:Vec<StereoIr>=manifest["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes=std::fs::read(source.join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr{azimuth:p["azimuth"].as_f64().unwrap(),elevation:p["elevation"].as_f64().unwrap(),
+                dry:bytes.chunks_exact(4).map(|b|f32::from_le_bytes(b.try_into().unwrap())).collect(),wet:vec![]}
+        }).collect();
+        assert_eq!(irs.len(),542);
+        let spectral=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true)
+            .with_triangle_support(&source.join("triangle-grid.json"),&irs).unwrap();
+        let mut waveform=spectral.clone().with_aligned_waveform_interpolation();
+        waveform.historical_correlation_clock=correlation_clock;
+        waveform.historical_disable_guard=disable_guard;
+        waveform.historical_pairwise_alignment=pairwise;
+        let bank=spectral.spectral_bank.as_ref().unwrap();
+        let output=std::path::PathBuf::from(std::env::var("SDA_REAR_POLAR_AUDIT_OUT").unwrap());
+        std::fs::create_dir_all(&output).unwrap();
+        let mut file=std::io::BufWriter::new(std::fs::File::create(output.join("kernels.f32")).unwrap());
+        let mut points=Vec::new();
+        for i in 0..=240 { for side in [-1.0,1.0] {points.push((side*(60.0+i as f64/4.0),0.0));} }
+        for az in [-135.0,-45.0,0.0,45.0,135.0] { for i in 0..=100 {points.push((az,20.0+i as f64/4.0));} }
+        if std::env::var("SDA_REAR_AUDIT_FRONT_CHECK").as_deref()==Ok("1") {
+            points.clear();
+            for el in [0.0,10.0,20.0] {
+                for az in [-60.0,-45.0,-30.0,-15.0,0.0,15.0,30.0,45.0,60.0] {points.push((az,el));}
+            }
+        }
+        let mut rows=Vec::new();
+        for (az,el) in points {
+            let a=waveform.interpolate(&irs,az,el);
+            let b=if local_pairwise {waveform.interpolate_historical_weighted_policy(&irs,waveform.weights(az,el),true,true)} else {spectral.interpolate(&irs,az,el)};
+            let t=rear_interpolation_weight(az,el);
+            let c=bank.blend_response(&a,&b,t,keep_phase);
+            for pair in [&a,&b,&c] { for sample in pair.0.iter().chain(&pair.1) {
+                assert!(sample.is_finite());file.write_all(&sample.to_le_bytes()).unwrap();
+            }}
+            let eval=|az,el| {
+                let a=waveform.interpolate(&irs,az,el);
+                let b=if local_pairwise {waveform.interpolate_historical_weighted_policy(&irs,waveform.weights(az,el),true,true)} else {spectral.interpolate(&irs,az,el)};
+                let c=bank.blend_response(&a,&b,rear_interpolation_weight(az,el),keep_phase);(a,b,c)
+            };
+            let minus=eval(az-0.0001,el);let plus=eval(az+0.0001,el);
+            rows.push(serde_json::json!({"azimuth":az,"elevation":el,"mix":t,"tapCount":c.0.len(),
+                "historicalCorrelationClock":correlation_clock,
+                "diagnosticGuardDisabled":disable_guard,
+                "diagnosticPairwiseAlignment":pairwise,
+                "diagnosticLocalPairwise":local_pairwise,
+                "minusDominant":dominant_measurement(&waveform.weights(az-0.0001,el),&irs),
+                "plusDominant":dominant_measurement(&waveform.weights(az+0.0001,el),&irs),
+                "waveformAzimuthMicroJump":relative_error(&minus.0,&plus.0),
+                "spectralAzimuthMicroJump":relative_error(&minus.1,&plus.1),
+                "polarAzimuthMicroJump":relative_error(&minus.2,&plus.2)}));
+        }
+        file.flush().unwrap();
+        std::fs::write(output.join("rows.json"),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+        println!("Exported {} actual542 directions with waveform, spectral and polar kernels",rows.len());
+    }
+    #[test]
+    fn rear_control_keeps_front_exact_and_rear_matches_spectral() {
+        let irs=restored_irs();
+        let original=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true);
+        let waveform=original.clone().with_aligned_waveform_interpolation();
+        let mut candidate=waveform.clone();
+        candidate.rear_spectral_control=original.spectral_bank.clone();
+        for az in [-60.0,-45.0,-30.0,0.0,30.0,45.0,60.0] {
+            assert_eq!(candidate.interpolate(&irs,az,0.0),waveform.interpolate(&irs,az,0.0));
+        }
+        for (az,el) in [(-135.0,0.0),(135.0,0.0),(180.0,0.0),(0.0,60.0),(45.0,45.0)] {
+            assert_eq!(candidate.interpolate(&irs,az,el),original.interpolate(&irs,az,el));
+        }
+        for az in -180..180 {
+            let p=candidate.interpolate(&irs,az as f64,30.0);
+            assert!(p.0.iter().chain(&p.1).all(|v|v.is_finite()));
+            assert_eq!(rear_interpolation_weight(az as f64,30.0),rear_interpolation_weight(-(az as f64),30.0));
+        }
+    }
+    #[test]
+    fn rear_hemisphere_control_preserves_elevated_front_and_poles() {
+        let irs=restored_irs();
+        let original=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true);
+        let waveform=original.clone().with_aligned_waveform_interpolation();
+        let mut candidate=waveform.clone();
+        candidate.rear_spectral_control=original.spectral_bank.clone();
+        candidate.rear_hemisphere_control=true;
+        assert!(candidate.clone().rear_hemisphere_control);
+        for az in (-90..=90).step_by(15) {
+            for el in (-90..=90).step_by(15) {
+                assert_eq!(rear_hemisphere_weight(az as f64,el as f64),0.0);
+                assert_eq!(candidate.interpolate(&irs,az as f64,el as f64),waveform.interpolate(&irs,az as f64,el as f64));
+            }
+        }
+        for az in -180..=180 {
+            assert_eq!(rear_hemisphere_weight(az as f64,90.0),0.0);
+            assert_eq!(rear_hemisphere_weight(az as f64,-90.0),0.0);
+            assert_eq!(rear_hemisphere_weight(az as f64,35.0),rear_hemisphere_weight(-(az as f64),35.0));
+            assert!(rear_hemisphere_weight(az as f64,89.999)<1e-8);
+        }
+        for az in [-180.0,-135.0,135.0,180.0] {
+            assert_eq!(rear_hemisphere_weight(az,0.0),1.0);
+            assert_eq!(candidate.interpolate(&irs,az,0.0),original.interpolate(&irs,az,0.0));
+        }
+    }
     fn restored_irs() -> Vec<StereoIr> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
         let m: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("hrtf-set.json")).unwrap()).unwrap();
@@ -3957,7 +4442,16 @@ mod spectral_interpolation_audit {
         use std::io::Write;
         let requests: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(
             std::env::var("SDA_FILTER_AUDIT_REQUESTS").unwrap()).unwrap()).unwrap();
-        let irs = restored_irs();
+        let irs = if let Ok(path) = std::env::var("SDA_FILTER_AUDIT_MANIFEST") {
+            let path = std::path::PathBuf::from(path);
+            let root = path.parent().unwrap();
+            let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            manifest["positions"].as_array().unwrap().iter().map(|p| {
+                let bytes = std::fs::read(root.join(p["dry"].as_str().unwrap())).unwrap();
+                StereoIr { azimuth:p["azimuth"].as_f64().unwrap(), elevation:p["elevation"].as_f64().unwrap(),
+                    dry:bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(), wet:vec![] }
+            }).collect()
+        } else { restored_irs() };
         let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
         let root = std::path::PathBuf::from(std::env::var("SDA_FILTER_AUDIT_OUT").unwrap());
         std::fs::create_dir_all(&root).unwrap();
@@ -3967,7 +4461,7 @@ mod spectral_interpolation_audit {
             let az = request["az"].as_f64().unwrap(); let el = request["el"].as_f64().unwrap();
             let (left,right) = grid.interpolate(&irs,az,el);
             for x in left.iter().chain(&right) { file.write_all(&x.to_le_bytes()).unwrap(); }
-            let (support,weights) = if el < -30.0 {
+            let (support,weights) = if el < -30.0 && grid.lower_support.is_some() {
                 let lower = grid.lower_support.as_ref().unwrap();
                 (lower.irs.len(),lower.weights(&grid,az,el))
             } else { (irs.len(),grid.weights(az,el)) };
