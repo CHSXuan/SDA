@@ -2884,7 +2884,6 @@ mod tests {
 
     #[test]
     fn moving_bundled_cues_match_both_mixers_and_layouts() {
-        for keep_cues in [false, true] {
         for layout in [crate::vbap::LayoutId::Dolby7_1_4, crate::vbap::LayoutId::Sony360Ra13] {
             let build = |fast: bool| {
                 let path = std::env::var_os("SDA_COORDINATE_PARITY_MANIFEST").map(std::path::PathBuf::from)
@@ -2894,7 +2893,6 @@ mod tests {
                 e.set_layout(layout).unwrap();
                 e.directional_hrtf = true;
                 e.disable_fast_objects = !fast;
-                e.diagnostic_continuous_cues = keep_cues;
                 e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
                 assert!(e.active_hrtf_set.as_ref().unwrap().spatial_cues_active());
                 e.direct_mix = 1.0;
@@ -2910,7 +2908,6 @@ mod tests {
                     };
                     if id != 0 {
                         source.spatial_events.insert(0, crate::SpatialEvent {
-                            coordinate_space: None,
                             position: [0.8, -0.4, 0.1], extent: [0.0;3],
                             zone_exclusion: Default::default(), horizontal_only: false,
                             diffuse: 0.0, spread: 0.0, distance_m: None, ramp: 32768,
@@ -2946,10 +2943,8 @@ mod tests {
             assert!(fast.fast_mix_controls.capacity() >= crate::convolution::DEFAULT_PARTITION);
             assert_eq!(general.fast_object_blocks, 0);
             assert_eq!(fast.sources["obj:0"].motion_cues.gain(), 1.0);
-            if keep_cues { assert_eq!(fast.sources["obj:1"].motion_cues.gain(), 1.0); }
-            else { assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5); }
+            assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5);
             assert!(fast.sources.values().all(|s| s.continuous_active && s.continuous.is_some()));
-        }
         }
     }
     #[test]
@@ -3237,7 +3232,6 @@ mod tests {
                 source.spatial_events.insert(
                     0,
                     crate::SpatialEvent {
-                        coordinate_space: None,
                         position: [(angle + 0.6).cos() * 0.7, (angle + 0.6).sin() * 0.7, 0.5],
                         extent: [0.0; 3],
                         zone_exclusion: Default::default(),
@@ -3349,7 +3343,6 @@ mod tests {
                     source.spatial_events.insert(
                         31,
                         crate::SpatialEvent {
-                            coordinate_space: None,
                             position: [-0.3, 0.2, 0.7],
                             extent: [0.2, 0.1, 0.1],
                             zone_exclusion: if id == 1 {

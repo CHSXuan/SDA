@@ -332,15 +332,28 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
         let dry = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let companion_path = path.parent().unwrap().parent().unwrap().join("hrtf/hrtf-set.json");
+        let companion = crate::hrtf::NativeHrtfSet::load_calibrated(&companion_path).unwrap();
         for layout in [LayoutId::Dolby7_1_4, LayoutId::Sony360Ra13] {
             let mut enabled = dry.clone();
             enabled.configure_spatial_cues(layout).unwrap();
             assert!(enabled.spatial_cues_active());
+            // Keep the selected directional lookup and layout identical. A
+            // nonconfigured set uses legacy nearest-speaker fallback, whereas
+            // missing bundled anchors now use the requested actual direction.
+            let reference = enabled.diagnostic_without_spatial_residual();
             let p = profile(layout).unwrap().unwrap();
             for speaker in &p.speakers {
                 let az = speaker.azimuth as f64;
                 let el = speaker.elevation as f64;
-                let baseline = dry.mixed_speaker(&speaker.name, &p.layout, az, el, 0.0).unwrap();
+                let baseline = reference.mixed_speaker(&speaker.name, &p.layout, az, el, 0.04).unwrap();
+                if dry.has_exact_measurement(az,el) || companion.has_exact_measurement(az,el) {
+                    let original = dry.mixed_speaker(&speaker.name,&p.layout,az,el,0.0).unwrap();
+                    for (a,b) in [(&original.0,&baseline.0),(&original.1,&baseline.1)] {
+                        assert_eq!(&b[..a.len()],a,"{} stored anchor changed",speaker.name);
+                        assert!(b[a.len()..].iter().all(|v| *v==0.0));
+                    }
+                }
                 let direct = enabled.mixed_speaker(&speaker.name, &p.layout, az, el, 0.0).unwrap();
                 let full = enabled.mixed_speaker(&speaker.name, &p.layout, az, el, 0.04).unwrap();
                 for (a,b) in [(&baseline.0,&direct.0),(&baseline.1,&direct.1)] {

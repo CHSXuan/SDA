@@ -54,3 +54,25 @@ No further auditory research or parameter exploration is part of this packaging
 request. Earlier research limitations remain documented; user approval here is
 for device packaging of this particular audition, not proof of every research
 objective or every track.
+
+## October16 CI repair
+
+Run38763614905 failed compiling native renderer tests on SDK26: directional tests
+referenced diagnostic_continuous_cues and SpatialEvent.coordinate_space from the
+research checkout, absent in the packaging branch. SDK27 had no installed SDK
+and skipped compilation; its green job was not a completed app package.
+
+Remove unavailable research-only test fields/continuous-cue branch while retaining
+the shipping moving-cue attenuation checks, both mixers and both layouts. Running
+the CI regression groups also exposed a stale historical61 cue test: it compared
+unconfigured nearest-speaker mapping with configured actual-direction lookup.
+The corrected control removes residual excitation while retaining identical layout
+and direction lookup, and separately requires exact equality for stored primary
+and companion anchors. Array equality and nonzero residual checks remain strict.
+
+Both changes are inside cfg(test) modules. No production DSP, processing policy,
+response asset, or playback preference changed. Test-harness compilation succeeded;
+137 distinct native tests from18 CI-related filter groups passed on Windows,
+plus moving-source parity using the actual staged aligned-pairwise/extended80/542
+manifest. Existing ignored diagnostics remain ignored; Apple-specific execution
+still belongs to the newly dispatched macOS CI run.
