@@ -3,6 +3,15 @@ const fs = require('node:fs');
 const {transformSync} = require('esbuild');
 const app = fs.readFileSync('apps/mobile/App.tsx', 'utf8').replace(/\r\n/g,'\n');
 const method = app.match(/  private setSpatialCueDb = async \(db: number\) => \{[\s\S]*?\n  };/)[0];
+// Android restores saved cues only after nativeStart has queued the selected
+// speaker layout. This supplements the device playback regression: previously
+// 360RA-13 + any non-default cue setting failed before the first PCM frame.
+const bridge = fs.readFileSync('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt', 'utf8');
+const init = bridge.slice(bridge.indexOf('private fun ensureEngine('), bridge.indexOf('private fun stopFeedThread('));
+const startAt = init.indexOf('SdaEngine.nativeStart(ptr)');
+const restoreAt = init.indexOf('restoreSpatialCues(ptr, layout)');
+assert.ok(startAt >= 0 && restoreAt > startAt);
+assert.match(init.slice(restoreAt), /catch \(error: Throwable\) \{[\s\S]*?nativeClose\(ptr\); handle = 0L; throw error/);
 const mod = {exports:{}};
 const Platform = {OS:'ios'};
 new Function('module','exports','Platform',transformSync(`export class Harness {${method}}`,{loader:'ts',format:'cjs'}).code)(mod,mod.exports,Platform);

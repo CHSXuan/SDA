@@ -12,7 +12,7 @@ for (const selected of [0, 1, 2]) {
         const state = androidChromeState({ selectedUri, playing, paused, busy: false }, selected);
         assert.equal(state.hasTrack, !!selectedUri);
         assert.equal(state.showMini, !!selectedUri && selected !== 0);
-        assert.equal(state.height, state.showMini ? 146 : 86);
+        assert.equal(state.height, state.showMini ? 128 : 74);
         assert.equal(state.playing, playing && !paused);
       }
     }
@@ -53,11 +53,28 @@ assert.match(chrome, /onClickLabel = if \(playing\) "暂停" else "播放"\) \{ 
 const liquidButton = fs.readFileSync('apps/mobile/modules/sda-core/android/src/main/java/com/kyant/backdrop/catalog/components/LiquidButton.kt', 'utf8');
 assert.match(liquidButton, /interactiveHighlight.gestureModifier/);
 assert.match(liquidButton, /maxDragScale/);
-assert.match(chrome, /height = 52.dp, contentPadding = 12.dp,[\s\S]*?modifier = Modifier.fillMaxWidth\(\)/);
+assert.match(chrome, /height = 48.dp, contentPadding = 10.dp,[\s\S]*?modifier = Modifier.fillMaxWidth\(\)/);
 assert.doesNotMatch(chrome, /backdrop = miniBackdrop, framed = false/);
 assert.doesNotMatch(chrome, /playbackBackdrop|LiquidButton\(onClick = \{ onPlayback/);
 assert.match(liquidButton, /if \(framed\).*Highlight.Default else null/);
 const liquid = fs.readFileSync('apps/mobile/modules/sda-core/android/src/main/java/com/kyant/backdrop/catalog/components/LiquidBottomTabs.kt', 'utf8');
+// Both glass sampling origins and the reserved RN footer must match the
+// compact native stack; otherwise controls clip or refract the wrong pixels.
+const footer = chrome.slice(chrome.indexOf("val miniBackdrop ="));
+const top = Number(footer.match(/padding\(top = (\d+)\.dp/)[1]);
+const bottom = Number(footer.match(/padding\(top = \d+\.dp, bottom = (\d+)\.dp/)[1]);
+const gap = Number(footer.match(/verticalArrangement = Arrangement.spacedBy\((\d+)\.dp\)/)[1]);
+const mini = Number(footer.match(/height = (\d+)\.dp, contentPadding/)[1]);
+const tab = Number(chrome.match(/accentColor = accent, height = (\d+)\.dp/)[1]);
+const withTrack = { selectedUri: 'test', playing: true, paused: false, busy: false };
+assert.equal(androidChromeState(withTrack, 1).height, top + mini + gap + tab + bottom);
+assert.equal(androidChromeState(withTrack, 0).height, top + tab + bottom);
+const origins = chrome.match(/if \(showMini\) (\d+)\.dp else (\d+)\.dp/);
+assert.equal(Number(origins[1]), top + mini + gap);
+assert.equal(Number(origins[2]), top);
+assert.ok(mini >= 48 && tab - 8 >= 48, 'keep 48dp touch targets');
+assert.equal((liquid.match(/\.height\(height - 8\.dp\)/g) || []).length, 2);
+assert.match(liquid, /\.height\(height\)/);
 assert.match(liquid, /rememberCombinedBackdrop\(backdrop, tabsBackdrop\)/);
 assert.match(liquid, /chromaticAberration = true/);
 assert.match(liquid, /dampedDragAnimation.scaleX/);

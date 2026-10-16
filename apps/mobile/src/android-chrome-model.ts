@@ -5,7 +5,7 @@ export function androidChromeState(player: {
 }, selected: number) {
   const hasTrack = !!player.selectedUri;
   const showMini = hasTrack && selected !== 0;
-  return { hasTrack, showMini, playing: player.playing && !player.paused, height: showMini ? 146 : 86 };
+  return { hasTrack, showMini, playing: player.playing && !player.paused, height: showMini ? 128 : 74 };
 }
 
 export function isAndroidTabIndex(index: number): boolean {

@@ -249,13 +249,13 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             }
             return
         }
-        val miniBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { 10.dp.toPx() })
-        val tabsBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (showMini) 70.dp else 10.dp).toPx() })
-        Column(Modifier.fillMaxSize().padding(top = 10.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val miniBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { 8.dp.toPx() })
+        val tabsBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (showMini) 62.dp else 8.dp).toPx() })
+        Column(Modifier.fillMaxSize().padding(top = 8.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (showMini) {
-                LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = miniBackdrop, label = "展开正在播放", height = 52.dp, contentPadding = 12.dp,
+                LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = miniBackdrop, label = "展开正在播放", height = 48.dp, contentPadding = 10.dp,
                     modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
-                        Box(Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(ink.copy(alpha = .06f)), contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(ink.copy(alpha = .06f)), contentAlignment = Alignment.Center) {
                             if (cover != null) Image(cover!!, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             else Icon(Icons.Default.MusicNote, null, Modifier.size(25.dp), tint = muted)
                         }
@@ -263,25 +263,25 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                             Text(title, color = ink, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(artist, color = muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                    Box(Modifier.padding(start = 4.dp, end = 8.dp).size(44.dp)
+                    Box(Modifier.padding(start = 4.dp, end = 6.dp).size(48.dp)
                         .clickable(interactionSource = null, indication = null, enabled = !busy, role = Role.Button,
                             onClickLabel = if (playing) "暂停" else "播放") { onPlayback(emptyMap<String, Any>()) },
                         contentAlignment = Alignment.Center) {
-                        Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "暂停" else "播放", Modifier.size(28.dp), tint = accent.copy(alpha = if (busy) .35f else 1f))
+                        Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "暂停" else "播放", Modifier.size(24.dp), tint = accent.copy(alpha = if (busy) .35f else 1f))
                     }
                 }
             }
             val selection = remember { { selected } }
             LiquidBottomTabs(selectedTabIndex = selection, onTabSelected = { index ->
                 if (index != selected) onSelect(mapOf("index" to index))
-            }, backdrop = tabsBackdrop, tabsCount = 3, dark = dark, accentColor = accent,
-                modifier = Modifier.fillMaxWidth().height(64.dp).drawWithContent { backgroundRevision; drawContent() }) {
+            }, backdrop = tabsBackdrop, tabsCount = 3, dark = dark, accentColor = accent, height = 56.dp,
+                modifier = Modifier.fillMaxWidth().height(56.dp).drawWithContent { backgroundRevision; drawContent() }) {
                     val labels = listOf("播放", "资料库", "空间")
                     val icons = listOf(Icons.Default.PlayCircle, Icons.Default.LibraryMusic, Icons.Default.ViewInAr)
                     val currentSelected = selected
                     labels.forEachIndexed { index, label ->
                         LiquidBottomTab(onClick = { if (currentSelected != index) onSelect(mapOf("index" to index)) }, modifier = Modifier.semantics { this.selected = currentSelected == index }) {
-                            Icon(icons[index], null, Modifier.size(25.dp), tint = if (selected == index) accent else ink)
+                            Icon(icons[index], null, Modifier.size(23.dp), tint = if (selected == index) accent else ink)
                             Text(label, fontSize = 10.sp, fontWeight = if (selected == index) FontWeight.SemiBold else FontWeight.Medium, color = if (selected == index) accent else ink, maxLines = 1)
                         }
                     }

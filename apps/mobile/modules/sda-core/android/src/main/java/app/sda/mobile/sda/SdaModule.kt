@@ -121,7 +121,6 @@ class SdaModule : Module() {
         try {
             val nearError = SdaEngine.nativeSetNearField(ptr, false, 1f)
             check(nearError.isEmpty()) { nearError }
-            restoreSpatialCues(ptr, layout)
         } catch (error: Throwable) {
             SdaEngine.nativeClose(ptr)
             handle = 0L
@@ -138,6 +137,11 @@ class SdaModule : Module() {
             throw RuntimeException("nativeStart failed: $detail ($result)")
         }
         try {
+            // nativeStart queues the requested layout on the render worker.
+            // Cue application is acknowledged on that same queue, so a saved
+            // 360RA-13 update cannot race the renderer's initial 7.1.4 layout.
+            // No source PCM is submitted until ensureEngine returns.
+            restoreSpatialCues(ptr, layout)
             val error = SdaEngine.nativeSetSpatialEnhancement(ptr, settings.getBoolean("spatialEnhancementEnabled"))
             check(error.isEmpty()) { error }
         } catch (error: Throwable) {
