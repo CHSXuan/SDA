@@ -119,6 +119,11 @@ jobs:
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'
         run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts
+      - name: Verify JOC input conditioning and reconstruction reset
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          python3 scripts/test-joc-input-conditioning.py --release 2>&1 | tee ios-artifacts/joc-conditioning-tests.log
       - name: Host callback tests
         if: steps.sdk.outputs.available == 'true'
         run: |
