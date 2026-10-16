@@ -1,12 +1,21 @@
+buildscript {
+  repositories { mavenCentral() }
+  dependencies {
+    classpath("org.jetbrains.kotlin.plugin.compose:org.jetbrains.kotlin.plugin.compose.gradle.plugin:${kotlinVersion}")
+  }
+}
+
 apply plugin: 'com.android.library'
 
 group = 'app.sda.mobile'
 version = '0.1.0'
 
 apply plugin: 'expo-module-gradle-plugin'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 android {
   namespace "app.sda.mobile.sda"
+  buildFeatures { compose true }
   defaultConfig {
     versionCode 1
     versionName '0.1.0'
@@ -39,7 +48,20 @@ def syncSdaRooms = tasks.register('syncSdaRooms') {
 tasks.named('preBuild').configure { dependsOn(syncSdaRooms) }
 
 dependencies {
+  // Android-only Backdrop avoids the newer KMP dependency graph for this prototype.
+  implementation 'io.github.kyant0:backdrop:1.0.6'
+  implementation 'io.github.kyant0:shapes:1.2.0'
+  implementation 'androidx.compose.foundation:foundation:1.10.6'
+  implementation 'androidx.compose.material:material:1.10.6'
+  implementation 'androidx.compose.material:material-icons-extended:1.7.8'
   implementation 'androidx.media3:media3-exoplayer:1.5.1'
   androidTestImplementation 'androidx.test:runner:1.6.2'
   androidTestImplementation 'junit:junit:4.13.2'
 }
+
+def syncBackdropLicense = tasks.register('syncBackdropLicense', Sync) {
+  from(projectDir) { include 'BACKDROP-LICENSE.txt', 'BACKDROP-NOTICE.md' }
+  into("$buildDir/generated/backdropLicenses/licenses/backdrop")
+}
+android.sourceSets.main.assets.srcDir("$buildDir/generated/backdropLicenses")
+tasks.named('preBuild').configure { dependsOn(syncBackdropLicense) }

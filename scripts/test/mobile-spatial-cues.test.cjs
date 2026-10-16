@@ -14,7 +14,8 @@ function harness(wait,fail=false) {
  return {p,calls};
 }
 (async()=>{
- for(const paused of [false,true])for(const db of [0,-3,-6,-9,-12]){
+ for(const platform of ['ios','android'])for(const paused of [false,true])for(const db of [0,-3,-6,-9,-12]){
+  Platform.OS=platform;
   const {p,calls}=harness();p.state.paused=paused;
   const before={...p.state};await p.setSpatialCueDb(db);
   for(const k of ['playing','paused','positionMs','fifoFrames','volume','busy'])assert.equal(p.state[k],before[k]);
@@ -24,6 +25,6 @@ function harness(wait,fail=false) {
  const task=p.setSpatialCueDb(-3);await p.setSpatialCueDb(0);assert.deepEqual(calls,[-3]);resolve();await task;
  const failed=harness(null,true);await failed.p.setSpatialCueDb(0);assert.equal(failed.p.state.spatialCueDb,-6);assert.equal(failed.p.state.spatialCueBusy,false);assert.equal(failed.p.state.error,'failed');
  for(const db of [NaN,1,-5,-99]){const h=harness();await h.p.setSpatialCueDb(db);assert.deepEqual(h.calls,[])}
- Platform.OS='android';const h=harness();await h.p.setSpatialCueDb(0);assert.deepEqual(h.calls,[]);
- console.log('Live spatial cue settings: transport preserved, values, failure, concurrency and iOS guard passed.');
+ Platform.OS='android';const h=harness();await h.p.setSpatialCueDb(0);assert.deepEqual(h.calls,[0]);
+ console.log('Live spatial cue settings: transport preserved, values, failure, concurrency and both native platforms passed.');
 })().catch(e=>{console.error(e);process.exitCode=1});

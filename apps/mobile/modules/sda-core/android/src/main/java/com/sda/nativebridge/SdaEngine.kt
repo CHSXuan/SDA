@@ -13,6 +13,9 @@ object SdaEngine {
     external fun nativeStart(ptr: Long): Int
     external fun nativeHrtfLoaded(ptr: Long): Boolean
     external fun nativeOpenMpegh(ptr: Long): Int
+    external fun nativeIsAlac(path: String): Boolean
+    external fun nativeOpenAlac(ptr: Long, path: String): Int
+    external fun nativePullAlac(ptr: Long, maxFrames: Int, upmix: Boolean): Int
     external fun nativeOpenMp3(ptr: Long, path: String): Int
     external fun nativePullMp3(ptr: Long, maxFrames: Int): Int
     external fun nativeLastError(): String
@@ -31,5 +34,9 @@ object SdaEngine {
     external fun nativeSetObjectRendering(ptr: Long, direct: Boolean, directional: Boolean): Int
     external fun nativeSetRoom(ptr: Long, path: String): String
     external fun nativeSetNearField(ptr: Long, enabled: Boolean, metresPerUnit: Float): String
+    external fun nativeSetSpatialEnhancement(ptr: Long, enabled: Boolean): String
+    external fun nativePrepareSpatialCues(path: String, layout: String, gain: Float): Long
+    external fun nativeApplySpatialCues(ptr: Long, prepared: Long): String
+    external fun nativeFreeSpatialCues(prepared: Long)
     external fun nativeClose(ptr: Long)
 }

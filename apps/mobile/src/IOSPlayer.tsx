@@ -1,15 +1,20 @@
+import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, Platform, Image, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Alert, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
 import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
 import { hasNativeIOSChrome, IOSAction, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
-import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
+import { hasNativePlayerTabs as hasSystemIOSTabs, PlatformPlayerTabs as IOSSystemTabs } from "./PlatformPlayerTabs";
+import { AndroidSymbol } from "./AndroidSymbol";
+import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
+import { AndroidSettings } from "./AndroidSettings";
+import { AndroidAudioInfo } from "./AndroidAudioInfo";
 import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings } from "./IOSNativeSettings";
-import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout } from "./ios-ui-model";
+import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, formatPlaybackTime } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
 import { artworkColor } from "./artwork-color";
@@ -18,6 +23,7 @@ import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
 import { QueuePreparationOverlay } from "./QueuePreparationOverlay";
 
 function Symbol({ name, fallback, size = 22, color = "#fff", theme = "dark" }: { name: string; fallback: string; size?: number; color?: string; theme?: "light" | "dark" }) {
+  if (Platform.OS === "android") return <AndroidSymbol name={name} size={size} color={color} />;
   const native = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
   return <View pointerEvents="none" accessible={false} accessibilityElementsHidden style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
     {native && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }} colorScheme={theme}><swiftUI.Image systemName={name as React.ComponentProps<typeof swiftUI.Image>["systemName"]} size={size} color={color} /></swiftUI.Host> : <Text style={{ fontSize: size, color }}>{fallback}</Text>}
@@ -26,10 +32,10 @@ function Symbol({ name, fallback, size = 22, color = "#fff", theme = "dark" }: {
 
 
 const palettes = {
-  light: { bg: "#f2f2f7", panel: "#ffffff", ink: "#1c1c1e", muted: "#74747c", line: "#dcdce3", field: "#e8e8ef", accent: "#28754a" },
-  dark: { bg: "#111113", panel: "#242427", ink: "#f5f5f7", muted: "#a0a0a8", line: "#3c3c43", field: "#29292e", accent: "#9fdcb9" },
+  light: { bg: "#f2f2f7", panel: "#ffffff", ink: "#1c1c1e", muted: "#74747c", line: "#dcdce3", field: "#e8e8ef", accent: "#7799CC" },
+  dark: { bg: "#111113", panel: "#242427", ink: "#f5f5f7", muted: "#a0a0a8", line: "#3c3c43", field: "#29292e", accent: "#7799CC" },
 };
-const time = (ms: number) => Math.floor(ms / 60000) + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0");
+const time = formatPlaybackTime;
 
 // The approved remote-inspired presentation. All audio actions remain owned by
 // App/SdaPlayer; navigating between pages never stops or restarts a track.
@@ -44,12 +50,18 @@ function ThemedPlayer(p: PlayerProps) {
   const [page, setPage] = useState(sceneSmoke ? 2 : (chromeSmoke === "library" || chromeSmoke === "mini-player") ? 1 : 0);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
+  useEffect(() => {
+    if (Platform.OS !== "android" || !settings) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => { setSettings(false); return true; });
+    return () => subscription.remove();
+  }, [settings]);
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
   const settingsScroll = useRef<ScrollView>(null);
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
   const isLight = systemTheme !== "dark";
-  const c = { ...palettes[isLight ? "light" : "dark"], accent: appTheme.accent };
+  const md3 = androidMaterialTheme(appTheme.id, !isLight);
+  const c = Platform.OS === "android" ? { ...palettes[isLight ? "light" : "dark"], bg: md3.bg, panel: md3.panel, ink: md3.ink, muted: md3.muted, line: md3.line, field: md3.panel, accent: md3.primary } : { ...palettes[isLight ? "light" : "dark"], accent: appTheme.accent };
   const artworkSize = width + 48; // Slight uniform zoom, never stretch the square.
   const pc = { ink: "#ffffff", muted: "#c9c9ce", line: "rgba(255,255,255,.24)", field: "rgba(255,255,255,.10)" };
   const [failedArtwork, setFailedArtwork] = useState("");
@@ -77,7 +89,7 @@ function ThemedPlayer(p: PlayerProps) {
     setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
   };
   const format = p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|ac4|ac-4|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
-  const infoRows: [string, string][] = previewMetadata ? [
+  const infoRows: [string, string][] = __DEV__ && previewMetadata ? [
     ["数据来源", "Expo Go 模拟数据 · 仅开发预览"], ["文件名", "Preview.m4a"], ["标题", "示例歌曲"], ["艺人", "示例艺人"], ["专辑", "示例专辑"], ["容器", "M4A"], ["编码", "E-AC-3 JOC"], ["采样率", "48,000 Hz（模拟）"], ["音频格式", "杜比全景声"],
   ] : [
     ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
@@ -116,7 +128,7 @@ function ThemedPlayer(p: PlayerProps) {
   const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: immersiveHome && !settings ? (muted ? pc.muted : pc.ink) : (muted ? c.muted : c.ink) }, style]}>{value}</Text>;
   // The approved Expo Go transport controls are shared with the release app.
   // The presence of SdaEngine/SdaGlass must never select a different design.
-  const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action} style={[s.icon, { width: size, height: size, backgroundColor: c.panel, opacity: disabled ? .35 : 1 }]}>{label(fallback, false, { fontSize: 22 })}</Pressable>;
+  const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action} style={[s.icon, { width: size, height: size, backgroundColor: Platform.OS === "android" && immersiveHome && !settings ? "rgba(255,255,255,.14)" : c.panel, opacity: disabled ? .35 : 1 }]}>{Platform.OS === "android" ? <Symbol name={symbol} fallback={fallback} size={22} color={immersiveHome && !settings ? pc.ink : c.ink} /> : label(fallback, false, { fontSize: 22 })}</Pressable>;
   const divider = () => <View style={[s.divider, { backgroundColor: c.line }]} />;
   const toggle = (name: string, description: string, value: boolean, onValueChange: (enabled: boolean) => void, disabled = false) => <View style={s.settingRow}>
     <View style={s.settingCopy}>{label(name, false, s.settingTitle)}{!!description && label(description, true, s.settingHint)}</View>
@@ -144,20 +156,21 @@ function ThemedPlayer(p: PlayerProps) {
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30, tintColor: fadeColor }} />
   </View>}
   <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
+    {Platform.OS === "android" ? <AndroidAudioInfo rows={infoRows} dark={!isLight} onClose={() => setMetadataOpen(false)} /> :
     <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: PlatformColor("label"), fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><IOSMetadataDoneButton accent={c.accent} onPress={() => setMetadataOpen(false)} theme={isLight ? "light" : "dark"} /></View>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
-    </SafeAreaView>
+    </SafeAreaView>}
   </IOSMetadataSheet>
   <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
-  <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: homeBackground }]}>
-    <StatusBar animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={homeBackground} />
+  <SafeAreaView edges={hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
+    <StatusBar translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       <View style={s.header}>
-        <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? pc.muted : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
+        <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
         {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
           onSelect={p.setHeadTracking} /> : <Pressable accessibilityRole="switch"
@@ -170,12 +183,12 @@ function ThemedPlayer(p: PlayerProps) {
           <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"}
             fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
         </Pressable>)}
-        {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
+        {Platform.OS === "android" ? <AndroidGlassSettingsButton dark={immersiveHome || !isLight} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
       </View>
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <IOSSystemTabs selected={page} onChange={navigate} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }]}>
@@ -236,7 +249,8 @@ function ThemedPlayer(p: PlayerProps) {
       </IOSSystemTabs>
 
       </View>
-      {settings && !hasNativeIOSSettings && <View style={[s.settingsPage, { backgroundColor: c.bg }]} accessibilityViewIsModal>
+      {settings && Platform.OS === "android" && <AndroidSettings player={p} dark={!isLight} onClose={() => setSettings(false)} />}
+      {settings && !hasNativeIOSSettings && Platform.OS !== "android" && <View style={[s.settingsPage, { backgroundColor: c.bg }]} accessibilityViewIsModal>
         <View style={[s.settingsHeader, { backgroundColor: c.panel }]}>
           {hasNativeIOSChrome && <IOSMaterialSurface style={StyleSheet.absoluteFill} />}
           {icon("chevron.left", "返回", () => setSettings(false), false, 44, "‹")}
@@ -250,7 +264,7 @@ function ThemedPlayer(p: PlayerProps) {
             {divider()}
             {actionRow("repeat", "播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)))}
           </View>
-          {heading("声音增强")}
+          {Platform.OS === "ios" && <>{heading("声音增强")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {actionRow("scope", "头部方向归中", "", p.resetYaw, !p.headTrackingEnabled || p.systemSpatial360RAActive)}
             {divider()}
@@ -265,6 +279,7 @@ function ThemedPlayer(p: PlayerProps) {
             {toggle("立体声系统空间音频", "关闭上混时提交 2.0；开启上混时提交 7.1.4，旁路 KU100", p.systemSpatialStereo, p.setSystemSpatialStereo, p.busy)}
           </View>
           {label("上混播放中平滑切换，已缓冲音频播完后生效；系统输出开关下次播放生效。系统空间效果取决于输出设备及系统设置。", true, s.groupHint)}
+          </>}
           {heading("空间渲染", "settings-spatial")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {renderingPresets.map(profile => <View key={profile.id}>{actionRow(isPresetSelected(p, profile) ? "checkmark.circle.fill" : "circle", profile.label, profile.description, () => p.setRenderingPreset(profile.id), presetDisabled, isPresetSelected(p, profile))}{divider()}</View>)}

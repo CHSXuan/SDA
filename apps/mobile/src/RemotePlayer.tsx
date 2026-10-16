@@ -1,7 +1,12 @@
-import { followingPlaybackMode, PLAYBACK_MODE_LABELS, type PlaybackMode } from "../../web/src/playbackOrder";
+import { hasAndroidChrome } from "./AndroidChrome";
+import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
+import { SafeAreaProvider, SafeAreaView as InsetSafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
+import materialSchemes from "./android-material-schemes.json";
+import renderExperiment from "../ios-experiments/active.json";
+import { PLAYBACK_MODES, followingPlaybackMode, PLAYBACK_MODE_LABELS, type PlaybackMode } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
 import React, { useMemo, useRef, useState } from "react";
-import { Animated, Image, Modal, PanResponder, Pressable, SafeAreaView, Platform, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Animated, Image, Modal, PanResponder, Pressable, Platform, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { hasNativeIOSChrome, IOSIconButton, IOSGlassTabs, IOSMaterialSurface, IOSAction, IOSVolumeSlider } from "./IOSNativeChrome";
 import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
 import { IOSPlayer } from "./IOSPlayer";
@@ -44,16 +49,15 @@ export interface PlayerProps {
   nearField: boolean; metresPerUnit: number; nearFieldBusy: boolean;
   setNearField(enabled: boolean, metresPerUnit: number): void;
 }
-const dark = { bg: "#141619", panel: "#202328", ink: "#f5f6f7", muted: "#a8adb4", line: "#42464d", accent: "#e0e6ed", field: "#2a2e34", soft: "#343b44" };
-const light = { bg: "#f3f4f6", panel: "#ffffff", ink: "#19212b", muted: "#687381", line: "#e5e8ed", accent: "#167d72", field: "#f0f2f5", soft: "#e1efeb" };
 const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 
 // Native counterpart of desktop/remote-web: same palette, cards and three-page navigation.
 export function RemotePlayer(p: PlayerProps) {
-  return Platform.OS === "ios" ? <IOSPlayer {...p} /> : <LegacyRemotePlayer {...p} />;
+  return Platform.OS === "ios" || hasAndroidChrome ? <IOSPlayer {...p} /> : <SafeAreaProvider initialMetrics={initialWindowMetrics}><AppThemeProvider><LegacyRemotePlayer {...p} /></AppThemeProvider></SafeAreaProvider>;
 }
 
 function LegacyRemotePlayer(p: PlayerProps) {
+  const appTheme = useAppTheme();
   const { width, height } = useWindowDimensions();
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
@@ -142,7 +146,8 @@ function LegacyRemotePlayer(p: PlayerProps) {
       onPanResponderTerminate: () => lockScrolling(false),
     });
   }, [p.setVolume, volumeWidth]);
-  const c = Platform.OS === "ios" ? { ...(isLight ? light : dark), bg: isLight ? "#f2f2f7" : "#000000", panel: isLight ? "#ffffff" : "#1c1c1e", ink: isLight ? "#1c1c1e" : "#ffffff", muted: isLight ? "#6c6c70" : "#aeaeb2", accent: "#30b0a6" } : isLight ? light : dark;
+  const material = materialSchemes[appTheme.id][isLight ? "light" : "dark"];
+  const c = { ...material, accent: material.primary, field: material.container, soft: material.container };
   const pageWidth = width - 32;
   const cardHeight = Math.max(440, height - 235);
   const coverSize = Math.min(Math.max(160, width - 104), 460);
@@ -165,8 +170,8 @@ function LegacyRemotePlayer(p: PlayerProps) {
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist;
   const playback = p.busy ? "正在准备音频…" : p.playing ? p.paused ? "已暂停" : "正在播放" : p.ended ? "播放结束" : p.selectedUri ? "准备就绪" : "选择文件，开始聆听";
-  const SafeContainer = Platform.OS === "ios" ? SafeAreaView : View;
-  return <SafeContainer style={{ flex: 1, backgroundColor: c.bg }}><View style={[s.root, { backgroundColor: c.bg }]}>
+  const SafeContainer = InsetSafeAreaView;
+  return <SafeContainer edges={["top", "bottom"]} style={{ flex: 1, backgroundColor: c.bg }}><View style={[s.root, { backgroundColor: c.bg }]}>
     {!isLight && p.metadata.coverUri && <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       <Image source={{ uri: p.metadata.coverUri }} blurRadius={65} style={[StyleSheet.absoluteFill, { opacity: .2 }]} />
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "#10131888" }]} />
@@ -298,42 +303,59 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </Pressable>)}
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+          </View>
+          {label("播放模式", true, s.groupTitle)}
+          <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+            {PLAYBACK_MODES.map(mode => <Pressable key={mode} accessibilityRole="radio" accessibilityLabel={PLAYBACK_MODE_LABELS[mode]} accessibilityState={{ checked: p.playbackMode === mode }} onPress={() => p.setPlaybackMode(mode)} style={s.settingRow}>
+              {label(PLAYBACK_MODE_LABELS[mode], false, s.settingTitle)}{label(p.playbackMode === mode ? "●" : "○", false, { color: c.accent, fontSize: 20 })}
+            </Pressable>)}
+          </View>
+          {label("声音增强", true, s.groupTitle)}
+          <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("主层与低频维持原电平，高度与后方辅助层总提升最多 +1.5 dB。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive} onValueChange={p.setSpatialEnhancement} /></View>
           </View>
           {Platform.OS === "ios" && <>
             {label("360 Reality Audio", true, s.groupTitle)}
             <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("仅 360RA：渲染成 12 声道交给苹果系统，旁路 KU100 直达渲染；支持统一音量平衡，不改变声道方向。关闭后恢复 SDA／KU100 双耳空间渲染，并非普通立体声下混。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:"#167d72"}} thumbColor="#ffffff" /></View>
+              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("仅 360RA：渲染成 12 声道交给苹果系统，旁路 KU100 直达渲染；支持统一音量平衡，不改变声道方向。关闭后恢复 SDA／KU100 双耳空间渲染，并非普通立体声下混。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:c.accent}} thumbColor="#ffffff" /></View>
               {label("修改后下一次播放生效，不中断当前歌曲。实际空间化／头部跟踪由兼容耳机及系统设置决定。", true, s.groupHint)}
               {label(p.systemSpatial360RAActive ? p.systemSpatial360RA ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前仍是系统 7.1.4；下次播放恢复 360RA-13／KU100 直达渲染" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
             </View>
           </>}
-          {Platform.OS === "ios" && <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+          <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             {label("空间线索强度", false, s.settingTitle)}
             {[0, -3, -6, -9, -12].map(db => <Pressable key={db} accessibilityRole="radio" accessibilityState={{ checked: p.spatialCueDb === db, disabled: p.spatialCueBusy || p.busy }} disabled={p.spatialCueBusy || p.busy} onPress={() => p.setSpatialCueDb(db)} style={s.settingRow}>
               {label(`${p.spatialCueDb === db ? "●" : "○"} ${db} dB${db === -6 ? " · 默认" : ""}`, false, s.settingTitle)}
             </Pressable>)}
-            {label("播放中平滑切换，不暂停或重新播放；缓冲音频播放完后生效。系统空间音频旁路时仅保存设置。", true, s.groupHint)}
-          </View>}
+            {label("仅调节辅助空间线索，不改变主音量。播放中平滑切换，不暂停或重新播放；已缓冲的声音播放完后生效。", true, s.groupHint)}
+          </View>
           {settingsHeading("空间渲染", "settings-spatial")}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label("128 方向 HRIR · 对象与声道纯直达", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>
+            <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label(`${renderExperiment.directionCount} 方向 · 完整高度与连续方向渲染`, true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
             {renderingPresets.map(profile => {
               const selected = p.hrtfSet === profile.hrtfSet && p.directObjects === profile.direct && p.directionalObjects === profile.directional && p.nearField === profile.nearField && p.roomId === profile.roomId && Math.abs(p.hrtfWetWeight - profile.hrtfWetWeight) < 1e-6;
               const disabled = p.systemSpatial360RAActive || p.busy || p.roomBusy || p.nearFieldBusy;
-              return hasNativeIOSChrome ? <IOSAction key={profile.id} row selected={selected} symbol={selected ? "checkmark.circle.fill" : "circle"} title={profile.label} subtitle={profile.description} label={`空间渲染预设：${profile.label}。${profile.description}`} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} /> : <Pressable key={profile.id} accessibilityRole="radio" accessibilityLabel={`空间渲染预设：${profile.label}`} accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} style={[s.roomOption, { borderColor: selected ? "#167d72" : c.line, backgroundColor: selected ? c.soft : "transparent" }]}>
+              return hasNativeIOSChrome ? <IOSAction key={profile.id} row selected={selected} symbol={selected ? "checkmark.circle.fill" : "circle"} title={profile.label} subtitle={profile.description} label={`空间渲染预设：${profile.label}。${profile.description}`} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} /> : <Pressable key={profile.id} accessibilityRole="radio" accessibilityLabel={`空间渲染预设：${profile.label}`} accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} style={[s.roomOption, { borderColor: selected ? c.accent : c.line, backgroundColor: selected ? c.soft : "transparent" }]}>
                 <View style={s.settingCopy}>{label(profile.label, false, s.settingTitle)}{label(profile.description, true, s.settingDescription)}</View>{label(selected ? "●" : "○", !selected, { fontSize: 20 })}
               </Pressable>;
             })}
             {label("切换预设会保留播放进度和播放／暂停状态，并恢复默认对象选项；加载时可能短暂缓冲。", true, s.groupHint)}
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("逐对象渲染", false, s.settingTitle)}{label("为每个对象独立生成双耳声音", true, s.settingDescription)}</View><Switch accessibilityLabel="基础逐对象双耳渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(value, p.directionalObjects)} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("逐对象渲染", false, s.settingTitle)}{label("为每个对象独立生成双耳声音", true, s.settingDescription)}</View><Switch accessibilityLabel="基础逐对象双耳渲染" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.directObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(value, p.directionalObjects)} /></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("实际方向", false, s.settingTitle)}{label("按对象的真实位置定位声音", true, s.settingDescription)}</View><Switch accessibilityLabel="按对象实际方向渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directionalObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(p.directObjects, value)} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("实际方向", false, s.settingTitle)}{label("按对象的真实位置定位声音", true, s.settingDescription)}</View><Switch accessibilityLabel="按对象实际方向渲染" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.directionalObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(p.directObjects, value)} /></View>
           </View>
           {label("实际方向会自动启用逐对象处理；两项均关闭时使用虚拟扬声器。", true, s.groupHint)}
-{label("外观与输出", true, s.groupTitle)}
+          {label("主题色", true, s.groupTitle)}
+          <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+            {CHARACTER_THEMES.map(theme => <Pressable key={theme.id} accessibilityRole="radio" accessibilityLabel={theme.name} accessibilityState={{ checked: appTheme.id === theme.id }} onPress={() => appTheme.setTheme(theme.id)} style={s.settingRow}>
+              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: theme.color, marginRight: 12 }} />
+              <View style={s.settingCopy}>{label(theme.name, false, s.settingTitle)}</View>{label(appTheme.id === theme.id ? "●" : "○", false, { color: c.accent, fontSize: 20 })}
+            </Pressable>)}
+          </View>
+          {label("外观与输出", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.settingRow}><View style={s.settingCopy}>{label("外观", false, s.settingTitle)}{label("自动跟随系统", true, s.settingDescription)}</View>{label(isLight ? "浅色" : "深色", true, s.settingDescription)}</View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />

@@ -146,6 +146,7 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
     from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
+    from('../../../../harletty-bridge/eac3') { include 'JOC_INPUT_CONDITIONING_LICENSE'; into 'licenses/joc-input-conditioning' }
     from(mobileHrtfAssets) { include 'hrtf-restored/**' }
     into(sharedAssets)
     doFirst {
@@ -155,11 +156,11 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
         }
     }
     doLast {
-        exec {
+        providers.exec {
             workingDir projectRoot
             commandLine 'node', '../../scripts/stage-shared-render-experiment.mjs',
                 new File(sharedAssets.get().asFile, 'hrtf-restored').absolutePath
-        }
+        }.result.get().assertNormalExitValue()
     }
 }
 tasks.named('preBuild').configure { dependsOn(syncSharedKu100Assets) }
@@ -167,6 +168,16 @@ tasks.named('preBuild').configure { dependsOn(syncSharedKu100Assets) }
 // React Native's default bundle inputs omit JSON. This file is imported by
 // App/RemotePlayer as well as copied to native assets: invalidate BOTH outputs.
 tasks.withType(com.facebook.react.tasks.BundleHermesCTask).configureEach {
+    // Keep source-map paths on the checkout drive when node_modules is linked.
+    // Only bundling needs this logical path; CMake retains its resolved inputs.
+    def linkedReactNative = new File(projectRoot, '../../node_modules/react-native')
+    doFirst {
+        // The RN plugin assigns its provider after task registration.
+        if (linkedReactNative.isDirectory()) {
+            reactNativeDir.set(linkedReactNative)
+        }
+    }
+
     inputs.file(new File(projectRoot, 'rendering-presets.json'))
         .withPropertyName('renderingPresets')
         .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
@@ -203,15 +214,15 @@ dependencies {
 
     if (isGifEnabled) {
         // For animated gif support
-        implementation("com.facebook.fresco:animated-gif:${reactAndroidLibs.versions.fresco.get()}")
+        implementation("com.facebook.fresco:animated-gif:${expoLibs.versions.fresco.get()}")
     }
 
     if (isWebpEnabled) {
         // For webp support
-        implementation("com.facebook.fresco:webpsupport:${reactAndroidLibs.versions.fresco.get()}")
+        implementation("com.facebook.fresco:webpsupport:${expoLibs.versions.fresco.get()}")
         if (isWebpAnimatedEnabled) {
             // Animated webp support
-            implementation("com.facebook.fresco:animated-webp:${reactAndroidLibs.versions.fresco.get()}")
+            implementation("com.facebook.fresco:animated-webp:${expoLibs.versions.fresco.get()}")
         }
     }
 

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_ALAC};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
@@ -56,21 +56,30 @@ pub struct Mp3FileDecoder {
 
 impl Mp3FileDecoder {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_format(path, false)
+    }
+
+    pub fn open_alac(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_format(path, true)
+    }
+
+    fn open_format(path: impl AsRef<Path>, alac: bool) -> Result<Self, String> {
         let file = File::open(path.as_ref()).map_err(|e| format!("open MP3: {e}"))?;
         let stream = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new();
-        hint.with_extension("mp3");
+        hint.with_extension(if alac { "m4a" } else { "mp3" });
         let probed = symphonia::default::get_probe()
             .format(&hint, stream, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default())
             .map_err(|e| format!("probe MP3: {e}"))?;
         let mut format = probed.format;
         let track = format.tracks().iter()
-            .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+            .find(|track| if alac { track.codec_params.codec == CODEC_TYPE_ALAC } else { track.codec_params.codec != CODEC_TYPE_NULL })
             .ok_or_else(|| "MP3 contains no supported audio track".to_string())?;
         let track_id = track.id;
         let input_rate = track.codec_params.sample_rate.ok_or_else(|| "MP3 sample rate is missing".to_string())?;
         if input_rate == 0 { return Err("MP3 sample rate must be non-zero".into()); }
         let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+        if alac && channels != 2 { return Err(format!("ALAC upmix requires stereo input, got {channels} channels")); }
         if !(1..=2).contains(&channels) { return Err(format!("MP3 bed must be mono or stereo, got {channels} channels")); }
         let input_frames = track.codec_params.n_frames;
         let expected_output_frames = input_frames.map(|frames| {
@@ -206,6 +215,24 @@ impl Mp3FileDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "set SDA_ALAC_TEST_FILE to a local stereo ALAC fixture"]
+    fn alac_file_decodes_to_bounded_finite_48k_stereo() {
+        let path = std::env::var("SDA_ALAC_TEST_FILE").expect("ALAC fixture path");
+        let mut decoder = Mp3FileDecoder::open_alac(path).unwrap();
+        let mut count = 0;
+        loop {
+            let samples = decoder.read_interleaved(4096).unwrap();
+            assert!(samples.len() <= 8192 && samples.len() % 2 == 0);
+            assert!(samples.iter().all(|sample| sample.is_finite()));
+            count += samples.len() / 2;
+            if decoder.is_finished() { break; }
+            assert!(!samples.is_empty());
+        }
+        assert!(count > 0);
+        assert_eq!(Some(count as u64), decoder.eof_output_frames);
+    }
 
     #[test]
     #[ignore = "requires a local MP3 listening fixture that is not distributed with the repository"]

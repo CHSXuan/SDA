@@ -382,3 +382,76 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeCompleteLoudnes
     let json=take_engine(ptr).map_or_else(||"null".into(),|engine|engine.complete_loudness_json());
     env.new_string(json).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
+
+
+// Filter preparation deliberately takes no engine pointer: Android performs it
+// outside nativeLock, then validates track generation before applying the result.
+type PreparedAndroidCues = Option<sda_native_renderer::live_spatial_cues::PreparedCueUpdate>;
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePrepareSpatialCues(
+    mut env: JNIEnv, _class: JClass, path: JString, layout: JString, gain: jni::sys::jfloat,
+) -> jlong {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
+        let path: String = env.get_string(&path).map_err(|e|e.to_string())?.into();
+        let layout: String = env.get_string(&layout).map_err(|e|e.to_string())?.into();
+        sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(&path, &layout, gain)
+    })).unwrap_or_else(|_|Err("spatial cue preparation failed".into()));
+    match result {
+        Ok(update) => Box::into_raw(Box::new(Some(update))) as jlong,
+        Err(error) => { let _ = env.throw_new("java/lang/IllegalStateException", error); 0 }
+    }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeApplySpatialCues(
+    env: JNIEnv, _class: JClass, ptr: jlong, prepared: jlong,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<(), String> {
+        let engine = take_engine(ptr).ok_or("engine unavailable")?;
+        if prepared == 0 {return Err("missing prepared spatial cues".into());}
+        let update = unsafe { &mut *(prepared as *mut PreparedAndroidCues) };
+        engine.apply_spatial_cue_update(update.take().ok_or("spatial cues already consumed")?)
+    })();
+    env.new_string(result.err().unwrap_or_default()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeFreeSpatialCues(
+    _env: JNIEnv, _class: JClass, prepared: jlong,
+) {
+    if prepared != 0 {drop(unsafe {Box::from_raw(prepared as *mut PreparedAndroidCues)});}
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetSpatialEnhancement(
+    env: JNIEnv, _class: JClass, ptr: jlong, enabled: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let result=take_engine(ptr).ok_or("engine unavailable".to_string()).and_then(|e|e.set_spatial_enhancement(enabled!=0));
+    env.new_string(result.err().unwrap_or_default()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeOpenAlac(
+    mut env: JNIEnv, _class: JClass, ptr: jlong, path: JString,
+) -> jint {
+    let result = (|| -> Result<u32, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        take_engine(ptr).ok_or("engine unavailable")?.open_alac(&path)
+    })();
+    match result { Ok(rate) => { set_last_error(""); rate as jint }, Err(error) => { set_last_error(&error); -1 } }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeIsAlac(
+    mut env: JNIEnv, _class: JClass, path: JString,
+) -> jni::sys::jboolean {
+    let path: Result<String, _> = env.get_string(&path).map(Into::into);
+    path.ok().is_some_and(|path| crate::mp3::Mp3FileDecoder::open_alac(path).is_ok()) as jni::sys::jboolean
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePullAlac(
+    _env: JNIEnv, _class: JClass, ptr: jlong, max_frames: jint, upmix: jni::sys::jboolean,
+) -> jint {
+    match take_engine(ptr).ok_or("engine unavailable".to_string()).and_then(|engine| engine.pull_alac(max_frames.max(1) as usize, upmix != 0)) {
+        Ok((frames, eof)) => { set_last_error(""); if eof && frames == 0 { -4 } else { frames as jint } },
+        Err(error) => { set_last_error(&error); -1 }
+    }
+}

@@ -1,5 +1,9 @@
 use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
+    // Keep the shared engine loadable on both 4 KiB and 16 KiB Android devices.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        println!("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384");
+    }
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("mpegh");
     for path in ["scripts/prepare-mpegh.mjs", "packages/core/mpegh/bridge.c", "vendor/libmpegh/decoder", "vendor/libmpegh/CMakeLists.txt", "vendor/libmpegh/.git/HEAD"] {

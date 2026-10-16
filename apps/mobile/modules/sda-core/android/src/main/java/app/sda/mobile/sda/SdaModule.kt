@@ -14,6 +14,8 @@ class SdaModule : Module() {
     private var handle: Long = 0L
     private var activeLayout = "7.1.4"
     @Volatile private var activeIsMp3 = false
+    @Volatile private var alacStereoUpmix = false
+    @Volatile private var activeSourceCodec = ""
     private var feedThread: Thread? = null
     @Volatile
     private var stopped = false
@@ -43,6 +45,24 @@ class SdaModule : Module() {
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun spatialCueDb(): Double {
+        val context = appContext.reactContext ?: error("no react context")
+        val value = context.getSharedPreferences("sda-rendering", 0).getFloat("spatialCueDb", -6f).toDouble()
+        return if (value in listOf(0.0, -3.0, -6.0, -9.0, -12.0)) value else -6.0
+    }
+
+    private fun restoreSpatialCues(ptr: Long, layout: String) {
+        val db = spatialCueDb()
+        // The packaged kernels already contain the shared default -6 dB cues.
+        if (db == -6.0) return
+        val context = appContext.reactContext ?: error("no react context")
+        val path = java.io.File(context.filesDir, "hrtf-restored/hrtf-dense/hrtf-set.json").absolutePath
+        val prepared = SdaEngine.nativePrepareSpatialCues(path, layout, Math.pow(10.0, db / 20.0).toFloat())
+        check(prepared != 0L) { "空间线索准备失败" }
+        try { val error = SdaEngine.nativeApplySpatialCues(ptr, prepared); check(error.isEmpty()) { error } }
+        finally { SdaEngine.nativeFreeSpatialCues(prepared) }
     }
 
     private fun ensureEngine(layout: String = "7.1.4"): Long = synchronized(nativeLock) {
@@ -101,6 +121,7 @@ class SdaModule : Module() {
         try {
             val nearError = SdaEngine.nativeSetNearField(ptr, false, 1f)
             check(nearError.isEmpty()) { nearError }
+            restoreSpatialCues(ptr, layout)
         } catch (error: Throwable) {
             SdaEngine.nativeClose(ptr)
             handle = 0L
@@ -115,6 +136,12 @@ class SdaModule : Module() {
             SdaEngine.nativeClose(ptr)
             handle = 0L
             throw RuntimeException("nativeStart failed: $detail ($result)")
+        }
+        try {
+            val error = SdaEngine.nativeSetSpatialEnhancement(ptr, settings.getBoolean("spatialEnhancementEnabled"))
+            check(error.isEmpty()) { error }
+        } catch (error: Throwable) {
+            SdaEngine.nativeClose(ptr); handle = 0L; throw error
         }
         ptr
     }
@@ -167,6 +194,55 @@ class SdaModule : Module() {
             }
         }
 
+        Function("setAlacStereoUpmix") { enabled: Boolean ->
+            synchronized(nativeLock) {
+                val context = appContext.reactContext ?: error("no react context")
+                check(context.getSharedPreferences("sda-rendering", 0).edit()
+                    .putBoolean("alacStereoUpmix", enabled).commit()) { "无法保存 ALAC 上混" }
+                alacStereoUpmix = enabled
+            }
+        }
+
+        Function("setSpatialEnhancement") { enabled: Boolean ->
+            synchronized(nativeLock) {
+                if (handle != 0L) {
+                    val error = SdaEngine.nativeSetSpatialEnhancement(handle, enabled)
+                    check(error.isEmpty()) { error }
+                }
+                val context = appContext.reactContext ?: error("no react context")
+                check(context.getSharedPreferences("sda-rendering", 0).edit()
+                    .putBoolean("spatialEnhancementEnabled", enabled).commit()) { "无法保存空间平衡设置" }
+            }
+        }
+
+        AsyncFunction("setSpatialCueDb") { db: Double ->
+            require(db in listOf(0.0, -3.0, -6.0, -9.0, -12.0)) { "空间线索强度无效" }
+            val context = appContext.reactContext ?: error("no react context")
+            val preferences = context.getSharedPreferences("sda-rendering", 0)
+            val snapshot = synchronized(nativeLock) {
+                if (handle == 0L) {
+                    check(preferences.edit().putFloat("spatialCueDb", db.toFloat()).commit()) { "无法保存空间线索设置" }
+                    null
+                } else Triple(handle, generation, activeLayout)
+            }
+            if (snapshot != null) {
+                val path = java.io.File(context.filesDir, "hrtf-restored/hrtf-dense/hrtf-set.json").absolutePath
+                // Disk IO / FFT preparation must not hold the decoder/feed lock.
+                val prepared = SdaEngine.nativePrepareSpatialCues(path, snapshot.third, Math.pow(10.0, db / 20.0).toFloat())
+                check(prepared != 0L) { "空间线索准备失败" }
+                try {
+                    synchronized(nativeLock) {
+                        check(handle == snapshot.first && generation == snapshot.second && activeLayout == snapshot.third) {
+                            "播放曲目已切换，请重新选择空间线索强度"
+                        }
+                        val error = SdaEngine.nativeApplySpatialCues(handle, prepared)
+                        check(error.isEmpty()) { error }
+                        check(preferences.edit().putFloat("spatialCueDb", db.toFloat()).commit()) { "无法保存空间线索设置" }
+                    }
+                } finally { SdaEngine.nativeFreeSpatialCues(prepared) }
+            }
+        }
+
         Function("renderingSettings") { -> renderingSettings().toString() }
 
         // Keep the live decoder and audio sink; acknowledge the new graph before saving.
@@ -187,6 +263,7 @@ class SdaModule : Module() {
                     val error = SdaEngine.nativeSetHrtfPreset(handle, manifest.absolutePath,
                         wetWeight.toFloat(), profile.getBoolean("direct"), profile.getBoolean("directional"))
                     check(error.isEmpty()) { error }
+                    restoreSpatialCues(handle, activeLayout)
                 }
                 check(context.getSharedPreferences("sda-rendering", 0).edit()
                     .putString("hrtfSet", set)
@@ -269,23 +346,37 @@ class SdaModule : Module() {
             val loudnessCache = context.getSharedPreferences("sda-loudness", 0)
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
             val isMp3 = displayName.substringAfterLast('.', "").equals("mp3", ignoreCase = true)
-            val mp3Cache = if (isMp3) java.io.File.createTempFile("sda-mp3-", ".mp3", context.cacheDir) else null
-            if (mp3Cache != null) {
+            val isContainer = displayName.substringAfterLast('.', "").lowercase() in setOf("m4a", "mp4")
+            // DocumentPicker normally supplies a local file. Reuse it rather
+            // than copying the full song again just to probe its container.
+            val localFile = if (uri.scheme == "file") uri.path?.let { java.io.File(it) }?.takeIf { it.isFile } else null
+            val ownsSourceCopy = (isMp3 || isContainer) && localFile == null
+            val mp3Cache = if (isMp3 || isContainer) localFile ?: java.io.File.createTempFile("sda-seekable-", if (isMp3) ".mp3" else ".m4a", context.cacheDir) else null
+            if (ownsSourceCopy && mp3Cache != null) {
                 try {
-                    val source = context.contentResolver.openInputStream(uri) ?: error("无法打开所选 MP3 文件")
+                    val source = context.contentResolver.openInputStream(uri) ?: error("无法打开所选音频文件")
                     source.use { stream -> mp3Cache.outputStream().use { stream.copyTo(it, 64 * 1024) } }
                 } catch (error: Throwable) {
                     mp3Cache.delete()
                     throw error
                 }
             }
-            val input = if (isMp3) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName)
+            val isAlac = isContainer && mp3Cache != null && SdaEngine.nativeIsAlac(mp3Cache.absolutePath)
+            val input = try {
+                if (isMp3 || isAlac) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName)
+            } catch (error: Throwable) {
+                if (ownsSourceCopy) mp3Cache?.delete()
+                throw error
+            }
             val ptr = try {
                 ensureEngine(if (isMpegh) "360RA-13" else "7.1.4").also {
                     if (isMpegh) check(SdaEngine.nativeOpenMpegh(it) == 0) {
                         "360RA 打开失败: ${SdaEngine.nativeLastError()}"
                     }
-                    if (mp3Cache != null) check(SdaEngine.nativeOpenMp3(it, mp3Cache.absolutePath) > 0) {
+                    if (isAlac && mp3Cache != null) check(SdaEngine.nativeOpenAlac(it, mp3Cache.absolutePath) > 0) {
+                        "ALAC 打开失败: ${SdaEngine.nativeLastError()}"
+                    }
+                    if (isMp3 && mp3Cache != null) check(SdaEngine.nativeOpenMp3(it, mp3Cache.absolutePath) > 0) {
                         "MP3 打开失败: ${SdaEngine.nativeLastError()}"
                     }
                     val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
@@ -305,7 +396,7 @@ class SdaModule : Module() {
                 }
             } catch (error: Throwable) {
                 input.close()
-                mp3Cache?.delete()
+                if (ownsSourceCopy) mp3Cache?.delete()
                 synchronized(nativeLock) {
                     if (handle != 0L) {
                         SdaEngine.nativeClose(handle)
@@ -323,6 +414,10 @@ class SdaModule : Module() {
             paused = false
             stopped = false
             activeIsMp3 = isMp3
+            alacStereoUpmix = renderingSettings().getBoolean("alacStereoUpmix")
+            // Container AC-4 was normalized by the shared importer before opening.
+            activeSourceCodec = if (isAlac) "alac" else if (isMpegh) "mpegh" else if (isMp3) "mp3"
+                else if (displayName.substringAfterLast('.', "").equals("ac4", ignoreCase = true)) "ac4" else "eac3"
             activeInput = input
             val worker = Thread({
                 try {
@@ -332,7 +427,7 @@ class SdaModule : Module() {
                         var lastProgressNs = System.nanoTime()
                         // player.ts TARGET_AHEAD_SECONDS: same four-second decode
                         // reserve, paced against presented audio rather than FIFO size.
-                        val maxLead = 4 * 48_000L
+                        val maxLead = if (isAlac) 24_000L else 4 * 48_000L
                         while (!stopped) {
                             val state = synchronized(nativeLock) {
                                 if (generation != workerGeneration || handle != ptr || stopped) return@Thread
@@ -357,13 +452,13 @@ class SdaModule : Module() {
                                 Thread.sleep(20)
                                 continue
                             }
-                            if (isMp3) {
+                            if (isMp3 || isAlac) {
                                 val pulled = synchronized(nativeLock) {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
-                                    SdaEngine.nativePullMp3(ptr, 4096)
+                                    if (isAlac) SdaEngine.nativePullAlac(ptr, 4096, alacStereoUpmix) else SdaEngine.nativePullMp3(ptr, 4096)
                                 }
                                 if (pulled == -4) break
-                                check(pulled >= 0) { "MP3 解码失败: ${SdaEngine.nativeLastError()}" }
+                                check(pulled >= 0) { "音频解码失败: ${SdaEngine.nativeLastError()}" }
                                 continue
                             }
                             val count = stream.read(buffer)
@@ -427,7 +522,7 @@ class SdaModule : Module() {
                     }
                     feedDone = true
                 } finally {
-                    mp3Cache?.delete()
+                    if (ownsSourceCopy) mp3Cache?.delete()
                 }
             }, "sda-content-feed")
             feedThread = worker
@@ -468,7 +563,10 @@ class SdaModule : Module() {
 
         Function("status") { ->
             synchronized(nativeLock) {
-                if (handle == 0L) "{}" else SdaEngine.nativeStatus(handle)
+                if (handle == 0L) "{}" else JSONObject(SdaEngine.nativeStatus(handle))
+                    .put("sourceCodec", activeSourceCodec)
+                    .put("outputLayout", if (activeSourceCodec == "alac" && !alacStereoUpmix) "2.0" else activeLayout)
+                    .put("alacUpmixActive", activeSourceCodec == "alac" && alacStereoUpmix).put("outputChannels", 2).toString()
             }
         }
 
@@ -537,6 +635,9 @@ class SdaModule : Module() {
             .put("hrtfWetWeight", 0.0)
             .put("direct", preferences.getBoolean("direct", true))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
+            .put("spatialEnhancementEnabled", preferences.getBoolean("spatialEnhancementEnabled", false))
+            .put("spatialCueDb", spatialCueDb())
+            .put("alacStereoUpmix", preferences.getBoolean("alacStereoUpmix", false))
             .put("directional", preferences.getBoolean("directional", true))
             .put("roomId", "")
             .put("nearField", false)

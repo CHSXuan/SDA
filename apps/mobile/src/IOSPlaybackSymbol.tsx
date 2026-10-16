@@ -1,9 +1,11 @@
 import React from "react";
-import { Text, View } from "react-native";
+import { Platform, Text, View } from "react-native";
+import { AndroidSymbol } from "./AndroidSymbol";
 import { swiftUI } from "./IOSSystemTabs";
 
 // Shared by Expo Go and the packaged app; the parent owns the action and label.
 export function IOSPlaybackSymbol({ playing, color, size = 20 }: { playing: boolean; color: string; size?: number }) {
+  if (Platform.OS === "android") return <AndroidSymbol name={playing ? "pause.fill" : "play.fill"} color={color} size={size >= 30 ? 52 : size} />;
   const hasImage = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
   return <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
     {hasImage && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }} colorScheme={color.startsWith("#1") || color.startsWith("#2") ? "light" : "dark"}>
@@ -13,6 +15,7 @@ export function IOSPlaybackSymbol({ playing, color, size = 20 }: { playing: bool
 }
 
 export function IOSSkipSymbol({ direction, color, size = 24 }: { direction: "previous" | "next"; color: string; size?: number }) {
+  if (Platform.OS === "android") return <AndroidSymbol name={direction === "previous" ? "backward.fill" : "forward.fill"} color={color} size={size >= 30 ? 42 : size} />;
   const hasImage = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
   return <View pointerEvents="none" accessible={false} accessibilityElementsHidden style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
     {hasImage && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }} colorScheme={color.startsWith("#1") || color.startsWith("#2") ? "light" : "dark"}>
