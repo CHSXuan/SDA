@@ -9,8 +9,10 @@ assert.deepEqual([dense.id,dense.hrtfSet,dense.assetDirectory,dense.direct,dense
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const experimentPath='apps/mobile/ios-experiments/active.json';
 const experiment=fs.existsSync(experimentPath)?JSON.parse(fs.readFileSync(experimentPath,'utf8')):null;
-const experiments={'horizontal-support-218-v1':[218,'horizontal-support'],'fullheight-triangle-commonphase-542-v1':[542,'fullheight-combined']};
+const experiments={'horizontal-support-218-v1':[218,'horizontal-support'],'fullheight-triangle-commonphase-542-v1':[542,'fullheight-combined'],'apple-hrtfhq-542-v1':[542,'apple-hrtfhq-v1']};
 if(experiment)assert.equal(experiments[experiment.id]?.[0],experiment.directionCount);
+const measured=experiment?.id==='apple-hrtfhq-542-v1';
+const selectedFamily=measured?experiment.assetFamily:`apps/mobile/ios-experiments/${experiments[experiment?.id]?.[1]}`;
 for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
  const source=`apps/mobile/assets/hrtf-restored/${directory}`;
  const manifest=JSON.parse(fs.readFileSync(`${source}/hrtf-set.json`,'utf8'));
@@ -22,12 +24,12 @@ for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
  assert.ok(Math.abs(manifest.processing.spatialCueGain-Math.pow(10,-6/20))<1e-12);
  const stagedRoot=`apps/mobile/modules/sda-core/ios/Resources/hrtf-restored/${directory}`;
  const staged=JSON.parse(fs.readFileSync(`${stagedRoot}/hrtf-set.json`,'utf8'));
- if(experiment && directory==='hrtf-dense') {
-  const expected=JSON.parse(fs.readFileSync(`apps/mobile/ios-experiments/${experiments[experiment.id][1]}/hrtf-dense/hrtf-set.json`,'utf8'));
+ if(experiment && (measured || directory==='hrtf-dense')) {
+  const expected=JSON.parse(fs.readFileSync(`${selectedFamily}/${directory}/hrtf-set.json`,'utf8'));
   assert.deepEqual(staged,expected);
-  assert.equal(staged.positions.length,experiment.directionCount);
-  assert.equal(staged.iosExperiment,experiment.id);
-  assert.equal(staged.processing.spatialCues,true);
+  assert.equal(staged.positions.length,directory==='hrtf-dense'?experiment.directionCount:17);
+  assert.equal(measured?staged.sharedRenderProfile:staged.iosExperiment,experiment.id);
+  assert.equal(staged.processing.spatialCues,!measured);
   for(const p of staged.positions) {
    const data=fs.readFileSync(`${stagedRoot}/${p.dry}`);
    assert.equal(data.length,4096);assert.equal(sha(data),p.assets.dry.sha256);
@@ -40,10 +42,11 @@ for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
   const data=fs.readFileSync(`${source}/${position.dry}`);
   assert.equal(sha(data),position.assets.dry.sha256);
   assert.equal(data.length,4096);
-  const stagedPosition=experiment && directory==='hrtf-dense'
+  const stagedPosition=experiment && (measured || directory==='hrtf-dense')
    ?staged.positions.find(p=>p.azimuth===position.azimuth && p.elevation===position.elevation):position;
   assert.ok(stagedPosition,'original direction missing in staged experiment');
-  assert.deepEqual(data,fs.readFileSync(`${stagedRoot}/${stagedPosition.dry}`),'original measured response must remain byte-identical');
+  const expectedData=measured?fs.readFileSync(`${selectedFamily}/${directory}/${stagedPosition.dry}`):data;
+  assert.deepEqual(expectedData,fs.readFileSync(`${stagedRoot}/${stagedPosition.dry}`),'selected measured response must remain byte-identical');
  }
 }
 for(const view of ['RemotePlayer.tsx','IOSPlayer.tsx','IOSNativeSettings.tsx']){
@@ -94,6 +97,6 @@ async function main(){
   const {p,calls}=harness();if(key==='changingTrack')p.changingTrack=true;else if(key!=='invalid')p.state[key]=true;
   await p.setRenderingPreset(key==='invalid'?'desktop-standard':dense.id);assert.deepEqual(calls,[]);
  }
- console.log('Mobile direct KU100: 61 unique measurements, zero measured room residual, mobile packaging/migration, removed controls, live-preset playback preservation passed.');
+ console.log('Mobile shared HRTF: preserved baseline archive, selected response family, zero measured room residual, mobile packaging/migration, removed controls, live-preset playback preservation passed.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

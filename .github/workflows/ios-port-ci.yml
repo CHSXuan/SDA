@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/ios-port-ci.yml'
       - 'apps/mobile/**'
+      - 'assets/hrtf/**'
+      - 'scripts/stage-shared-render-experiment.mjs'
       - 'crates/sda-native/**'
       - 'apps/native-renderer/**'
       - 'packages/core/**'

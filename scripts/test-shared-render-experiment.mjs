@@ -18,7 +18,14 @@ try {
  const coordinates=new Set(manifest.positions.map(p=>`${p.azimuth}/${p.elevation}`));
  assert.equal(coordinates.size,542);
  for(const p of horizontal.positions)assert(coordinates.has(`${p.azimuth}/${p.elevation}`),'218direction missing from combined renderer');
- assert.equal(manifest.processing.spatialCues,true);
+ assert.equal(manifest.processing.spatialCues,activeExperiment().experiment.spatialCues ?? true);
+ if(activeExperiment().measured) {
+  assert.equal(manifest.subjectId,"apple-public-hrtfhq");
+  const fallback=JSON.parse(readFileSync(join(roots[0],"hrtf/hrtf-set.json"),"utf8"));
+  assert.equal(fallback.subjectId,manifest.subjectId);
+  assert.equal(fallback.measuredResponseVersion,1);
+  assert.equal(manifest.processing.frontEarIsolation,false);
+ }
  assert.equal(manifest.triangleSupportFile,'triangle-grid.json');
  writeFileSync(join(roots[0],'hrtf-dense',manifest.positions[0].dry),'broken');
  assert.throws(()=>verifySharedExperiment(roots[0]),/mismatch/);

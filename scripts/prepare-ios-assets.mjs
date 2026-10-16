@@ -10,9 +10,6 @@ cpSync(join(root,'apps/mobile/rendering-presets.json'),join(out,'rendering-prese
 const experimentPath=join(root,'apps/mobile/ios-experiments/active.json');
 if (existsSync(experimentPath)) {
   const experiment=JSON.parse(readFileSync(experimentPath,'utf8'));
-  const supported={'horizontal-support-218-v1':[218,'horizontal-support'],'fullheight-triangle-commonphase-542-v1':[542,'fullheight-combined']};
-  const config=supported[experiment.id];
-  if (!config || experiment.directionCount!==config[0]) throw new Error('Unknown iOS experiment');
   stageSharedExperiment(join(out,'hrtf-restored'));
   cpSync(experimentPath,join(out,'ios-experiment.json'));
   console.log(`iOS TEST BUILD: ${experiment.id} (${experiment.directionCount} directions)`);
@@ -27,7 +24,7 @@ if (presets[0]?.iosDirectReflectionTrial === true) {
     writeFileSync(path,JSON.stringify(manifest,null,2)+'\n');
   }
 }
-console.log('Staged calibrated 61-direction KU100 + 17 speaker fallback; historical interpolation and shared spatial cues');
+console.log('Staged and verified shared HRTF profile and matching speaker fallback');
 
 cpSync(join(root,'crates/sda-native/tests/fixtures/ios-stereo-tones.m4a'),join(out,'ci-stereo-tones.m4a'));
 

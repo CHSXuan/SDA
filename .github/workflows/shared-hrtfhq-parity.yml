@@ -1,0 +1,70 @@
+name: Shared HRTFHQ renderer parity
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/shared-hrtfhq-20261016]
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      SDA_SHARED_PROFILE_PCM_DIR: ${{ runner.temp }}/hrtfhq-pcm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify all four packaged resource families
+        run: node scripts/test-shared-render-experiment.mjs
+      - name: Render shared deterministic fixtures
+        run: cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib shared_hrtfhq -- --nocapture --test-threads=1
+      - name: Type-check iOS playback host
+        if: runner.os == 'macOS'
+        run: |
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift apps/mobile/modules/sda-core/ios/PlaybackLifecycle.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift apps/mobile/modules/sda-core/ios/SystemAudioBufferPolicy.swift apps/mobile/modules/sda-core/ios/Phase360Prototype.swift
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hrtfhq-${{ matrix.os }}
+          path: ${{ runner.temp }}/hrtfhq-pcm
+          if-no-files-found: error
+          retention-days: 14
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Compile iOS renderer tests
+        run: |
+          export SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          export IPHONEOS_DEPLOYMENT_TARGET=16.4
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --target aarch64-apple-ios-sim --no-default-features --locked --lib --no-run --message-format=json > "$RUNNER_TEMP/ios-build.jsonl"
+      - name: Run renderer tests inside iOS simulator
+        run: python3 scripts/run-ios-hrtfhq-tests.py "$RUNNER_TEMP/ios-build.jsonl" "$RUNNER_TEMP/hrtfhq-pcm"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hrtfhq-ios-simulator
+          path: ${{ runner.temp }}/hrtfhq-pcm
+          if-no-files-found: error
+          retention-days: 14

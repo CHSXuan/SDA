@@ -6427,3 +6427,6 @@ mod head_tracking_bed_regression {
         );
     }
 }
+
+#[cfg(test)]
+mod shared_hrtfhq_tests;

@@ -19,20 +19,27 @@ class MobileAssetsTest(unittest.TestCase):
                         self.bundle / 'hrtf-restored')
         shutil.copy(ROOT / 'apps/mobile/rendering-presets.json', self.bundle)
 
+    def stage_selected(self):
+        marker = ROOT / 'apps/mobile/ios-experiments/active.json'
+        active = json.loads(marker.read_text(encoding='utf-8'))
+        source = ROOT / active['assetFamily'] if 'assetFamily' in active else marker.parent / active['assetSubdirectory']
+        shutil.copytree(source / 'hrtf-dense', self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
+        if (source / 'hrtf').exists():
+            shutil.copytree(source / 'hrtf', self.bundle / 'hrtf-restored/hrtf', dirs_exist_ok=True)
+        shutil.copy(marker, self.bundle / 'ios-experiment.json')
+        return active
+
     def test_mobile_only_bundle_passes(self):
         verify_mobile_ios_assets(self.app)
 
     def test_horizontal_experiment_passes_and_rejects_corruption(self):
         source = ROOT / 'apps/mobile/ios-experiments'
         active = json.loads((source / 'active.json').read_text(encoding='utf-8'))
-        directory = 'fullheight-combined' if active['directionCount'] == 542 else 'horizontal-support'
-        shutil.copytree(source / directory / 'hrtf-dense',
-                        self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
-        shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
+        self.stage_selected()
         verify_mobile_ios_assets(self.app)
         path = self.bundle / 'hrtf-restored/hrtf-dense/direction-100.f32'
         path.write_bytes(b'broken')
-        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile KU100 asset'):
+        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile HRTF asset'):
             verify_mobile_ios_assets(self.app)
 
     def test_explicit_direct_reflection_trial_requires_both_cue_flags_off(self):
@@ -54,9 +61,7 @@ class MobileAssetsTest(unittest.TestCase):
         active = json.loads((source / 'active.json').read_text(encoding='utf-8'))
         if active['directionCount'] != 542:
             self.skipTest('Combined experiment not selected')
-        shutil.copytree(source / 'fullheight-combined/hrtf-dense',
-                        self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
-        shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
+        self.stage_selected()
         verify_mobile_ios_assets(self.app)
         (self.bundle / 'hrtf-restored/hrtf-dense/triangle-grid.json').write_bytes(b'{}')
         with self.assertRaisesRegex(RuntimeError, 'triangle support corrupt'):
@@ -65,13 +70,11 @@ class MobileAssetsTest(unittest.TestCase):
     def test_approved_render_policy_cannot_silently_revert(self):
         source = ROOT / 'apps/mobile/ios-experiments'
         active = json.loads((source / 'active.json').read_text(encoding='utf-8'))
-        shutil.copytree(source / active['assetSubdirectory'] / 'hrtf-dense',
-                        self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
-        shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
+        self.stage_selected()
         path = self.bundle / 'hrtf-restored/hrtf-dense/hrtf-set.json'
         manifest = json.loads(path.read_text(encoding='utf-8'))
         verify_mobile_ios_assets(self.app)
-        for key in ('historicalInterpolationMode', 'spatialCueWindow'):
+        for key in (('historicalInterpolation', 'spatialCues', 'frontEarIsolation') if active['id']=='apple-hrtfhq-542-v1' else ('historicalInterpolationMode', 'spatialCueWindow')):
             with self.subTest(key=key):
                 changed = json.loads(json.dumps(manifest))
                 changed['processing'].pop(key, None)
@@ -92,7 +95,7 @@ class MobileAssetsTest(unittest.TestCase):
         root = self.bundle / 'hrtf-restored/hrtf-dense'
         manifest = json.loads((root / 'hrtf-set.json').read_text(encoding='utf-8'))
         (root / manifest['positions'][0]['dry']).write_bytes(b'bad')
-        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile KU100 asset'):
+        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile HRTF asset'):
             verify_mobile_ios_assets(self.app)
 
     def test_wet_signal_rejected_even_with_matching_hash(self):
@@ -105,7 +108,7 @@ class MobileAssetsTest(unittest.TestCase):
             p['wet'] = 'zero-wet.f32'
             p['assets']['wet']['sha256'] = hashlib.sha256(data).hexdigest()
         (root / 'hrtf-set.json').write_text(json.dumps(manifest))
-        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile KU100 asset'):
+        with self.assertRaisesRegex(RuntimeError, 'Invalid mobile HRTF asset'):
             verify_mobile_ios_assets(self.app)
 
     def test_extra_preset_rejected(self):

@@ -81,7 +81,7 @@ class SdaModule : Module() {
             }
             check(java.io.File(hrtfDir, manifestName).isFile) { "KU100 hrtf-set.json was not copied" }
         }
-        hrtfLoadStatus = "KU100 资源已就绪，正在加载"
+        hrtfLoadStatus = "空间渲染资源已就绪，正在加载"
         val settings = renderingSettings()
         val config = JSONObject().put("sampleRate", 48000).put("outputChannels", 2)
             .put("layout", layout).put("directObjectHrtf", settings.getBoolean("direct"))
@@ -89,7 +89,9 @@ class SdaModule : Module() {
             .put("hrtfWetWeight", settings.getDouble("hrtfWetWeight")).toString()
         val assetDirectory = "hrtf-restored/hrtf-dense"
         val manifest = java.io.File(context.filesDir, "$assetDirectory/hrtf-set.json")
-        val directionCount = JSONObject(manifest.readText()).getJSONArray("positions").length()
+        val manifestInfo = JSONObject(manifest.readText())
+        val directionCount = manifestInfo.getJSONArray("positions").length()
+        val responseName = if (manifestInfo.optString("subjectId") == "apple-public-hrtfhq") "HRTFHQ" else "KU100 D1"
         val ptr = SdaEngine.nativeInit(config, manifest.absolutePath)
         if (ptr == 0L) {
             val detail = SdaEngine.nativeInitError()
@@ -108,7 +110,7 @@ class SdaModule : Module() {
         }
         val flavor = if (settings.getString("hrtfSet") == "dense-raw") "原始测量" else "校准资产"
         val wet = if (settings.getDouble("hrtfWetWeight") == 0.0) "无附加 HRTF 混响" else "HRTF 混响 ${settings.getDouble("hrtfWetWeight") }"
-        hrtfLoadStatus = "已加载 KU100 D1 · $directionCount 方向 · $flavor · $wet (Apache-2.0)"
+        hrtfLoadStatus = "已加载 $responseName · $directionCount 方向 · $flavor · $wet"
         val result = SdaEngine.nativeStart(ptr)
         if (result != 0) {
             val detail = SdaEngine.nativeLastError().ifBlank { "unknown native output error" }

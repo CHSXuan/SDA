@@ -46,7 +46,7 @@ final class SdaPlayer {
  var isPaused = false
  var done = false
  var failure: String?
- var hrtfState = "KU100 · 等待播放加载"
+ var hrtfState = "空间渲染 · 等待播放加载"
  var layout = "7.1.4"
  var imports: [String: (URL, URL)] = [:]
  var observers: [NSObjectProtocol] = []
@@ -171,6 +171,12 @@ final class SdaPlayer {
   prefs.set(enabled, forKey:"sda.spatialEnhancement")
  }
  func settings() -> [String: Any] {
+  // The new default is shared across all four platforms, including existing installs.
+  if prefs.integer(forKey:"sda.sharedResponseVersion") < 1 {
+   prefs.set(false,forKey:"sda.systemSpatialStereo")
+   prefs.set(false,forKey:"sda.systemSpatial360RA")
+   prefs.set(1,forKey:"sda.sharedResponseVersion")
+  }
   if prefs.integer(forKey:"sda.mobileDirectVersion") < 1 {
    for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room","")] as [(String,Any)] { prefs.set(v,forKey:k) }
    prefs.set(1,forKey:"sda.mobileDirectVersion")
@@ -256,7 +262,7 @@ final class SdaPlayer {
     let data = try Data(contentsOf: experiment)
     let info = (try JSONSerialization.jsonObject(with:data)) as? [String:Any]
     let count = info?["directionCount"] as? Int ?? 0
-    hrtfState = count > 0 ? "高解析空间渲染 · 实际方向定位 · 前后／上下空间线索" : hrtfState
+    hrtfState = count > 0 ? "\(info?["userFacingName"] as? String ?? "高解析空间渲染") · 实际方向定位 · 前后／上下空间线索" : hrtfState
    }
   } catch { stopNative(); throw error }
  }
@@ -436,6 +442,7 @@ final class SdaPlayer {
   try locked {
    stopNative(keepMotion:!inBackground && prefs.bool(forKey:"sda.headTracking")); failure = nil
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
+   _ = settings() // Apply shared-renderer migration before selecting an output route.
    let ext = (name as NSString).pathExtension.lowercased()
    let input = try CompressedInput(url:url,name:name)
    alacActive = input.isAlac
@@ -729,11 +736,15 @@ final class SdaPlayer {
      guard displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
      guard status["volumeBalanceEnabled"] as? Bool == prefs.bool(forKey:"sda.balance"),
        status["volumeBalanceEligible"] as? Bool == true else { throw SdaError.message("KU100 音量平衡偏好未恢复") }
-     guard status["spatialCuesEnabled"] as? Bool == true,
+     let manifestURL = try assetRoot().appendingPathComponent("hrtf-restored/hrtf-dense/hrtf-set.json")
+     let manifest = try JSONSerialization.jsonObject(with:Data(contentsOf:manifestURL)) as? [String:Any]
+     let processing = manifest?["processing"] as? [String:Any]
+     guard let expectedCues = processing?["spatialCues"] as? Bool,
+       status["spatialCuesEnabled"] as? Bool == expectedCues,
        status["roomEnabled"] as? Bool == false,
        status["nearFieldEnabled"] as? Bool == false,
        status["directObjectHrtf"] as? Bool == true,
-       status["directionalHrtf"] as? Bool == true else { throw SdaError.message("KU100 空间线索或逐对象实际方向未启用") }
+       status["directionalHrtf"] as? Bool == true else { throw SdaError.message("共享 HRTF 策略或逐对象实际方向未生效") }
      return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode","displayedObjects":displayedObjects]
     }
     return nil

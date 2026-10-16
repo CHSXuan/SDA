@@ -17,6 +17,7 @@ struct Manifest {
     subject_id: Option<String>,
     personal_sofa_version: Option<u32>,
     parametric_hrtf_version: Option<u32>,
+    measured_response_version: Option<u32>,
     processing: Processing,
     positions: Vec<Position>,
 }
@@ -247,6 +248,23 @@ impl NativeHrtfSet {
         let manifest: Manifest =
             serde_json::from_slice(&read(manifest_path).map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
+        if manifest.subject_id.as_deref() == Some("apple-public-hrtfhq")
+            && manifest.measured_response_version != Some(1)
+        {
+            return Err("Measured response profile version missing or unsupported".into());
+        }
+        if let Some(version) = manifest.measured_response_version {
+            if version != 1 || manifest.calibration_version != Some(6)
+                || manifest.subject_id.as_deref() != Some("apple-public-hrtfhq")
+                || manifest.complete_subject != Some(true) || manifest.sample_rate != 48000
+                || !manifest.processing.calibrated || !manifest.processing.preserve_measurements
+                || manifest.processing.historical_interpolation || manifest.processing.mobile_direct_only
+                || manifest.processing.spatial_cues || manifest.processing.front_ear_isolation
+                || manifest.processing.historical_interpolation_mode.is_some()
+            {
+                return Err("Measured response profile must preserve its calibrated transfer without KU100 processing".into());
+            }
+        }
         if !manifest.processing.spatial_cue_gain.is_finite()
             || manifest.processing.spatial_cue_gain <= 0.0
             || manifest.processing.spatial_cue_gain > 1.0 {
@@ -314,6 +332,12 @@ impl NativeHrtfSet {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        if manifest.measured_response_version.is_some()
+            && cache.iter().any(|ir| ir.dry.len() != 1024 || ir.wet != ir.dry
+                || ir.dry.iter().any(|sample| !sample.is_finite()))
+        {
+            return Err("Invalid measured response samples".into());
+        }
         if manifest.processing.mobile_direct_only
             && (!raw_ku100
                 || !complete_subject
@@ -2067,5 +2091,65 @@ mod front_ear_integration_tests {
         assert_eq!(changed.0,dry.0);assert!(changed.1.iter().all(|v|*v==0.));
         let changed=set.mixed_speaker("FrontLeft",solver.layout().as_str(),45.,0.,0.).unwrap();
         assert_eq!(changed.0,bed.0);assert!(changed.1.iter().all(|v|*v==0.));
+    }
+}
+
+#[cfg(test)]
+mod measured_response_tests {
+    use super::*;
+    fn manifest() -> std::path::PathBuf {
+        std::env::var_os("SDA_SHARED_PROFILE_MANIFEST").map(std::path::PathBuf::from)
+            .unwrap_or_else(||Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json"))
+    }
+    #[test]
+    fn shared_hrtfhq_preserves_every_measured_anchor_and_its_matching_fallback() {
+        let mut set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        assert_eq!(set.positions.len(),542);
+        assert_eq!(set.subject_id.as_deref(),Some("apple-public-hrtfhq"));
+        let fallback=set.speaker_set.as_ref().unwrap();
+        assert_eq!(fallback.positions.len(),17);assert_eq!(fallback.subject_id,set.subject_id);
+        for (position,ir) in set.positions.iter().zip(set.cache.iter()) {
+            let pair=set.directional_grid.interpolate(&set.cache,position.azimuth,position.elevation);
+            let n=ir.dry.len()/2;
+            for (ear,actual) in [&pair.0,&pair.1].into_iter().enumerate() {
+                for (i,&sample) in actual.iter().enumerate() {
+                    let expected=if i<n {ir.dry[ear*n+i]} else {0.0};
+                    assert!((sample-expected).abs()<1e-6,"changed measured response at {}/{}, ear{ear}",position.azimuth,position.elevation);
+                }
+            }
+        }
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4,crate::vbap::LayoutId::Sony360Ra13] {
+            set.configure_spatial_cues(layout).unwrap();assert!(!set.spatial_cues_active());
+        }
+    }
+    #[test]
+    fn shared_hrtfhq_rejects_old_processing_on_the_new_measurements() {
+        let original:serde_json::Value=serde_json::from_slice(&read(manifest()).unwrap()).unwrap();
+        let root=std::env::temp_dir().join(format!("sda-measured-policy-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let path=root.join("hrtf-set.json");
+        for flag in ["historicalInterpolation","frontEarIsolation","spatialCues","mobileDirectOnly"] {
+            let mut bad=original.clone();bad["processing"][flag]=true.into();
+            std::fs::write(&path,serde_json::to_vec(&bad).unwrap()).unwrap();
+            let error=NativeHrtfSet::load_calibrated(&path).err().unwrap();
+            assert!(error.contains("Measured response profile"),"{flag}: {error}");
+        }
+        let mut bad=original;bad["measuredResponseVersion"]=2.into();
+        std::fs::write(&path,serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(NativeHrtfSet::load_calibrated(&path).is_err());
+        std::fs::remove_file(path).unwrap();std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn shared_hrtfhq_head_pose_retains_measured_ear_timing() {
+        let set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let q=std::f32::consts::FRAC_1_SQRT_2;
+        let direction=crate::directional::Direction {position:[0.0,1.0,0.0],head:Some([0.0,0.0,q,q]),
+            width:0.0,height:0.0,depth:0.0,diffuse:0.0,horizontal_only:false};
+        let actual=set.directional_grid.footprint(&set.cache,direction);
+        let expected=set.directional_grid.interpolate(&set.cache,-90.0,0.0);
+        let front=set.directional_grid.interpolate(&set.cache,0.0,0.0);
+        let error=actual.0.iter().chain(&actual.1).zip(expected.0.iter().chain(&expected.1))
+            .map(|(a,b)|(*a-*b).abs()).fold(0.0f32,f32::max);
+        assert!(error<1e-5);
+        assert!(actual.0.iter().zip(&front.0).any(|(a,b)|(*a-*b).abs()>0.01));
     }
 }

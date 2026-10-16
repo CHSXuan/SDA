@@ -142,6 +142,7 @@ def sharedAssets = layout.buildDirectory.dir('generated/sharedKu100Assets')
 android.sourceSets.main.assets.setSrcDirs([sharedAssets])
 def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
     inputs.dir(new File(projectRoot, 'ios-experiments'))
+    inputs.dir(new File(projectRoot, '../../assets/hrtf/apple-hrtfhq-v1'))
     inputs.file(new File(projectRoot, '../../scripts/stage-shared-render-experiment.mjs'))
     from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
