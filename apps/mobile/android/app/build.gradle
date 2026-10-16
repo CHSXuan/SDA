@@ -144,23 +144,36 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
     inputs.dir(new File(projectRoot, 'ios-experiments'))
     inputs.dir(new File(projectRoot, '../../assets/hrtf/apple-hrtfhq-v1'))
     inputs.file(new File(projectRoot, '../../scripts/stage-shared-render-experiment.mjs'))
+    def sharedAbis = (project.findProperty('reactNativeArchitectures') ?: 'arm64-v8a,x86_64').split(',').collect { it.trim() }
+    inputs.property('sharedHrtfAbis', sharedAbis)
+    inputs.files(sharedAbis.collect { file("src/main/jniLibs/${it}/libsda_native.so") })
     from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
+    from('../../../../harletty-bridge/eac3') { include 'JOC_INPUT_CONDITIONING_LICENSE'; into 'licenses/joc-input-conditioning' }
     from(mobileHrtfAssets) { include 'hrtf-restored/**' }
     into(sharedAssets)
     doFirst {
+        def selected = new groovy.json.JsonSlurper().parse(new File(projectRoot, 'ios-experiments/active.json'))
+        if (selected.id == 'apple-hrtfhq-542-v1') {
+            sharedAbis.each { abi ->
+                def nativeLibrary = file("src/main/jniLibs/${abi}/libsda_native.so")
+                if (!nativeLibrary.isFile() || !new String(nativeLibrary.bytes, 'ISO-8859-1').contains('Measured response profile')) {
+                    throw new GradleException("Shared HRTFHQ requires a rebuilt Rust JNI library for ${abi}; build sda-native before assembling the APK")
+                }
+            }
+        }
         def manifest = new groovy.json.JsonSlurper().parse(new File(mobileHrtfAssets, 'hrtf-restored/hrtf-dense/hrtf-set.json'))
         if (manifest.positions.size() != 61 || manifest.processing.historicalInterpolation != true || manifest.processing.spatialCues != true || manifest.processing.dryTapLimit != 512) {
             throw new GradleException('Expected calibrated 61-direction KU100 with historical interpolation and spatial cues')
         }
     }
     doLast {
-        exec {
+        providers.exec {
             workingDir projectRoot
             commandLine 'node', '../../scripts/stage-shared-render-experiment.mjs',
                 new File(sharedAssets.get().asFile, 'hrtf-restored').absolutePath
-        }
+        }.result.get().assertNormalExitValue()
     }
 }
 tasks.named('preBuild').configure { dependsOn(syncSharedKu100Assets) }
@@ -168,6 +181,16 @@ tasks.named('preBuild').configure { dependsOn(syncSharedKu100Assets) }
 // React Native's default bundle inputs omit JSON. This file is imported by
 // App/RemotePlayer as well as copied to native assets: invalidate BOTH outputs.
 tasks.withType(com.facebook.react.tasks.BundleHermesCTask).configureEach {
+    // Keep source-map paths on the checkout drive when node_modules is linked.
+    // Only bundling needs this logical path; CMake retains its resolved inputs.
+    def linkedReactNative = new File(projectRoot, '../../node_modules/react-native')
+    doFirst {
+        // The RN plugin assigns its provider after task registration.
+        if (linkedReactNative.isDirectory()) {
+            reactNativeDir.set(linkedReactNative)
+        }
+    }
+
     inputs.file(new File(projectRoot, 'rendering-presets.json'))
         .withPropertyName('renderingPresets')
         .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
@@ -204,15 +227,15 @@ dependencies {
 
     if (isGifEnabled) {
         // For animated gif support
-        implementation("com.facebook.fresco:animated-gif:${reactAndroidLibs.versions.fresco.get()}")
+        implementation("com.facebook.fresco:animated-gif:${expoLibs.versions.fresco.get()}")
     }
 
     if (isWebpEnabled) {
         // For webp support
-        implementation("com.facebook.fresco:webpsupport:${reactAndroidLibs.versions.fresco.get()}")
+        implementation("com.facebook.fresco:webpsupport:${expoLibs.versions.fresco.get()}")
         if (isWebpAnimatedEnabled) {
             // Animated webp support
-            implementation("com.facebook.fresco:animated-webp:${reactAndroidLibs.versions.fresco.get()}")
+            implementation("com.facebook.fresco:animated-webp:${expoLibs.versions.fresco.get()}")
         }
     }
 

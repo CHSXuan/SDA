@@ -1,6 +1,5 @@
 {
   "schemaVersion": 2,
-  "calibrationVersion": 6,
   "measuredResponseVersion": 1,
   "sampleRate": 48000,
   "subjectId": "apple-public-hrtfhq",

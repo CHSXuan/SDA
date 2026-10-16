@@ -254,7 +254,7 @@ impl NativeHrtfSet {
             return Err("Measured response profile version missing or unsupported".into());
         }
         if let Some(version) = manifest.measured_response_version {
-            if version != 1 || manifest.calibration_version != Some(6)
+            if version != 1 || manifest.calibration_version.is_some()
                 || manifest.subject_id.as_deref() != Some("apple-public-hrtfhq")
                 || manifest.complete_subject != Some(true) || manifest.sample_rate != 48000
                 || !manifest.processing.calibrated || !manifest.processing.preserve_measurements
@@ -304,6 +304,7 @@ impl NativeHrtfSet {
         if !raw_ku100
             && !personal_sofa
             && !parametric
+            && manifest.measured_response_version != Some(1)
             && (manifest.calibration_version.unwrap_or(0) < 4 || !manifest.processing.calibrated)
         {
             return Err("native object renderer requires calibrated HRTF v4".into());

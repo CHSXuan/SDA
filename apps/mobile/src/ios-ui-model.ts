@@ -2,6 +2,13 @@ import type { PlayerProps, QueueTrack } from "./RemotePlayer";
 
 // UI-only selectors: never mutate playback or translate scene coordinates here.
 export const IOS_TABS = ["播放", "资料库", "空间"] as const;
+export function finitePlaybackMs(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+export function formatPlaybackTime(ms: number): string {
+  const seconds = Math.floor(finitePlaybackMs(ms) / 1000);
+  return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+}
 export function trackTitle(track: Pick<QueueTrack, "name" | "metadata">): string {
   return track.metadata.title || track.name || "未命名音频";
 }

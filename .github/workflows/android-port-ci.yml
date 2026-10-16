@@ -120,7 +120,7 @@ jobs:
           MACINDECODE_AC4_SPEC_DIR: ${{ github.workspace }}/tmp/MacinDecode-AC4-Core/spec
 
   expo-android-apk:
-    name: Expo Android Release APK (MuMu x86_64)
+    name: Expo Android Release APK (ARM64 + x86_64)
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -133,7 +133,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.0"
-          targets: x86_64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
 
       - uses: actions/setup-java@v4
         with:
@@ -162,10 +162,10 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
           test -x "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
         env:
-          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.1.12297006
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -176,11 +176,11 @@ jobs:
       - name: Install workspace dependencies (Expo SDK 52 hoisted layout)
         run: pnpm install --frozen-lockfile --config.node-linker=hoisted
 
-      - name: Build Rust engine for MuMu x86_64
-        run: cargo ndk -t x86_64 -P 26 -o ../../apps/mobile/android/app/src/main/jniLibs --manifest-path Cargo.toml -- build --release
+      - name: Build shared Rust engine for ARM64 and x86_64
+        run: cargo ndk -t arm64-v8a -t x86_64 -P 26 -o ../../apps/mobile/android/app/src/main/jniLibs --manifest-path Cargo.toml -- build --release --no-default-features
         working-directory: crates/sda-native
         env:
-          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.1.12297006
           MACINDECODE_AC4_SPEC_DIR: ${{ github.workspace }}/tmp/MacinDecode-AC4-Core/spec
 
       - name: Configure Android SDK location
@@ -220,12 +220,14 @@ jobs:
 
       - name: Verify actual APK rendering experiment
         if: success()
-        run: python3 scripts/verify-android-render-experiment.py apps/mobile/android/app/build/outputs/apk/release
+        run: |
+          python3 scripts/verify-android-render-experiment.py apps/mobile/android/app/build/outputs/apk/release
+          python3 -c "import pathlib,zipfile; apks=list(pathlib.Path('apps/mobile/android/app/build/outputs/apk/release').glob('*.apk')); assert apks; [tuple(zipfile.ZipFile(p).getinfo('lib/'+a+'/libsda_native.so') for a in ['arm64-v8a','x86_64']) for p in apks]"
 
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: sda-expo-android-release-x86_64
+          name: sda-expo-android-release-universal
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14

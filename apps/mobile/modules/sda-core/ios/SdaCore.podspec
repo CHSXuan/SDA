@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
  s.name = 'SdaCore'
  s.version = '0.1.0'
- s.summary = 'Shared SDA Rust decoder and KU100 renderer for iOS'
+ s.summary = 'Shared SDA Rust decoder and binaural renderer for iOS'
  s.description = s.summary
  s.license = { :type => 'GPL-3.0-or-later' }
  s.author = 'SDA contributors'

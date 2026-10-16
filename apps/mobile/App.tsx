@@ -215,10 +215,9 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setAlacStereoUpmix = (enabled: boolean) => {
-    if (Platform.OS !== "ios") return;
     try {
       const setter = this.getEngine().setAlacStereoUpmix;
-      if (!setter) throw new Error("请更新 iOS 原生模块以启用 ALAC 上混");
+      if (!setter) throw new Error("请更新原生模块以启用 ALAC 上混");
       setter(enabled); this.setState({ alacStereoUpmix: enabled, error: null });
     } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
   };
@@ -233,12 +232,12 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private cueUpdatePending = false;
   private setSpatialCueDb = async (db: number) => {
-    if (Platform.OS !== "ios" || this.changingTrack || this.state.busy || this.cueUpdatePending || ![0, -3, -6, -9, -12].includes(db)) return;
+    if (this.changingTrack || this.state.busy || this.cueUpdatePending || ![0, -3, -6, -9, -12].includes(db)) return;
     this.cueUpdatePending = true;
     this.setState({ spatialCueBusy: true, error: null });
     try {
       const engine = this.getEngine();
-      if (!engine.setSpatialCueDb) throw new Error("请更新 iOS 原生模块以调整空间线索");
+      if (!engine.setSpatialCueDb) throw new Error("请更新原生模块以调整空间线索");
       await engine.setSpatialCueDb(db);
       this.setState({ spatialCueDb: db });
     } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
@@ -546,10 +545,10 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setSpatialEnhancement = (spatialEnhancementEnabled: boolean) => {
-    if (Platform.OS !== "ios" || this.changingTrack || this.state.busy || this.state.systemSpatial360RAActive) return;
+    if (this.changingTrack || this.state.busy || this.state.systemSpatial360RAActive) return;
     try {
       const setter = this.getEngine().setSpatialEnhancement;
-      if (!setter) throw new Error("请更新 iOS 原生模块以启用空间层增强");
+      if (!setter) throw new Error("请更新原生模块以启用空间层增强");
       setter(spatialEnhancementEnabled);
       this.setState({ spatialEnhancementEnabled, error: null });
     } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }

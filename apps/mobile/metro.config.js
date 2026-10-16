@@ -1,9 +1,16 @@
+require("./scripts/verify-js-deps.cjs").verifyMobileJsDependencies();
 const { getDefaultConfig } = require('expo/metro-config');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const projectRoot = __dirname;
 const workspaceRoot = path.resolve(projectRoot, '../..');
+// A managed/worktree checkout may reuse dependencies through a directory link.
+// Metro must watch the actual target as well as the logical node_modules path.
+const workspaceModules = path.join(workspaceRoot, 'node_modules');
+const physicalModules = fs.existsSync(workspaceModules) ? fs.realpathSync.native(workspaceModules) : workspaceModules;
+const mobileModules = path.join(projectRoot, 'node_modules');
+const physicalMobileModules = fs.existsSync(mobileModules) ? fs.realpathSync.native(mobileModules) : mobileModules;
 const rnPackage = require.resolve('react-native/package.json', { paths: [projectRoot] });
 const reactPackage = require.resolve('react/package.json', { paths: [path.dirname(rnPackage)] });
 const threeEntry = require.resolve('three', { paths: [projectRoot] });
@@ -18,10 +25,12 @@ config.resolver.blockList = [
   /[\\/](?:target|\.git|\.gradle|\.cxx)[\\/]/,
 ];
 
-config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot])];
+config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot, physicalModules, physicalMobileModules])];
 config.resolver.nodeModulesPaths = [
-  path.join(projectRoot, 'node_modules'),
-  path.join(workspaceRoot, 'node_modules'),
+  mobileModules,
+  physicalMobileModules,
+  workspaceModules,
+  physicalModules,
 ];
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),

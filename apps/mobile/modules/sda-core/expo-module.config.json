@@ -5,7 +5,9 @@
   ],
   "android": {
     "modules": [
-      "app.sda.mobile.sda.SdaModule"
+      "app.sda.mobile.sda.SdaModule",
+      "app.sda.mobile.sda.SdaAndroidChromeModule",
+      "app.sda.mobile.sda.SdaAndroidSymbolModule"
     ]
   },
   "apple": {

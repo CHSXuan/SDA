@@ -28,7 +28,7 @@ def verify_mobile_ios_assets(app):
             if (manifest.get('sharedRenderProfile') != experiment['id']
                     or manifest.get('subjectId') != 'apple-public-hrtfhq'
                     or manifest.get('completeSubject') is not True
-                    or manifest.get('calibrationVersion') != 6
+                    or 'calibrationVersion' in manifest
                     or manifest.get('measuredResponseVersion') != 1
                     or any(processing.get(k) is not v for k, v in expected.items())):
                 raise RuntimeError('Approved render policy mismatch: measured response')

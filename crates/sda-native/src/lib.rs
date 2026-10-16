@@ -192,6 +192,8 @@ pub struct MobileEngine {
     active_objects: Mutex<HashMap<u32, ObjectEvent>>,
     stereo_bed_mode: bool,
     mp3_decoder: Option<mp3::Mp3FileDecoder>,
+    alac_decoder: Option<mp3::Mp3FileDecoder>,
+    alac_adapter: alac_pcm::AlacPcm,
     mpegh_decoder: Option<mpegh::MpeghDecoder>,
     hrtf_loaded: bool,
 }
@@ -230,6 +232,8 @@ impl MobileEngine {
             active_objects: Mutex::new(HashMap::new()),
             stereo_bed_mode: false,
             mp3_decoder: None,
+            alac_decoder: None,
+            alac_adapter: Default::default(),
             mpegh_decoder: None,
             hrtf_loaded: false,
         })
@@ -398,8 +402,40 @@ impl MobileEngine {
         Ok((frames, done))
     }
 
-    /// Apple-decoded ALAC enters the existing bed renderer and balance policy.
+    /// File-decoded ALAC uses the same PCM adapter as the iOS host.
+    pub fn open_alac(&mut self, path: &str) -> EngineResult<u32> {
+        if self.alac_decoder.is_some() || self.mp3_decoder.is_some() || self.mpegh_decoder.is_some() {
+            return Err("engine already has an active media source".into());
+        }
+        let decoder = mp3::Mp3FileDecoder::open_alac(path)?;
+        let rate = decoder.input_rate();
+        self.alac_decoder = Some(decoder);
+        self.alac_adapter = Default::default();
+        Ok(rate)
+    }
+
+    pub fn pull_alac(&mut self, max_frames: usize, upmix: bool) -> EngineResult<(usize, bool)> {
+        let samples = self.alac_decoder.as_mut().ok_or("ALAC decoder unavailable")?
+            .read_interleaved(max_frames.clamp(1, 4096))?;
+        let frames = samples.len() / 2;
+        if frames > 0 {
+            let reference = vec![samples.iter().step_by(2).copied().collect(), samples.iter().skip(1).step_by(2).copied().collect()];
+            let frame = self.alac_adapter.live_frame(&samples, upmix, self.decoded_sample_pos())?;
+            self.feed_alac_pcm(frame, reference)?;
+        }
+        Ok((frames, self.alac_decoder.as_ref().is_some_and(mp3::Mp3FileDecoder::is_finished)))
+    }
+
     pub(crate) fn feed_alac_pcm(&mut self, frame: FrameData, reference: Vec<Vec<f32>>) -> EngineResult<()> {
+        // The Android file source announces its codec without changing the
+        // existing iOS externally decoded PCM path.
+        if self.alac_decoder.is_some() && self.announced_codec.as_deref() != Some("alac") {
+            if let Some(pipeline) = &self.pipeline {
+                pipeline.commands.push(render_command::RenderCommand::Command(Command::SetProgramCodec { codec: "alac".into() }))
+                    .map_err(|_| "ALAC codec command queue full")?;
+                self.announced_codec = Some("alac".into());
+            }
+        }
         self.balance.enable_alac_startup();
         // Reserve all buses once, before the first ALAC PCM. Live dry/wet
         // transitions change samples, not the convolution graph or its tails.
@@ -422,6 +458,8 @@ impl MobileEngine {
 
     pub fn reset_source_state(&mut self) {
         self.mp3_decoder = None;
+        self.alac_decoder = None;
+        self.alac_adapter = Default::default();
         self.mpegh_decoder = None;
         self.stereo_bed_mode = false;
         self.decoder = StreamingDecoder::new("auto").expect("known decoder type");
@@ -788,7 +826,7 @@ impl MobileEngine {
 
     /// Codec in use (meaningful after auto-detection).
     pub fn codec_name(&self) -> &str {
-        if self.mpegh_decoder.is_some() { "mpegh" } else { self.decoder.codec_name() }
+        if self.alac_decoder.is_some() { "alac" } else if self.mpegh_decoder.is_some() { "mpegh" } else { self.decoder.codec_name() }
     }
 
     /// Drains queued FrameData into the render pipeline once started.

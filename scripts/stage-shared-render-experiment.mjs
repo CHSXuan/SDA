@@ -28,7 +28,7 @@ function validateFamily(source,active,dense) {
  if(manifest.positions.length!==count || manifest.sampleRate!==48000) throw Error('HRTF topology mismatch');
  if(measured) {
   if(manifest.sharedRenderProfile!==experiment.id || manifest.subjectId!=='apple-public-hrtfhq'
-    || manifest.measuredResponseVersion!==1 || manifest.calibrationVersion!==6 || manifest.completeSubject!==true
+    || manifest.measuredResponseVersion!==1 || manifest.calibrationVersion!==undefined || manifest.completeSubject!==true
     || manifest.processing?.preserveMeasurements!==true || manifest.processing?.calibrated!==true
     || manifest.processing?.historicalInterpolation!==false || manifest.processing?.spatialCues!==false
     || manifest.processing?.frontEarIsolation!==false || manifest.processing?.mobileDirectOnly!==false)

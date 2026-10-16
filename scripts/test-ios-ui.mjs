@@ -71,7 +71,7 @@ assert.match(settings, /scrollContentBackground\("hidden"\)/);
 // The home screen must not clip the native TabView at the bottom safe area
 // or show a different-color native page between the top/bottom backgrounds.
 assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
-assert.match(ui, /edges=\{hasSystemIOSTabs \? \["top", "left", "right"\]/);
+assert.match(ui, /edges=\{hasSystemIOSTabs && Platform\.OS === "ios" \? \["top", "left", "right"\]/);
 assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
 assert.match(ui, /backgroundColor="transparent" pageBackgroundColors=\{\["transparent", c.bg, c.bg\]\} accent=\{c.accent\}/);
 assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
@@ -384,7 +384,7 @@ assert.match(ui, /const homeBackground = immersiveHome \? "transparent" : c.bg/)
 assert.doesNotMatch(homePages, /np.coverImage|np.emptyCover/);
 
 
-assert.match(ui, /backgroundColor=\{homeBackground\}/);
+assert.match(ui, /backgroundColor=\{Platform\.OS === "android" \? "transparent" : homeBackground\}/);
 assert.match(ui, /immersiveHome && <View pointerEvents="none"/);
 
 
