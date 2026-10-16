@@ -16,8 +16,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      SDA_SHARED_PROFILE_PCM_DIR: ${{ runner.temp }}/hrtfhq-pcm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +27,8 @@ jobs:
       - name: Verify all four packaged resource families
         run: node scripts/test-shared-render-experiment.mjs
       - name: Render shared deterministic fixtures
+        env:
+          SDA_SHARED_PROFILE_PCM_DIR: ${{ runner.temp }}/hrtfhq-pcm
         run: cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib shared_hrtfhq -- --nocapture --test-threads=1
       - name: Type-check iOS playback host
         if: runner.os == 'macOS'
