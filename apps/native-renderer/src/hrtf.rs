@@ -355,6 +355,7 @@ impl NativeHrtfSet {
         // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
             Some("hrtf-dense") => Some("hrtf"),
+            Some("hrtf-ku100-reference-dense") => Some("hrtf-ku100-reference"),
             Some("hrtf-dense-raw") => Some("hrtf-raw"),
             Some(name)
                 if name.ends_with("-dense")
@@ -714,6 +715,11 @@ impl NativeHrtfSet {
     }
 
     pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active }
+
+    pub(crate) fn uses_shared_measured_response(&self) -> bool {
+        self.subject_id.as_deref() == Some("apple-public-hrtfhq")
+    }
+
 
     /// Measurement control only: same active profiles/routing/filter lengths,
     /// but remove residual excitation from the prepared speaker responses.

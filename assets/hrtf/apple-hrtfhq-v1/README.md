@@ -17,3 +17,5 @@ Official API documentation:
 - https://developer.apple.com/documentation/avfaudio/avaudioenvironmentdistanceattenuationparameters
 
 Measurement settings:48kHz stereo headphone output, mono point source, identity listener, radius1.2m, inverse attenuation reference2m/rolloff1, no reverb/occlusion/obstruction. Repeated impulses, amplitude scaling, and2/15co-located-source sums were checked. These checks establish bounded linear stationary behavior under the tested conditions; they do not assert identity to every Apple OS/hardware version.
+
+The presentation preset also enables the already-auditioned SDA recipe on entering this response family: master0dB, world-coordinate auxiliary layer up to+1.5dB, and the existing shared4kHz/+1.5dB high shelf. Existing object-bearing E-AC-3+2dB compensation remains unchanged. This is source/renderer processing, not baked into head-relative HRTF samples, so turning the head does not change which authored source receives the layer gain. Same-family resource reloads preserve an explicit later user override. iOS migration restores the same default; Android and desktop obtain it directly from the common engine.

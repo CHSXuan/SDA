@@ -72,6 +72,7 @@ await Promise.all(hrtfSets.map(verifyHrtfStage));
 // Windows and macOS use this same native asset stage. Overlay only the
 // explicitly selected experimental dense family; keep standard fallback.
 await cp(join(root,'apps/mobile/assets/hrtf-restored/hrtf'),join(hrtfDestination,'hrtf-ku100-reference'),{recursive:true});
+await cp(join(root,'apps/mobile/ios-experiments/fullheight-combined/hrtf-dense'),join(hrtfDestination,'hrtf-ku100-reference-dense'),{recursive:true});
 const experiment=stageSharedExperiment(hrtfDestination);
 if(experiment) { verifySharedExperiment(hrtfDestination); console.log(`Native experimental renderer: ${experiment.id}`); }
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);

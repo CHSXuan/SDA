@@ -269,6 +269,8 @@ fn handle_command(
                     | "hrtf-dense"
                     | "hrtf-raw"
                     | "hrtf-dense-raw"
+                    | "hrtf-ku100-reference"
+                    | "hrtf-ku100-reference-dense"
                     | "hrtf-d2"
                     | "hrtf-h3"
                     | "hrtf-h4"

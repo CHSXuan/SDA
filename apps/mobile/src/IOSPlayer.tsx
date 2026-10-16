@@ -83,7 +83,7 @@ function ThemedPlayer(p: PlayerProps) {
     ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
     ["年份", p.metadata.year || "暂未读取"], ["曲目", p.metadata.track || "暂未读取"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
     ["编码", p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["当前可视对象数（非全曲总数）", String(p.objects.length)],
-    ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / KU100"],
+    ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / HRTFHQ"],
   ];
   const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
@@ -254,11 +254,11 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {actionRow("scope", "头部方向归中", "", p.resetYaw, !p.headTrackingEnabled || p.systemSpatial360RAActive)}
             {divider()}
-            {toggle("空间平衡", "主层维持原电平，高度与后方辅助层最多额外 +1.5 dB；无额外整体增益，保留最早反射并渐弱附加拖尾，仅 SDA / KU100 路径应用", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
+            {toggle("空间平衡", "按空间位置调整辅助层（最多 +1.5 dB），并做轻微高频补偿，仅对 SDA 共享渲染生效", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
           </View>
           {heading("360 Reality Audio")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
-          {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。", true, s.groupHint)}
+          {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / HRTFHQ 空间渲染，并非普通立体声下混。", true, s.groupHint)}
           {heading("ALAC 立体声")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {toggle("立体声上混 · 7.1.4", "由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象", p.alacStereoUpmix, p.setAlacStereoUpmix, p.busy)}{divider()}

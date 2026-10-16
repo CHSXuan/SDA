@@ -173,6 +173,9 @@ final class SdaPlayer {
  func settings() -> [String: Any] {
   // The new default is shared across all four platforms, including existing installs.
   if prefs.integer(forKey:"sda.sharedResponseVersion") < 1 {
+   prefs.set(true,forKey:"sda.spatialEnhancement")
+   prefs.set(true,forKey:"sda.direct")
+   prefs.set(true,forKey:"sda.directional")
    prefs.set(false,forKey:"sda.systemSpatialStereo")
    prefs.set(false,forKey:"sda.systemSpatial360RA")
    prefs.set(1,forKey:"sda.sharedResponseVersion")
@@ -192,7 +195,7 @@ final class SdaPlayer {
  func hrtfPath(_ set: String) throws -> String {
   let directory = "hrtf-restored/hrtf-dense"
   let path = try assetRoot().appendingPathComponent(directory).appendingPathComponent("hrtf-set.json")
-  guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("KU100 测量资源缺失") }
+  guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("HRTF 测量资源缺失") }
   return path.path
  }
  func stopNative(keepMotion: Bool = false) {

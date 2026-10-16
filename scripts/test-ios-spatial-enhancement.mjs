@@ -17,7 +17,8 @@ assert.match(player,/command\("spatialEnhancement", \["enabled":s\["spatialEnhan
 assert.ok(read('apps/mobile/modules/sda-core/ios/SdaModule.swift').includes('Function("setSpatialEnhancement")'));
 assert.ok(read('crates/sda-native/src/ios.rs').includes('"spatialEnhancement" => e.set_spatial_enhancement'));
 assert.ok(read('crates/sda-native/src/lib.rs').includes('Command::SetSpatialEnhancement { enabled }'));
-console.log('iOS spatial enhancement checks passed: default-off, persisted, restored, native recipe and system-route bypass.');
+assert.ok(player.includes('prefs.set(true,forKey:"sda.spatialEnhancement")'));
+console.log('iOS spatial enhancement checks passed: shared-profile default, persisted override, native recipe and system-route bypass.');
 
 const recipe=read("apps/native-renderer/src/lib.rs").split("pub fn set_spatial_enhancement")[1].split("fn set_output_volume")[0];
 assert.ok(recipe.includes("self.set_master_preamp_db(0.0)"));

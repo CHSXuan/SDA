@@ -164,7 +164,7 @@ const BUNDLED_HEADPHONE_PROFILES = new Map([
   ["beyerdynamic-xelento-wired-average-autoeq", { preampDb: -5.2, left: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32" }],
   ["sony-mdr-7506-average-autoeq", { preampDb: -6.1, left: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32", right: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32" }],
 ]);
-const BUNDLED_HRTF_PATTERN = /^hrtf(?:-[a-z0-9]+)*\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
+const {BUNDLED_HRTF_PATTERN,NATIVE_HRTF_SET_PATTERN,bundledHrtfRoot}=require("./hrtf-policy.cjs");
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
 
 const OUTPUT_LATENCY_SECONDS = [0.1, 0.2, 0.3];
@@ -1687,7 +1687,7 @@ ipcMain.handle("sda:native-renderer-clear-pose", async () => {
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
-  if ((!/^hrtf(?:-dense(?:-raw)?|-raw|-d2(?:-dense)?|-h(?:[3-9]|1[0-9]|20)(?:-dense)?)?$/.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
+  if ((!NATIVE_HRTF_SET_PATTERN.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   return accepted;
@@ -2008,7 +2008,8 @@ ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
     throw new Error("内置 HRTF 路径无效");
   }
   const setDir = assetPath.split("/")[0];
-  const root = personalHrtf.PERSONAL_SET.test(setDir) ? personalHrtfDirectory() : webAssetRoot();
+  const root = personalHrtf.PERSONAL_SET.test(setDir) ? personalHrtfDirectory()
+    : bundledHrtfRoot(setDir,bundledNativeRendererPath(),webAssetRoot());
   if (!root) throw new Error("找不到 HRTF 资产目录");
   const hrtfRoot = path.resolve(root, setDir);
   const filePath = path.resolve(root, ...assetPath.split("/"));

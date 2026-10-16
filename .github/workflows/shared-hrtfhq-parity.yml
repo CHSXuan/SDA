@@ -3,6 +3,19 @@ on:
   workflow_dispatch:
   push:
     branches: [research/shared-hrtfhq-20261016]
+    paths:
+      - '.github/workflows/shared-hrtfhq-parity.yml'
+      - 'apps/native-renderer/**'
+      - 'assets/hrtf/**'
+      - 'apps/desktop/**'
+      - 'apps/web/src/App.tsx'
+      - 'apps/web/src/shared-hrtf-profile.ts'
+      - 'apps/mobile/ios-experiments/active.json'
+      - 'apps/mobile/modules/sda-core/**'
+      - 'scripts/*hrtfhq*'
+      - 'scripts/stage-shared-render-experiment.mjs'
+      - 'scripts/test-shared-render-experiment.mjs'
+      - 'scripts/test-desktop-shared-profile.mjs'
 permissions:
   contents: read
 jobs:
@@ -23,9 +36,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Verify all four packaged resource families
         run: node scripts/test-shared-render-experiment.mjs
+      - name: Verify desktop shared playback selection
+        run: node scripts/test-desktop-shared-profile.mjs
       - name: Render shared deterministic fixtures
         env:
           SDA_SHARED_PROFILE_PCM_DIR: ${{ runner.temp }}/hrtfhq-pcm

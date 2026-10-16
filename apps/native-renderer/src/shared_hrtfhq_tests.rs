@@ -6,14 +6,19 @@ fn manifest() -> std::path::PathBuf {
             .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json"))
 }
 fn render(layout:vbap::LayoutId,chunk:usize,mode:&str) -> Vec<f32> {
+    render_recipe(layout,chunk,mode,false)
+}
+fn render_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool) -> Vec<f32> {
     let is_bed=mode!="objects";
     let count=if mode=="stereo" {2} else {8};
     let labels=["FrontLeft","FrontRight","Center","SurroundLeft","SurroundRight","TopFrontLeft","TopRearRight","LFE"];
     const FRAMES:usize=98304;
     let mut e=Engine::new(48000,2);e.set_layout(layout).unwrap();
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
+    if explicit {e.set_spatial_enhancement(true).unwrap();}
     e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);e.direct_mix=1.0;
-    e.set_spatial_enhancement(true).unwrap();e.set_spatial_balance(false);e.front_common.enabled=false;
+    assert_eq!(e.spatial_layer_gain_db(),1.5);
+    e.set_spatial_balance(false);e.front_common.enabled=false;
     e.set_master_preamp_db(-12.0).unwrap();
     e.set_program_codec(if mode=="stereo" {"alac"} else if layout==vbap::LayoutId::Dolby7_1_4 {"eac3"} else {"mpegh"}.into());
     e.output_active=true;e.paused=false;
@@ -58,4 +63,23 @@ fn shared_hrtfhq_synthetic_output_is_callback_partition_invariant() {
             std::fs::write(root.join(format!("{name}.f32")),data).unwrap();
         }
     }
+}
+
+#[test]
+fn shared_hrtfhq_default_presentation_is_host_independent_and_reload_is_idempotent() {
+    let mut e=Engine::new(48000,2);
+    e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
+    assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
+    assert_eq!(e.spatial_layer.main_restore_db,0.0);
+    e.set_spatial_enhancement(false).unwrap();
+    e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
+    assert_eq!(e.spatial_layer_gain_db(),0.0,"same-profile reload must retain an explicit override");
+}
+
+#[test]
+fn shared_hrtfhq_default_matches_the_auditioned_presentation() {
+    let automatic=render_recipe(vbap::LayoutId::Dolby7_1_4,128,"objects",false);
+    let explicit=render_recipe(vbap::LayoutId::Dolby7_1_4,128,"objects",true);
+    let error=automatic.iter().zip(&explicit).map(|(a,b)|(a-b).abs()).fold(0.0f32,f32::max);
+    assert!(error<2e-6,"host defaults differ from the approved explicit recipe: {error}");
 }

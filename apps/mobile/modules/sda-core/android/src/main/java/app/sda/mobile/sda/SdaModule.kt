@@ -95,7 +95,7 @@ class SdaModule : Module() {
         val ptr = SdaEngine.nativeInit(config, manifest.absolutePath)
         if (ptr == 0L) {
             val detail = SdaEngine.nativeInitError()
-            hrtfLoadStatus = "KU100 加载失败: ${if (detail.isBlank()) "nativeInit failed" else detail}"
+            hrtfLoadStatus = "$responseName 加载失败: ${if (detail.isBlank()) "nativeInit failed" else detail}"
             throw RuntimeException(hrtfLoadStatus)
         }
         handle = ptr
@@ -528,12 +528,19 @@ class SdaModule : Module() {
     private fun renderingSettings(): JSONObject {
         val context = appContext.reactContext ?: throw RuntimeException("no react context")
         val preferences = context.getSharedPreferences("sda-rendering", 0)
+        if (preferences.getInt("sharedResponseVersion", 0) < 1) {
+            check(preferences.edit().putInt("sharedResponseVersion", 1)
+                .putBoolean("direct", true).putBoolean("directional", true).commit()) {
+                "无法启用共享 HRTF 渲染"
+            }
+        }
         if (preferences.getInt("mobileDirectVersion", 0) < 1) {
             check(preferences.edit().putInt("mobileDirectVersion", 1).putString("hrtfSet", "dense")
                 .putFloat("hrtfWetWeight", 0f).putBoolean("direct", true).putBoolean("directional", true)
                 .putBoolean("nearField", false).putString("roomId", "").commit()) { "无法迁移移动端渲染设置" }
         }
         return JSONObject().put("layout", activeLayout)
+            .put("spatialEnhancementEnabled", true)
             // One-time migration also resets legacy object switches to the mobile defaults.
             .put("hrtfSet", "dense")
             .put("hrtfWetWeight", 0.0)

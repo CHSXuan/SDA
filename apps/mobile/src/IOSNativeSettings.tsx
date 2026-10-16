@@ -4,6 +4,7 @@ import { Alert, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, use
 import { swiftUI } from "./IOSSystemTabs";
 import type { PlayerProps } from "./RemotePlayer";
 import renderingPresets from "../rendering-presets.json";
+import sharedRenderProfile from "../ios-experiments/active.json";
 import { isPresetSelected } from "./ios-ui-model";
 import { PLAYBACK_MODES, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 
@@ -155,13 +156,13 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>
     </Section>
-    <Section title="声音增强" footer={<Text>主层与低频维持原电平，高度与后方辅助层总提升最多 +1.5 dB；保留最早反射并渐弱附加拖尾。不识别人声。仅 SDA / KU100 路径应用，系统空间音频路径不应用。</Text>}>
+    <Section title="声音增强" footer={<Text>按空间位置调整辅助层（最多 +1.5 dB），并做轻微高频补偿。不识别人声。仅对 SDA 共享渲染生效，系统空间音频路径不应用。</Text>}>
       <Toggle label="空间平衡" isOn={p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(appTheme.accent), disabled(p.busy || p.systemSpatial360RAActive)]} />
     </Section>
-    <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100 直达渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
+    <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 SDA 共享渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / HRTFHQ 空间渲染，并非普通立体声下混。</Text>}>
       <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
     </Section>
-    <Section title="ALAC 立体声" footer={<Text>上混由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象。系统输出开启时，未上混提交 2.0，上混提交 7.1.4，旁路 KU100。上混播放中平滑切换，已缓冲音频播完后生效；系统输出开关下次播放生效；空间效果取决于输出设备及系统设置。</Text>}>
+    <Section title="ALAC 立体声" footer={<Text>上混由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象。系统输出开启时，未上混提交 2.0，上混提交 7.1.4，旁路 SDA 共享渲染。上混播放中平滑切换，已缓冲音频播完后生效；系统输出开关下次播放生效；空间效果取决于输出设备及系统设置。</Text>}>
       <Toggle label="立体声上混 · 7.1.4" isOn={p.alacStereoUpmix} onIsOnChange={p.setAlacStereoUpmix} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
       <Toggle label="立体声系统空间音频" isOn={p.systemSpatialStereo} onIsOnChange={p.setSystemSpatialStereo} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
     </Section>
@@ -173,11 +174,11 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       <Toggle label="逐对象渲染" isOn={p.directObjects} onIsOnChange={value => p.setRendering(value, p.directionalObjects)} modifiers={[tint(appTheme.accent), disabled(audioDisabled)]}><Text>逐对象渲染</Text><Text>每个对象独立生成双耳声音</Text></Toggle>
       <Toggle label="实际方向" isOn={p.directionalObjects} onIsOnChange={value => p.setRendering(p.directObjects, value)} modifiers={[tint(appTheme.accent), disabled(audioDisabled)]}><Text>实际方向</Text><Text>按对象真实位置定位声音</Text></Toggle>
     </Section>
-    <Section title="空间线索强度" footer={<Text>仅调节 SDA / KU100 额外空间线索，不调整主音量或干声增益。播放中平滑切换，不暂停或重新播放；已缓冲的声音播放完后生效。系统空间音频旁路时仅保存设置，恢复 SDA 渲染后生效。</Text>}>
+    {sharedRenderProfile.spatialCues !== false && <Section title="空间线索强度" footer={<Text>仅调节 SDA / KU100 额外空间线索，不调整主音量或干声增益。播放中平滑切换，不暂停或重新播放；已缓冲的声音播放完后生效。系统空间音频旁路时仅保存设置，恢复 SDA 渲染后生效。</Text>}>
       <Picker label="辅助空间效果" selection={String(p.spatialCueDb)} onSelectionChange={(value: string) => p.setSpatialCueDb(Number(value))} modifiers={[pickerStyle("menu"), disabled(p.spatialCueBusy || p.busy)]}>
         {[0, -3, -6, -9, -12].map(db => <Text key={db} modifiers={[tag(String(db))]}>{`${db} dB${db === -6 ? " · 默认" : ""}`}</Text>)}
       </Picker>
-    </Section>
+    </Section>}
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>
     </Section>
