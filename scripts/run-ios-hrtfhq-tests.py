@@ -13,5 +13,5 @@ subprocess.run(['codesign','--force','--sign','-',str(binary)],check=True)
 output.mkdir(parents=True,exist_ok=True)
 env=dict(os.environ,SIMCTL_CHILD_SDA_SHARED_PROFILE_MANIFEST=str(root/'assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json'),SIMCTL_CHILD_SDA_SHARED_PROFILE_PCM_DIR=str(output))
 subprocess.run(['xcrun','simctl','spawn',device['udid'],str(binary),'shared_hrtfhq','--nocapture','--test-threads=1'],env=env,check=True)
-for name in ['atmos.f32','360ra.f32']:assert (output/name).stat().st_size==98304*2*4
+for name in ['atmos.f32','360ra.f32','bed714.f32','stereo.f32']:assert (output/name).stat().st_size==98304*2*4
 (output/'platform.json').write_text(json.dumps({'platform':'iOS simulator','device':device,'binary':str(binary)},indent=2),encoding='utf-8')

@@ -6,7 +6,7 @@ The dense bank retains the existing542positions, including the218horizontal-supp
 
 Each512tap planar stereo file has the captured nonzero response, one common stereo gain, and162common leading zero samples. Truncated trailing samples were required to be exactly zero. There is no per-ear, per-object or per-direction level normalization. See calibration.json and provenance.json for measurement hashes, the synthetic front reference and capture identity. The exact same files are staged for every platform.
 
-The pure measured-response policy disables the previous KU100-specific far-ear suppression, H13 adjustment and G80 residual. Those old assets and algorithms remain in the repository. The new default reproduces the accepted response presentation while retaining SDA source decoding, actual object directions, generic mirrored triangle support, continuous convolution and head tracking.
+The pure measured-response policy disables the previous KU100-specific far-ear suppression, H13 adjustment and G80 residual. Those old assets and algorithms remain in the repository. The new default reproduces the accepted response presentation while retaining SDA source decoding, actual object directions, mirrored triangle support with a pairwise waveform clock (no dominant-anchor switch), continuous convolution and head tracking.
 
 Rebuild with scripts/build-shared-hrtfhq.py --capture <downloaded-synthetic-artifact> --calibration assets/hrtf/apple-hrtfhq-v1/calibration.json. The555-direction capture also includes13diagnostic/standard extra positions; only the shared542grid and17standard positions are packaged.
 

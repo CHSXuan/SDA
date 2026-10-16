@@ -9,7 +9,8 @@
     "full-height-support",
     "mirrored-triangle-interpolation",
     "shared-object-convolution",
-    "head-tracking"
+    "head-tracking",
+    "aligned-pairwise-waveform"
   ],
   "userFacingName": "HRTFHQ 空间渲染",
   "subjectId": "apple-public-hrtfhq",

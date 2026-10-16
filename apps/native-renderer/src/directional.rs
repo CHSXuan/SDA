@@ -1603,13 +1603,27 @@ impl Grid {
         // Use the same waveform-correlation clock for alignment and timeline
         // restoration. Absolute peak indices can jump between pinna-response
         // lobes even when the actual waveforms hardly change.
+        // A pure measured-response profile uses one pairwise weighted clock.
+        // Choosing a dominant neighbour at equal weights can select different
+        // references across libm/platform rounding, creating a waveform jump.
         let shifts: Vec<[f64; 2]> = weights.iter()
-            .map(|&(index, _)| self.neighbour_shift(irs, dominant, index))
+            .map(|&(index, _)| {
+                if self.consistent_waveform {
+                    let mut shift=[0.0;2];
+                    for &(other,weight) in &weights {
+                        let pair=self.neighbour_shift(irs,other,index);
+                        for ear in 0..2 { shift[ear]+=weight*pair[ear]; }
+                    }
+                    shift
+                } else { self.neighbour_shift(irs,dominant,index) }
+            })
             .collect();
-        let timeline: [f64; 2] = std::array::from_fn(|ear| {
-            -weights.iter().zip(&shifts)
-                .map(|((_, weight), shift)| weight * shift[ear]).sum::<f64>()
-        });
+        let timeline: [f64; 2] = if self.consistent_waveform { [0.0;2] } else {
+            std::array::from_fn(|ear| {
+                -weights.iter().zip(&shifts)
+                    .map(|((_, weight), shift)| weight * shift[ear]).sum::<f64>()
+            })
+        };
         for ear in 0..2 {
             for (&(index, weight), alignment) in weights.iter().zip(&shifts) {
                 let len = irs[index].dry.len() / 2;
@@ -1637,7 +1651,7 @@ impl Grid {
             // retain their existing lighter fallback.
             let ratio = actual / target;
             let mut guard_mix = 0.0;
-            if weights.len() > 1 && ratio < if self.ku100_notch_guard { 0.90 } else { 0.72 } {
+            if !self.consistent_waveform && weights.len() > 1 && ratio < if self.ku100_notch_guard { 0.90 } else { 0.72 } {
                 let floor = if self.ku100_notch_guard {
                     ku100_notch_guard_mix(ratio)
                 } else {

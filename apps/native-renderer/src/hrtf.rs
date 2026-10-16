@@ -381,7 +381,8 @@ impl NativeHrtfSet {
             || (is_dense_ku100 && manifest.subject_id.is_none());
         let mut directional_grid=crate::directional::Grid::new_with_notch_guard(&cache,ku100_notch_guard)
             .with_historical_interpolation(&cache,manifest.processing.historical_interpolation);
-        if manifest.processing.historical_interpolation_mode.as_deref()==Some("aligned-pairwise") {
+        if manifest.measured_response_version == Some(1)
+            || manifest.processing.historical_interpolation_mode.as_deref()==Some("aligned-pairwise") {
             directional_grid=directional_grid.with_consistent_waveform_interpolation();
         } else if waveform_interpolation {
             directional_grid=directional_grid.with_aligned_waveform_interpolation();
@@ -2137,6 +2138,21 @@ mod measured_response_tests {
         std::fs::write(&path,serde_json::to_vec(&bad).unwrap()).unwrap();
         assert!(NativeHrtfSet::load_calibrated(&path).is_err());
         std::fs::remove_file(path).unwrap();std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn shared_hrtfhq_interpolation_does_not_jump_at_equal_weight_directions() {
+        let set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let q=std::f32::consts::FRAC_1_SQRT_2;
+        let position=crate::spatial::head_relative_adm([-0.8,-0.5,0.8],Some([q,0.0,0.0,q]));
+        let direction=crate::spatial::adm_to_spherical(position);
+        let el=f64::from(direction.elevation);
+        for az in [45.0,-45.0,135.0,-135.0] {
+            let a=set.directional_grid.interpolate(&set.cache,az-0.000001,el);
+            let b=set.directional_grid.interpolate(&set.cache,az+0.000001,el);
+            let energy:f64=a.0.iter().chain(&a.1).map(|&x|f64::from(x).powi(2)).sum();
+            let error:f64=a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1)).map(|(&a,&b)|f64::from(a-b).powi(2)).sum();
+            assert!((error/energy).sqrt()<0.0001,"waveform jumps across equal weights {az}/{el}: {}",(error/energy).sqrt());
+        }
     }
     #[test]
     fn shared_hrtfhq_head_pose_retains_measured_ear_timing() {
