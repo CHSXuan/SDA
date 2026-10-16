@@ -50,6 +50,8 @@ struct Processing {
     spatial_cue_window: crate::spatial_cues::CueWindow,
     #[serde(default, rename = "spatialCueMotion")]
     spatial_cue_motion: SpatialCueMotion,
+    #[serde(default, rename = "frontEarIsolation")]
+    front_ear_isolation: bool,
     #[serde(default, rename = "preserveMeasurements")]
     preserve_measurements: bool,
     #[serde(default, rename = "preserveSamples")]
@@ -74,6 +76,7 @@ pub struct NativeHrtfSet {
     spatial_cue_window: crate::spatial_cues::CueWindow,
     spatial_cue_motion: SpatialCueMotion,
     spatial_cues_active: bool,
+    front_ear_isolation: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     speaker_prepared: std::collections::HashMap<
@@ -122,6 +125,7 @@ impl NativeHrtfSet {
             spatial_cue_window: self.spatial_cue_window,
             spatial_cue_motion: self.spatial_cue_motion,
             spatial_cues_active: self.spatial_cues_active,
+            front_ear_isolation: self.front_ear_isolation,
             cinema: self.cinema.clone(),
             room_profile: self.room_profile.clone(),
             speaker_prepared: Default::default(),
@@ -217,6 +221,7 @@ impl NativeHrtfSet {
             spatial_cue_window: Default::default(),
             spatial_cue_motion: Default::default(),
             spatial_cues_active: false,
+            front_ear_isolation: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: Default::default(),
@@ -373,6 +378,7 @@ impl NativeHrtfSet {
             spatial_cue_window: manifest.processing.spatial_cue_window,
             spatial_cue_motion: manifest.processing.spatial_cue_motion,
             spatial_cues_active: false,
+            front_ear_isolation: manifest.processing.front_ear_isolation,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: std::collections::HashMap::new(),
@@ -546,6 +552,13 @@ impl NativeHrtfSet {
                     *v *= scale;
                 }
             }
+        }
+        if self.front_ear_isolation {
+            let relative = crate::spatial::adm_to_spherical(crate::spatial::head_relative_adm(
+                direction.position, direction.head));
+            let extent = direction.width.max(direction.height).max(direction.depth).max(direction.diffuse);
+            crate::front_ear::apply(&mut pair.0, &mut pair.1,
+                relative.azimuth as f64, relative.elevation as f64, 1.0 - extent.clamp(0.0, 1.0));
         }
         // With no per-speaker processing all routes use the same dry pair.
         // Sum their scalar weights once instead of allocating/filtering a copy
@@ -817,6 +830,9 @@ impl NativeHrtfSet {
                     .interpolate(&self.cache, azimuth, elevation);
             left.resize(self.speaker_filter_len(), 0.0);
             right.resize(self.speaker_filter_len(), 0.0);
+            if self.front_ear_isolation {
+                crate::front_ear::apply(&mut left, &mut right, azimuth, elevation, 1.0);
+            }
             return Ok((left, right));
         }
         let profile = self
@@ -941,6 +957,11 @@ impl NativeHrtfSet {
             self.output_filter(name, layout, self.cinema.calibrate(name, pair)?);
         left.resize(self.speaker_filter_len(), 0.0);
         right.resize(self.speaker_filter_len(), 0.0);
+        if self.front_ear_isolation {
+            // Apply after room/cue composition so the residual cannot restore
+            // the muted branch. Bed and reflection buses share this preparation.
+            crate::front_ear::apply(&mut left, &mut right, azimuth, elevation, 1.0);
+        }
         Ok((left, right))
     }
 
@@ -2026,4 +2047,25 @@ mod subject_dense_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod front_ear_integration_tests {
+    use super::*;
+    #[test]
+    fn policy_survives_snapshot_and_covers_bed_and_object_kernels() {
+        let mut set=NativeHrtfSet::synthetic(12,256,512).unwrap();
+        let solver=crate::vbap::VbapSolver::new();
+        let direction=crate::directional::Direction {position:[-1.,1.,0.], head:None,
+            diffuse:0.,horizontal_only:false,width:0.,height:0.,depth:0.};
+        let mut gains=[0.;crate::vbap::MAX_BUS_COUNT];gains[0]=1.;let amounts=[0.;crate::vbap::MAX_BUS_COUNT];
+        let dry=set.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap();
+        let bed=set.mixed_speaker("FrontLeft",solver.layout().as_str(),45.,0.,0.).unwrap();
+        set.front_ear_isolation=true;
+        let snapshot=set.preparation_snapshot();assert!(snapshot.front_ear_isolation);
+        let changed=snapshot.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap();
+        assert_eq!(changed.0,dry.0);assert!(changed.1.iter().all(|v|*v==0.));
+        let changed=set.mixed_speaker("FrontLeft",solver.layout().as_str(),45.,0.,0.).unwrap();
+        assert_eq!(changed.0,bed.0);assert!(changed.1.iter().all(|v|*v==0.));
+    }
 }

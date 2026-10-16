@@ -4,7 +4,7 @@
   "assetSubdirectory": "fullheight-combined",
   "baselineDirectionCount": 61,
   "triangleSupportSha256": "564e49ec0818bc808146417e56c19bfbb2b2688cb9d0d1fe86651a897f9574eb",
-  "scope": "User approved the latter40seconds of G80-then-global-clock-140-180.wav for packaging; research stopped.",
+  "scope": "Approved G80 renderer plus front near-ear isolation; smooth center, rear and height transitions.",
   "includedHorizontalDirectionSet": 218,
   "enabledComponents": [
     "horizontal-support",
@@ -12,10 +12,12 @@
     "mirrored-triangle-interpolation",
     "common-fractional-timing",
     "aligned-pairwise-waveform",
-    "extended80-spatial-cues"
+    "extended80-spatial-cues",
+    "front-near-ear-isolation"
   ],
   "userFacingName": "高解析空间渲染",
   "historicalInterpolationMode": "aligned-pairwise",
   "spatialCueWindow": "extended80",
-  "renderRevision": "g80-pairwise-no-anchor-20261015"
+  "renderRevision": "g80-front-ear-isolation-20261016",
+  "frontEarIsolation": true
 }

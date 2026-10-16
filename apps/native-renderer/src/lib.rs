@@ -54,6 +54,7 @@ pub mod bus_renderer;
 pub mod callback_output;
 pub mod cinema;
 mod spatial_cues;
+mod front_ear;
 pub mod convolution;
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 #[cfg(target_vendor = "apple")]

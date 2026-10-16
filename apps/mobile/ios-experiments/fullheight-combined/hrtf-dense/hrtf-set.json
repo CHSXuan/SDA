@@ -36,6 +36,7 @@
     "spatialCues": true,
     "spatialCueGain": 0.5011872336272722,
     "historicalInterpolationMode": "aligned-pairwise",
+    "frontEarIsolation": true,
     "spatialCueWindow": "extended80"
   },
   "positions": [
