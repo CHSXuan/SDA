@@ -18,6 +18,9 @@ on:
       - 'scripts/test-desktop-shared-profile.mjs'
 permissions:
   contents: read
+concurrency:
+  group: shared-hrtfhq-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   native:
     strategy:
