@@ -71,9 +71,13 @@ fn shared_hrtfhq_default_presentation_is_host_independent_and_reload_is_idempote
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
     assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
     assert_eq!(e.spatial_layer.main_restore_db,0.0);
+    e.reset_session(0);assert_eq!(e.spatial_layer_gain_db(),1.5,"track reset lost presentation defaults");
     e.set_spatial_enhancement(false).unwrap();
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
     assert_eq!(e.spatial_layer_gain_db(),0.0,"same-profile reload must retain an explicit override");
+    let mut live=Engine::new(48000,2);
+    live.configure_hrtf_preset(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0,true,true).unwrap();
+    assert_eq!(live.spatial_layer_gain_db(),1.5,"live preset path must apply the same recipe");
 }
 
 #[test]

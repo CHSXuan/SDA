@@ -2142,6 +2142,7 @@ impl Engine {
         candidate.configure_spatial_cues(self.layout)?;
         let wet = candidate.effective_wet(wet);
         let bus = bus_renderer::BusRenderer::new(&candidate, &self.vbap, wet)?;
+        self.apply_hrtf_presentation_defaults(&candidate)?;
         self.hrtf_wet_weight = wet;
         self.cinema = settings;
         self.hardware_lfe = crate::hardware::Chain::new(&self.cinema.monitor.hardware);

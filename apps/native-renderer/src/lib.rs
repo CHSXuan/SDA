@@ -1339,19 +1339,23 @@ impl Engine {
             && spatial::adm_to_spherical(source.position).elevation > layout_ceiling + 0.5
     }
 
+    fn apply_hrtf_presentation_defaults(&mut self, set: &hrtf::NativeHrtfSet) -> Result<(), String> {
+        // Both initial loads and live preset swaps use the auditioned recipe.
+        // A same-family resource reload preserves an explicit user override.
+        let shared = set.uses_shared_measured_response();
+        let was_shared = self.active_hrtf_set.as_ref()
+            .is_some_and(hrtf::NativeHrtfSet::uses_shared_measured_response);
+        if shared != was_shared { self.set_spatial_enhancement(shared)?; }
+        Ok(())
+    }
+
     pub fn replace_hrtf(&mut self, mut set: hrtf::NativeHrtfSet, wet: f32) -> Result<(), String> {
         set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
         set.configure_spatial_cues(self.layout)?;
         let wet = set.effective_wet(wet);
         let bus = bus_renderer::BusRenderer::new(&set, &self.vbap, wet)?;
         direct_renderer::warm_banks(&mut set, &self.vbap, wet)?;
-        // The accepted presentation includes the existing shared enhancement
-        // recipe. Apply it at a profile transition on every host, not only iOS.
-        // Reloading the same family preserves an explicit later user override.
-        let shared = set.uses_shared_measured_response();
-        let was_shared = self.active_hrtf_set.as_ref()
-            .is_some_and(hrtf::NativeHrtfSet::uses_shared_measured_response);
-        if shared != was_shared { self.set_spatial_enhancement(shared)?; }
+        self.apply_hrtf_presentation_defaults(&set)?;
         // Publish all related state only after every speaker filter is ready.
         self.front_common.reset();
         self.spatial_balance.reset();
