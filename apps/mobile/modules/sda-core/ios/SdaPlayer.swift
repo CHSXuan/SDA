@@ -742,8 +742,8 @@ final class SdaPlayer {
      let manifestURL = try assetRoot().appendingPathComponent("hrtf-restored/hrtf-dense/hrtf-set.json")
      let manifest = try JSONSerialization.jsonObject(with:Data(contentsOf:manifestURL)) as? [String:Any]
      let processing = manifest?["processing"] as? [String:Any]
-     guard let expectedCues = processing?["spatialCues"] as? Bool,
-       status["spatialCuesEnabled"] as? Bool == expectedCues,
+     let expectedCues = (processing?["spatialCues"] as? Bool == true) || (manifest?["sharedDepthVersion"] as? Int == 1)
+     guard status["spatialCuesEnabled"] as? Bool == expectedCues,
        status["roomEnabled"] as? Bool == false,
        status["nearFieldEnabled"] as? Bool == false,
        status["directObjectHrtf"] as? Bool == true,

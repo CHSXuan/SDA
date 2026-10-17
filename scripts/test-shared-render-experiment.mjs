@@ -23,7 +23,8 @@ try {
   assert.equal(manifest.subjectId,"apple-public-hrtfhq");
   const fallback=JSON.parse(readFileSync(join(roots[0],"hrtf/hrtf-set.json"),"utf8"));
   assert.equal(fallback.subjectId,manifest.subjectId);
-  assert.equal(fallback.measuredResponseVersion,1);
+  assert.equal(fallback.measuredResponseVersion,2);
+  assert.equal(fallback.sharedDepthVersion,1);
   assert.equal(manifest.processing.frontEarIsolation,false);
  }
  assert.equal(manifest.triangleSupportFile,'triangle-grid.json');

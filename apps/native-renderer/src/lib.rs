@@ -54,6 +54,7 @@ pub mod bus_renderer;
 pub mod callback_output;
 pub mod cinema;
 mod spatial_cues;
+mod shared_depth;
 mod front_ear;
 pub mod convolution;
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
@@ -6441,3 +6442,6 @@ mod head_tracking_bed_regression {
 
 #[cfg(test)]
 mod shared_hrtfhq_tests;
+
+#[cfg(test)]
+mod hrtfhq_depth_probe;

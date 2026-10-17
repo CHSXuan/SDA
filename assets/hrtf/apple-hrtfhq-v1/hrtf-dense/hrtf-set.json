@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "measuredResponseVersion": 1,
+  "measuredResponseVersion": 2,
   "sampleRate": 48000,
   "subjectId": "apple-public-hrtfhq",
   "completeSubject": true,
@@ -9796,5 +9796,6 @@
     "reportSha256": "33d138ff966c40d901630c9902ee717d06e5e1b87477a21efb999c9dda0ee1bd"
   },
   "sharedRenderProfile": "apple-hrtfhq-542-v1",
-  "triangleSupportFile": "triangle-grid.json"
+  "triangleSupportFile": "triangle-grid.json",
+  "sharedDepthVersion": 1
 }

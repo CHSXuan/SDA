@@ -18,6 +18,7 @@ struct Manifest {
     personal_sofa_version: Option<u32>,
     parametric_hrtf_version: Option<u32>,
     measured_response_version: Option<u32>,
+    shared_depth_version: Option<u32>,
     processing: Processing,
     positions: Vec<Position>,
 }
@@ -77,6 +78,8 @@ pub struct NativeHrtfSet {
     spatial_cue_window: crate::spatial_cues::CueWindow,
     spatial_cue_motion: SpatialCueMotion,
     spatial_cues_active: bool,
+    shared_depth_enabled: bool,
+    shared_depth: Option<std::sync::Arc<crate::shared_depth::Bank>>,
     front_ear_isolation: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
@@ -126,6 +129,8 @@ impl NativeHrtfSet {
             spatial_cue_window: self.spatial_cue_window,
             spatial_cue_motion: self.spatial_cue_motion,
             spatial_cues_active: self.spatial_cues_active,
+            shared_depth_enabled: self.shared_depth_enabled,
+            shared_depth: self.shared_depth.clone(),
             front_ear_isolation: self.front_ear_isolation,
             cinema: self.cinema.clone(),
             room_profile: self.room_profile.clone(),
@@ -222,6 +227,8 @@ impl NativeHrtfSet {
             spatial_cue_window: Default::default(),
             spatial_cue_motion: Default::default(),
             spatial_cues_active: false,
+            shared_depth_enabled: false,
+            shared_depth: None,
             front_ear_isolation: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
@@ -249,12 +256,14 @@ impl NativeHrtfSet {
             serde_json::from_slice(&read(manifest_path).map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
         if manifest.subject_id.as_deref() == Some("apple-public-hrtfhq")
-            && manifest.measured_response_version != Some(1)
+            && !matches!(manifest.measured_response_version, Some(1 | 2))
         {
             return Err("Measured response profile version missing or unsupported".into());
         }
         if let Some(version) = manifest.measured_response_version {
-            if version != 1 || manifest.calibration_version.is_some()
+            if !matches!(version,1 | 2)
+                || manifest.shared_depth_version != (version==2).then_some(1)
+                || manifest.calibration_version.is_some()
                 || manifest.subject_id.as_deref() != Some("apple-public-hrtfhq")
                 || manifest.complete_subject != Some(true) || manifest.sample_rate != 48000
                 || !manifest.processing.calibrated || !manifest.processing.preserve_measurements
@@ -304,7 +313,7 @@ impl NativeHrtfSet {
         if !raw_ku100
             && !personal_sofa
             && !parametric
-            && manifest.measured_response_version != Some(1)
+            && !matches!(manifest.measured_response_version, Some(1 | 2))
             && (manifest.calibration_version.unwrap_or(0) < 4 || !manifest.processing.calibrated)
         {
             return Err("native object renderer requires calibrated HRTF v4".into());
@@ -383,7 +392,7 @@ impl NativeHrtfSet {
             || (is_dense_ku100 && manifest.subject_id.is_none());
         let mut directional_grid=crate::directional::Grid::new_with_notch_guard(&cache,ku100_notch_guard)
             .with_historical_interpolation(&cache,manifest.processing.historical_interpolation);
-        if manifest.measured_response_version == Some(1)
+        if manifest.measured_response_version.is_some()
             || manifest.processing.historical_interpolation_mode.as_deref()==Some("aligned-pairwise") {
             directional_grid=directional_grid.with_consistent_waveform_interpolation();
         } else if waveform_interpolation {
@@ -405,6 +414,8 @@ impl NativeHrtfSet {
             spatial_cue_window: manifest.processing.spatial_cue_window,
             spatial_cue_motion: manifest.processing.spatial_cue_motion,
             spatial_cues_active: false,
+            shared_depth_enabled: manifest.shared_depth_version==Some(1),
+            shared_depth: None,
             front_ear_isolation: manifest.processing.front_ear_isolation,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
@@ -674,6 +685,7 @@ impl NativeHrtfSet {
     ) {
         self.preparation_id = Self::next_preparation_id();
         self.spatial_cues_active = false;
+        self.shared_depth = None;
         if self.mobile_direct_only {
             self.cinema = crate::cinema::Settings::default();
             self.room_profile = None;
@@ -690,6 +702,12 @@ impl NativeHrtfSet {
     pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
         self.preparation_id = Self::next_preparation_id();
         self.spatial_cues_active = false;
+        self.shared_depth = if self.shared_depth_enabled && self.uses_shared_measured_response()
+            && !self.cinema.enabled && !self.cinema.monitor.enabled && self.room_profile.is_none() {
+            crate::shared_depth::bank(layout)?
+        } else { None };
+        self.speaker_prepared.clear();
+        self.prepared.clear();
         if !self.spatial_cues { return Ok(()); }
         self.cinema = crate::cinema::Settings::default();
         self.room_profile = None;
@@ -715,12 +733,18 @@ impl NativeHrtfSet {
         Ok(())
     }
 
-    pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active }
+    pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active || self.shared_depth.is_some() }
 
     pub(crate) fn uses_shared_measured_response(&self) -> bool {
         self.subject_id.as_deref() == Some("apple-public-hrtfhq")
     }
 
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_without_shared_depth(&self) -> Self {
+        let mut set=self.clone();set.shared_depth_enabled=false;set.shared_depth=None;
+        set.preparation_id=Self::next_preparation_id();set.speaker_prepared.clear();set.prepared.clear();set
+    }
 
     /// Measurement control only: same active profiles/routing/filter lengths,
     /// but remove residual excitation from the prepared speaker responses.
@@ -741,7 +765,7 @@ impl NativeHrtfSet {
 
 
     pub(crate) fn effective_wet(&self, requested: f32) -> f32 {
-        if self.spatial_cues_active { 0.04 } else { requested }
+        if self.spatial_cues_active() { 0.04 } else { requested }
     }
 
     fn room_alignment_active(&self, layout: &str) -> bool {
@@ -800,7 +824,7 @@ impl NativeHrtfSet {
             );
         let monitor_delay = self.output_max_delay();
         if !self.cinema.enabled {
-            return base + monitor_delay;
+            return (base + monitor_delay).max(self.shared_depth.as_ref().map_or(0,|bank|bank.max_taps()));
         }
         let room = self.room_profile.as_ref().map_or(0, |p| {
             p.speakers
@@ -993,6 +1017,9 @@ impl NativeHrtfSet {
             // Apply after room/cue composition so the residual cannot restore
             // the muted branch. Bed and reflection buses share this preparation.
             crate::front_ear::apply(&mut left, &mut right, azimuth, elevation, 1.0);
+        }
+        if wet != 0.0 {
+            if let Some(bank)=&self.shared_depth { bank.add(name,layout,&mut left,&mut right)?; }
         }
         Ok((left, right))
     }
@@ -2127,7 +2154,7 @@ mod measured_response_tests {
             }
         }
         for layout in [crate::vbap::LayoutId::Dolby7_1_4,crate::vbap::LayoutId::Sony360Ra13] {
-            set.configure_spatial_cues(layout).unwrap();assert!(!set.spatial_cues_active());
+            set.configure_spatial_cues(layout).unwrap();assert!(set.spatial_cues_active());
         }
     }
     #[test]
@@ -2141,7 +2168,7 @@ mod measured_response_tests {
             let error=NativeHrtfSet::load_calibrated(&path).err().unwrap();
             assert!(error.contains("Measured response profile"),"{flag}: {error}");
         }
-        let mut bad=original;bad["measuredResponseVersion"]=2.into();
+        let mut bad=original;bad["measuredResponseVersion"]=99.into();
         std::fs::write(&path,serde_json::to_vec(&bad).unwrap()).unwrap();
         assert!(NativeHrtfSet::load_calibrated(&path).is_err());
         std::fs::remove_file(path).unwrap();std::fs::remove_dir(root).unwrap();

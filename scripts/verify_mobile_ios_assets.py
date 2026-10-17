@@ -17,6 +17,8 @@ def verify_mobile_ios_assets(app):
     if experiment and (experiment.get('id') not in supported or experiment.get('directionCount') != supported[experiment['id']]):
         raise RuntimeError('Unknown iOS experiment')
     measured = experiment is not None and experiment['id'] == 'apple-hrtfhq-542-v1'
+    if measured and (experiment.get('measuredResponseVersion') != 2 or experiment.get('sharedDepthVersion') != 1):
+        raise RuntimeError('Approved render policy mismatch: depth selection')
     for directory, count in [('hrtf-dense', experiment['directionCount'] if experiment else 61), ('hrtf', 17)]:
         root = bundle / 'hrtf-restored' / directory
         manifest = json.loads((root / 'hrtf-set.json').read_text(encoding='utf-8'))
@@ -29,7 +31,8 @@ def verify_mobile_ios_assets(app):
                     or manifest.get('subjectId') != 'apple-public-hrtfhq'
                     or manifest.get('completeSubject') is not True
                     or 'calibrationVersion' in manifest
-                    or manifest.get('measuredResponseVersion') != 1
+                    or manifest.get('measuredResponseVersion') != 2
+                    or manifest.get('sharedDepthVersion') != 1
                     or any(processing.get(k) is not v for k, v in expected.items())):
                 raise RuntimeError('Approved render policy mismatch: measured response')
         if experiment and directory == 'hrtf-dense':

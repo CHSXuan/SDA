@@ -10,14 +10,16 @@
     "mirrored-triangle-interpolation",
     "shared-object-convolution",
     "head-tracking",
-    "aligned-pairwise-waveform"
+    "aligned-pairwise-waveform",
+    "approved-legacy61-half-residual"
   ],
   "userFacingName": "HRTFHQ 空间渲染",
   "subjectId": "apple-public-hrtfhq",
-  "measuredResponseVersion": 1,
+  "measuredResponseVersion": 2,
   "historicalInterpolation": false,
   "spatialCues": false,
   "frontEarIsolation": false,
-  "renderRevision": "shared-hrtfhq-20261016",
-  "scope": "User-approved public HRTFHQ response presentation, shared offline convolution on iOS/Android/Windows/macOS; no Apple runtime API required."
+  "renderRevision": "shared-hrtfhq-depth-20261017",
+  "scope": "Approved HRTFHQ direct plus fixed half-strength retained61 residual, shared on all four platforms; no per-song analysis.",
+  "sharedDepthVersion": 1
 }

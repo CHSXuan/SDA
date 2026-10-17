@@ -46,7 +46,7 @@ fn render_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool) -> V
     }
     assert_eq!(e.peak_guard.diagnostic_gain(),1.0);
     assert!(output.iter().all(|v|v.is_finite()));assert!(output.iter().any(|v|v.abs()>1e-5));
-    assert!(!e.active_hrtf_set.as_ref().unwrap().spatial_cues_active());
+    assert_eq!(e.active_hrtf_set.as_ref().unwrap().spatial_cues_active(), layout!=vbap::LayoutId::Stereo2_0);
     assert_eq!(e.sources.len(),count);
     output
 }
@@ -86,4 +86,29 @@ fn shared_hrtfhq_default_matches_the_auditioned_presentation() {
     let explicit=render_recipe(vbap::LayoutId::Dolby7_1_4,128,"objects",true);
     let error=automatic.iter().zip(&explicit).map(|(a,b)|(a-b).abs()).fold(0.0f32,f32::max);
     assert!(error<2e-6,"host defaults differ from the approved explicit recipe: {error}");
+}
+
+#[test]
+fn shared_hrtfhq_depth_preserves_direct_and_respects_layout_and_user_room() {
+    let original=hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+    for layout in [vbap::LayoutId::Dolby7_1_4,vbap::LayoutId::Sony360Ra13] {
+        let mut enabled=original.clone();enabled.configure_spatial_cues(layout).unwrap();
+        let mut pure=original.diagnostic_without_shared_depth();pure.configure_spatial_cues(layout).unwrap();
+        assert!(enabled.spatial_cues_active());assert!(!pure.spatial_cues_active());
+        for s in vbap::speakers(layout) {
+            let base=pure.mixed_speaker(s.name,layout.as_str(),s.azimuth as f64,s.elevation as f64,0.0).unwrap();
+            let direct=enabled.mixed_speaker(s.name,layout.as_str(),s.azimuth as f64,s.elevation as f64,0.0).unwrap();
+            let full=enabled.mixed_speaker(s.name,layout.as_str(),s.azimuth as f64,s.elevation as f64,enabled.effective_wet(0.0)).unwrap();
+            for (a,b) in [(&base.0,&direct.0),(&base.1,&direct.1)] {
+                assert_eq!(a.as_slice(),&b[..a.len()],"direct response changed: {}",s.name);
+                assert!(b[a.len()..].iter().all(|x|*x==0.0));
+            }
+            assert!(full.0.iter().chain(&full.1).all(|x|x.is_finite()));
+            assert!(full.0.iter().chain(&full.1).zip(direct.0.iter().chain(&direct.1)).any(|(a,b)|(a-b).abs()>1e-6));
+        }
+        enabled.configure_spatial_cues(vbap::LayoutId::Stereo2_0).unwrap();assert!(!enabled.spatial_cues_active());
+        enabled.configure_spatial_cues(layout).unwrap();assert!(enabled.spatial_cues_active());
+        enabled.configure_cinema(cinema::Settings{enabled:true,..Default::default()},None);
+        enabled.configure_spatial_cues(layout).unwrap();assert!(!enabled.spatial_cues_active(),"user room must not acquire bundled residual");
+    }
 }

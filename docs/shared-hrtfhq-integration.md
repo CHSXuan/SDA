@@ -1,6 +1,6 @@
 # Shared HRTFHQ presentation
 
-The user accepted the public-HRTFHQ response audition and explicitly requested the same presentation on iOS, Android, Windows and macOS. This supersedes keeping KU100/G80 as the default for this change. The old measured assets and processing remain available; their special corrections are not layered over the newly accepted response.
+The user accepted the public-HRTFHQ response audition and explicitly requested the same presentation on iOS, Android, Windows and macOS. This supersedes keeping KU100/G80 as the default for this change. The old measured assets remain available. On2026-10-17 the user additionally approved the isolated half-strength retained61 short residual for front/rear motion and360RA overhead motion; this is now the shared default. It is separate from the old direct-HRTF corrections and later G80 preset.
 
 ## Implementation
 
@@ -27,7 +27,7 @@ The measured profile now uses a pairwise weighted waveform clock, without a domi
 
 ## Stale-build protection
 
-The measured manifest uses `measuredResponseVersion:1` and deliberately omits the legacy `calibrationVersion`. A pre-HRTFHQ native renderer was tested and correctly rejects it. It cannot quietly apply its old generic interpolation to the new bank.
+The measured manifest uses `measuredResponseVersion:2` plus `sharedDepthVersion:1` and deliberately omits the legacy `calibrationVersion`. A pre-HRTFHQ native renderer was tested and correctly rejects it. It cannot quietly apply its old generic interpolation to the new bank.
 
 Android Gradle and APK verification reject JNI libraries lacking the measured-response loader. The normal Android workflow rebuilds both ARM64 and x86_64 from source before assembling the APK. The checked-in prebuilt libraries inherited from the Android merge are old and must be rebuilt for a local native APK build. Desktop packaging similarly rejects an old sidecar or web bundle lacking the shared-profile migration. Do not distribute only new response files with older native binaries.
 
@@ -52,3 +52,14 @@ Android Gradle and APK verification reject JNI libraries lacking the measured-re
 - Local evidence: `C:/Users/legendshop/Downloads/SDA-clarity-validation/egaku-apple-reference-20261016/`, especially `platform-parity/`, `shared-profile-final-render/`, `shared-profile-default-render/`, and `shared-profile-regression/`.
 
 No new formal installer has yet been declared complete in this checkpoint. Source/runtime/package validation and listening acceptance must be reported separately.
+
+
+## Approved depth integration — 2026-10-17
+
+The shared engine now adds the exact auditioned residual at half strength, with the same fixed common calibration. Existing layout-specific reflection buses are reused; no second object engine, source scan or cache is added. Measured HRTFHQ direct responses, full-height direction support, interpolation, JOC input processing and head tracking remain in place. The35ms retained61 residual must not be confused with G80. No audition-only loudness matching is in runtime playback.
+
+Actual integrated output was compared against the stored approved offline candidates, with no time alignment or gain fit. Four trajectories passed: Atmos front/rear,360RA front/top/rear, bottom/top and upper-left/top/upper-right. Maximum sample error3.968e-9; worst residual-127.49dB. This establishes equivalence to those synthetic auditions, not acceptance of every song or device.
+
+Both response manifests now require schema2/depth1, so older native loaders reject them. Android JNI and desktop sidecar package checks require the new depth loader marker. iOS smoke checks expect the separate depth layer while the legacy processing flags remain off. The residual banks are compiled into the same native crate on iOS, Android, Windows and macOS.
+
+Local integration validation:326 native engine tests passed,0failed,33ignored offline/fixture tests;9iOS resource tests passed. Shared four-platform staging bytes, desktop integration, mobile preset, head-tracking and Android settings/ALAC checks passed. Fresh four-runtime parity CI is required for this revision; earlier v1 parity numbers above do not validate this new revision.
