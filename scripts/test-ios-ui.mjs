@@ -362,7 +362,10 @@ assert.ok(iosPlayerLayout(390, 780, 237).coverSize > 260);
 
 assert.doesNotMatch(homePages, /np.footer|歌词（尚未支持）|选择输出设备（尚未支持）|待播清单/);
 
-assert.doesNotMatch(ui, /lowerPlaybackGroup|marginVertical: playerGap|marginTop: "auto"/);
+assert.doesNotMatch(ui, /lowerPlaybackGroup|marginVertical: playerGap/);
+assert.match(ui, /androidTabletPortrait = Platform\.OS === "android" && width >= 600 && height > width/);
+assert.match(ui, /np\.metadata, androidTabletPortrait && np\.tabletMetadata/);
+assert.match(ui, /tabletMetadata: \{ marginTop: "auto" \}/);
 for (const height of [520, 650, 780]) {
  const layout = iosPlayerLayout(390, height, 236);
  assert.ok(layout.gap >= 0 && layout.gap <= 48);

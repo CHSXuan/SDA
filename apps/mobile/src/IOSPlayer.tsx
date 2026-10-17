@@ -45,6 +45,7 @@ function ThemedPlayer(p: PlayerProps) {
   const previewMetadata = false;
   const systemTheme = useColorScheme();
   const { width, height } = useWindowDimensions();
+  const androidTabletPortrait = Platform.OS === "android" && width >= 600 && height > width;
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
   const [page, setPage] = useState(sceneSmoke ? 2 : (chromeSmoke === "library" || chromeSmoke === "mini-player") ? 1 : 0);
@@ -193,7 +194,7 @@ function ThemedPlayer(p: PlayerProps) {
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }]}>
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
-          <View style={[np.metadata, { transform: [{ translateY: 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
+          <View style={[np.metadata, androidTabletPortrait && np.tabletMetadata, { transform: [{ translateY: 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
           <View style={[s.playerBlock, np.controlsDown]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - playerGap - 22))}>
@@ -342,6 +343,8 @@ const s = StyleSheet.create({
 });
 
 const np = StyleSheet.create({
+  // Absorb unused artwork space above the whole control group on tall tablets.
+  tabletMetadata: { marginTop: "auto" },
   controlsDown: { transform: [{ translateY: 24 }] },
   infoProgressOffset: { transform: [{ translateY: 12 }] },
   root: { flex: 1, backgroundColor: "transparent", marginHorizontal: -18, overflow: "hidden" },
