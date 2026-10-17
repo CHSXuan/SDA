@@ -45,6 +45,9 @@ function ThemedPlayer(p: PlayerProps) {
   const previewMetadata = false;
   const systemTheme = useColorScheme();
   const { width, height } = useWindowDimensions();
+  const landscapePlayer = width > height && (Platform.OS === "ios" || (Platform.OS === "android" && height >= 600));
+  const compactLandscape = landscapePlayer && height < 600;
+  const androidTabletPortrait = Platform.OS === "android" && width >= 600 && height > width;
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
   const [page, setPage] = useState(sceneSmoke ? 2 : (chromeSmoke === "library" || chromeSmoke === "mini-player") ? 1 : 0);
@@ -62,7 +65,7 @@ function ThemedPlayer(p: PlayerProps) {
   const isLight = systemTheme !== "dark";
   const md3 = androidMaterialTheme(appTheme.id, !isLight);
   const c = Platform.OS === "android" ? { ...palettes[isLight ? "light" : "dark"], bg: md3.bg, panel: md3.panel, ink: md3.ink, muted: md3.muted, line: md3.line, field: md3.panel, accent: md3.primary } : { ...palettes[isLight ? "light" : "dark"], accent: appTheme.accent };
-  const artworkSize = width + 48; // Slight uniform zoom, never stretch the square.
+  const artworkSize = landscapePlayer ? height : width + 48; // Slight uniform zoom, never stretch the square.
   const pc = { ink: "#ffffff", muted: "#c9c9ce", line: "rgba(255,255,255,.24)", field: "rgba(255,255,255,.10)" };
   const [failedArtwork, setFailedArtwork] = useState("");
   const artworkUri = p.metadata.coverUri || "";
@@ -84,7 +87,10 @@ function ThemedPlayer(p: PlayerProps) {
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const [playerHeight, setPlayerHeight] = useState(Math.max(300, height - 230));
   const [playerBlocks, setPlayerBlocks] = useState({ status: 0, info: 62, controls: 106, volume: 44 });
-  const { coverSize, gap: playerGap } = iosPlayerLayout(width, playerHeight, Object.values(playerBlocks).reduce((sum, value) => sum + value, 0));
+  const measuredBlockHeight = Object.values(playerBlocks).reduce((sum, value) => sum + value, 0);
+  const { coverSize, gap: portraitGap } = iosPlayerLayout(width, playerHeight, measuredBlockHeight);
+  const playerGap = landscapePlayer ? Math.max(0, Math.min(compactLandscape ? 12 : 32, (playerHeight - measuredBlockHeight - (compactLandscape ? 24 : 88)) / 4)) : portraitGap;
+  const transportInset = compactLandscape ? 8 : 22;
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
   };
@@ -152,8 +158,10 @@ function ThemedPlayer(p: PlayerProps) {
 
   return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: c.bg }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
-    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30, tintColor: fadeColor }} />
+    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={landscapePlayer
+      ? { position: "absolute", left: artworkSize * .35, top: artworkSize * .35, width: artworkSize, height: artworkSize * .30, tintColor: fadeColor, transform: [{ rotate: "-90deg" }] }
+      : { position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30, tintColor: fadeColor }} />
   </View>}
   <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
     {Platform.OS === "android" ? <AndroidAudioInfo rows={infoRows} dark={!isLight} onClose={() => setMetadataOpen(false)} /> :
@@ -169,7 +177,7 @@ function ThemedPlayer(p: PlayerProps) {
     <StatusBar translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      <View style={s.header}>
+      <View style={[s.header, compactLandscape && np.compactHeader]}>
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
         {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
@@ -191,28 +199,30 @@ function ThemedPlayer(p: PlayerProps) {
       <IOSSystemTabs selected={page} onChange={navigate} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
-          <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
-          <View style={[np.metadata, { transform: [{ translateY: 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
-            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, { color: pc.muted }]}>{artist}</Text></View>
+          <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: artworkSize, height: "100%" }]}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
+          <View style={[{ gap: playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls]}>
+          <View style={[np.metadata, { transform: [{ translateY: landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
+            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
-          <View style={[s.playerBlock, np.controlsDown]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - playerGap - 22))}>
-          <View style={np.infoProgressOffset}>
+          <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - playerGap - transportInset))}>
+          <View style={[np.infoProgressOffset, compactLandscape && np.landscapeBlock]}>
             <View accessibilityRole="progressbar" accessibilityLabel="播放进度（当前不支持拖动定位）" accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></View>
             <View style={np.times}><Text style={[np.time, { color: pc.muted }]}>{time(p.positionMs)}</Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
           </View>
-          <View style={[np.transport, { marginTop: playerGap + 22 }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={({ pressed }) => [np.transportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="previous" color={pc.ink} size={30} /></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={() => p.playing ? p.togglePause() : p.play()} style={({ pressed }) => [np.transportTouch, { opacity: p.busy || !p.selectedUri ? .3 : pressed ? .55 : 1 }]}><IOSPlaybackSymbol playing={playing} color={pc.ink} size={38} /></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={({ pressed }) => [np.transportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="next" color={pc.ink} size={30} /></Pressable>
+          <View style={[np.transport, { marginTop: playerGap + transportInset }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={({ pressed }) => [np.transportTouch, landscapePlayer && np.landscapeTransportTouch, compactLandscape && np.compactTransportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="previous" color={pc.ink} size={30} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={() => p.playing ? p.togglePause() : p.play()} style={({ pressed }) => [np.transportTouch, landscapePlayer && np.landscapeTransportTouch, compactLandscape && np.compactTransportTouch, { opacity: p.busy || !p.selectedUri ? .3 : pressed ? .55 : 1 }]}><IOSPlaybackSymbol playing={playing} color={pc.ink} size={38} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={({ pressed }) => [np.transportTouch, landscapePlayer && np.landscapeTransportTouch, compactLandscape && np.compactTransportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="next" color={pc.ink} size={30} /></Pressable>
           </View>
           </View>
-          <View style={[np.volume, np.controlsDown]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}>
+          <View style={[np.volume, np.controlsDown, landscapePlayer && np.landscapeBlock]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}>
             <Symbol name="speaker.fill" fallback="◂" size={13} color={pc.muted} />
             <View accessible accessibilityRole="adjustable" accessibilityLabel="音量滑块" accessibilityValue={{ min: 0, max: 100, now: Math.round(p.volume * 100) }} accessibilityActions={[{ name: "increment" }, { name: "decrement" }]} onAccessibilityAction={e => p.setVolume(Math.max(0, Math.min(1, p.volume + (e.nativeEvent.actionName === "increment" ? .05 : -.05))))} {...volumeGesture.panHandlers} onLayout={e => { volumeWidth.current = Math.max(1, e.nativeEvent.layout.width); }} style={np.volumeTouch}><View style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${Math.max(0, Math.min(1, p.volume)) * 100}%` }]} /></View></View>
             <Symbol name="speaker.wave.2.fill" fallback="▸" size={18} color={pc.muted} />
           </View>
           <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
+          </View>
           </View>
           </View>
         </View>
@@ -342,6 +352,17 @@ const s = StyleSheet.create({
 });
 
 const np = StyleSheet.create({
+  // Absorb unused artwork space above the whole control group on tall tablets.
+  tabletControls: { marginTop: "auto" },
+  compactHeader: { paddingVertical: 2 },
+  compactContent: { paddingTop: 0, paddingBottom: 0 },
+  compactTitle: { fontSize: 18, lineHeight: 22 },
+  compactArtist: { fontSize: 15, lineHeight: 20 },
+  compactTransportTouch: { height: 48 },
+  landscapeContent: { flexDirection: "row", paddingHorizontal: 0, gap: 24 },
+  landscapeControls: { flex: 1, minWidth: 0, justifyContent: "center", paddingRight: 25 },
+  landscapeBlock: { transform: [{ translateY: 0 }] },
+  landscapeTransportTouch: { flex: 1, width: 0, minWidth: 48, maxWidth: 76 },
   controlsDown: { transform: [{ translateY: 24 }] },
   infoProgressOffset: { transform: [{ translateY: 12 }] },
   root: { flex: 1, backgroundColor: "transparent", marginHorizontal: -18, overflow: "hidden" },

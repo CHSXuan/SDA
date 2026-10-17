@@ -39,7 +39,7 @@ const settings=readFileSync('apps/mobile/src/IOSNativeSettings.tsx','utf8');
 assert.match(settings, /largeTitle: false/);
 assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
-assert.match(ui, /<View style=\{s.header\}>/);
+assert.match(ui, /<View style=\{\[s.header, compactLandscape && np\.compactHeader\]\}>/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
 assert.match(settings, /systemImage="gearshape"/);
 assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(appTheme.accent\)/);
@@ -258,7 +258,7 @@ assert.equal(iosPlayerLayout(430, 900, 237).coverSize, 340);
 // Standalone-only SDA managers may supply audio, never a different home design.
 const sharedTransport = ui.slice(ui.indexOf('  const icon ='), ui.indexOf('  const divider ='));
 assert.doesNotMatch(sharedTransport, /hasNativeIOSChrome|IOSIconButton/);
-const sharedVolume = ui.slice(ui.indexOf('<View style={[np.volume, np.controlsDown]}'), ui.indexOf('<View style={[np.volume, np.controlsDown]}') + 1800);
+const sharedVolume = ui.slice(ui.indexOf('<View style={[np.volume, np.controlsDown,'), ui.indexOf('<View style={[np.volume, np.controlsDown,') + 1800);
 assert.doesNotMatch(sharedVolume, /hasNativeIOSChrome|IOSVolumeSlider/);
 assert.match(sharedVolume, /accessibilityRole="adjustable"/);
 assert.match(sharedVolume, /accessibilityLabel="音量滑块"/);
@@ -362,7 +362,10 @@ assert.ok(iosPlayerLayout(390, 780, 237).coverSize > 260);
 
 assert.doesNotMatch(homePages, /np.footer|歌词（尚未支持）|选择输出设备（尚未支持）|待播清单/);
 
-assert.doesNotMatch(ui, /lowerPlaybackGroup|marginVertical: playerGap|marginTop: "auto"/);
+assert.doesNotMatch(ui, /lowerPlaybackGroup|marginVertical: playerGap/);
+assert.match(ui, /androidTabletPortrait = Platform\.OS === "android" && width >= 600 && height > width/);
+assert.match(ui, /androidTabletPortrait && np\.tabletControls/);
+assert.match(ui, /tabletControls: \{ marginTop: "auto" \}/);
 for (const height of [520, 650, 780]) {
  const layout = iosPlayerLayout(390, height, 236);
  assert.ok(layout.gap >= 0 && layout.gap <= 48);
@@ -370,8 +373,8 @@ for (const height of [520, 650, 780]) {
  assert.ok(unused >= -1 && unused < 24, `unexpected empty bottom: ${unused}`);
 }
 
-assert.match(ui, /marginTop: playerGap \+ 22/);
-assert.match(ui, /layout.height - playerGap - 22/);
+assert.match(ui, /marginTop: playerGap \+ transportInset/);
+assert.match(ui, /layout.height - playerGap - transportInset/);
 
 assert.equal((homePages.match(/np.infoProgressOffset/g) || []).length, 1);
 assert.match(ui, /infoProgressOffset: \{ transform: \[\{ translateY: 12 \}\]/);
@@ -394,7 +397,29 @@ assert.match(ui, /artworkColor\(artworkUri\)/);
 assert.match(ui, /width: artworkSize, height: artworkSize/);
 assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
 
-assert.match(ui, /const artworkSize = width \+ 48/);
+assert.match(ui, /const artworkSize = landscapePlayer \? height : width \+ 48/);
+assert.match(ui, /landscapePlayer = width > height && \(Platform\.OS === "ios" \|\| \(Platform\.OS === "android" && height >= 600\)\)/);
+const useLandscape = new Function('Platform', 'width', 'height', 'return ' + ui.match(/const landscapePlayer = ([^;]+);/)[1]);
+for (const [os, width, height, expected] of [
+ ['ios',1194,834,true], ['ios',1366,1024,true], ['android',1097,617,true],
+ ['ios',844,390,true], ['android',915,412,false], ['ios',834,1194,false], ['web',1194,834,false],
+]) assert.equal(useLandscape({OS:os}, width, height), expected, `${os} ${width}x${height}`);
+const expoConfig = JSON.parse(readFileSync('apps/mobile/app.json','utf8')).expo;
+const { setOrientation } = await import('@expo/config-plugins/build/ios/Orientation.js');
+assert.equal(expoConfig.orientation, 'default');
+// Expo's explicit Info.plist property guard preserves these per-device masks.
+const generatedOrientation = { ...setOrientation(expoConfig, {}), ...expoConfig.ios.infoPlist };
+assert.deepEqual(generatedOrientation.UISupportedInterfaceOrientations, ['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight']);
+assert.deepEqual(generatedOrientation['UISupportedInterfaceOrientations~ipad'], [
+ 'UIInterfaceOrientationPortrait', 'UIInterfaceOrientationPortraitUpsideDown',
+ 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight',
+]);
+
+assert.match(ui, /landscapeContent: \{ flexDirection: "row"/);
+assert.match(ui, /landscapePlayer && np\.landscapeControls/);
+const androidActivity = readFileSync('apps/mobile/android/app/src/main/java/app/sda/mobile/MainActivity.kt', 'utf8');
+assert.match(androidActivity, /smallestScreenWidthDp >= 600[\s\S]*?SCREEN_ORIENTATION_FULL_USER else ActivityInfo\.SCREEN_ORIENTATION_PORTRAIT/);
+
 
 const metadataSheet = readFileSync("apps/mobile/src/IOSMetadataSheet.tsx", "utf8");
 assert.match(metadataSheet, /presentationDetents\(\["medium", "large"\]\)/);
