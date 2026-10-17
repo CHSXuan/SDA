@@ -3,7 +3,7 @@
     "name": "SDA",
     "slug": "sda",
     "version": "0.1.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "userInterfaceStyle": "automatic",
     "backgroundColor": "#0c101c",
     "ios": {
@@ -13,6 +13,17 @@
         "NSLocalNetworkUsageDescription": "开启远程诊断服务时，允许同网络电脑读取 SDA 的播放状态和头部姿态。",
         "UIBackgroundModes": [
           "audio"
+        ],
+        "UISupportedInterfaceOrientations~ipad": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationPortraitUpsideDown",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ],
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
         ]
       },
       "supportsTablet": true
